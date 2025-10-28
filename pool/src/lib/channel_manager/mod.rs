@@ -333,10 +333,14 @@ impl ChannelManager {
     //
     // Given a `downstream_id`, this method:
     // 1. Removes the corresponding Downstream from the `downstream` map.
+    // 2. Removes the channels of the corresponding Downstream from `vardiff` map.
     #[allow(clippy::result_large_err)]
     fn remove_downstream(&self, downstream_id: usize) -> PoolResult<()> {
         self.channel_manager_data.super_safe_lock(|cm_data| {
             cm_data.downstream.remove(&downstream_id);
+            cm_data
+                .vardiff
+                .retain(|key, _| key.downstream_id != downstream_id);
         });
         Ok(())
     }
