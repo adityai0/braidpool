@@ -22,10 +22,6 @@ pool_signature = "Stratum V2 SRI Pool"
 # The CLI option --log-file (or -f) will override this setting if provided.
 # log_file = "./pool.log"
 
-
-# Template Provider config
-# Local TP (this is pointing to localhost so you must run a TP locally for this configuration to work)
-tp_address = "127.0.0.1:8442"
 shares_per_minute = 6.0
 share_batch_size = 10
 
@@ -42,3 +38,7 @@ required_extensions = [
     # Example: require Worker-Specific Hashrate Tracking
     # 0x0002,
 ]
+
+# Local Sv2 Template Provider config
+[template_provider_type.Sv2Tp]
+address = "127.0.0.1:8442"
