@@ -17,6 +17,7 @@ use stratum_apps::{
     config_helpers::CoinbaseRewardScript,
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
     stratum_core::bitcoin::{Amount, TxOut},
+    tp_type::TemplateProviderType,
     utils::types::{SharesBatchSize, SharesPerMinute},
 };
 
@@ -24,8 +25,7 @@ use stratum_apps::{
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct PoolConfig {
     listen_address: SocketAddr,
-    tp_address: String,
-    tp_authority_public_key: Option<Secp256k1PublicKey>,
+    template_provider_type: TemplateProviderType,
     authority_public_key: Secp256k1PublicKey,
     authority_secret_key: Secp256k1SecretKey,
     cert_validity_sec: u64,
@@ -48,7 +48,7 @@ impl PoolConfig {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         pool_connection: ConnectionConfig,
-        template_provider: TemplateProviderConfig,
+        template_provider_type: TemplateProviderType,
         authority_config: AuthorityConfig,
         coinbase_reward_script: CoinbaseRewardScript,
         shares_per_minute: SharesPerMinute,
@@ -59,8 +59,7 @@ impl PoolConfig {
     ) -> Self {
         Self {
             listen_address: pool_connection.listen_address,
-            tp_address: template_provider.address,
-            tp_authority_public_key: template_provider.authority_public_key,
+            template_provider_type,
             authority_public_key: authority_config.public_key,
             authority_secret_key: authority_config.secret_key,
             cert_validity_sec: pool_connection.cert_validity_sec,
@@ -105,14 +104,9 @@ impl PoolConfig {
         &self.pool_signature
     }
 
-    /// Return the Template Provider authority public key.
-    pub fn tp_authority_public_key(&self) -> Option<&Secp256k1PublicKey> {
-        self.tp_authority_public_key.as_ref()
-    }
-
-    /// Returns the Template Provider address.
-    pub fn tp_address(&self) -> &String {
-        &self.tp_address
+    /// Returns the Template Provider type.
+    pub fn template_provider_type(&self) -> &TemplateProviderType {
+        &self.template_provider_type
     }
 
     /// Returns the share batch size.
@@ -140,11 +134,6 @@ impl PoolConfig {
         &self.required_extensions
     }
 
-    /// Change TP address.
-    pub fn set_tp_address(&mut self, tp_address: String) {
-        self.tp_address = tp_address;
-    }
-
     /// Sets the log directory.
     pub fn set_log_dir(&mut self, log_dir: Option<PathBuf>) {
         if let Some(dir) = log_dir {
@@ -165,21 +154,6 @@ impl PoolConfig {
         TxOut {
             value: Amount::from_sat(0),
             script_pubkey: self.coinbase_reward_script.script_pubkey().to_owned(),
-        }
-    }
-}
-
-/// Configuration for connecting to a Template Provider.
-pub struct TemplateProviderConfig {
-    address: String,
-    authority_public_key: Option<Secp256k1PublicKey>,
-}
-
-impl TemplateProviderConfig {
-    pub fn new(address: String, authority_public_key: Option<Secp256k1PublicKey>) -> Self {
-        Self {
-            address,
-            authority_public_key,
         }
     }
 }

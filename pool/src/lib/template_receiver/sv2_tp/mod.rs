@@ -33,7 +33,7 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub struct TemplateReceiverChannel {
+pub struct Sv2TpChannel {
     channel_manager_sender: Sender<TemplateDistribution<'static>>,
     channel_manager_receiver: Receiver<TemplateDistribution<'static>>,
     tp_sender: Sender<Sv2Frame>,
@@ -41,12 +41,12 @@ pub struct TemplateReceiverChannel {
 }
 
 #[derive(Clone)]
-pub struct TemplateReceiver {
-    template_receiver_channel: TemplateReceiverChannel,
+pub struct Sv2Tp {
+    sv2_tp_channel: Sv2TpChannel,
 }
 
-impl TemplateReceiver {
-    /// Establish a new connection to a Template Provider.
+impl Sv2Tp {
+    /// Establish a new connection to a Sv2 Template Provider.
     ///
     /// - Opens a TCP connection
     /// - Performs Noise handshake
@@ -61,7 +61,7 @@ impl TemplateReceiver {
         notify_shutdown: broadcast::Sender<ShutdownMessage>,
         task_manager: Arc<TaskManager>,
         status_sender: Sender<Status>,
-    ) -> PoolResult<TemplateReceiver> {
+    ) -> PoolResult<Sv2Tp> {
         const MAX_RETRIES: usize = 3;
 
         for attempt in 1..=MAX_RETRIES {
@@ -112,7 +112,7 @@ impl TemplateReceiver {
                                 status_sender,
                             );
 
-                            let template_receiver_channel = TemplateReceiverChannel {
+                            let template_receiver_channel = Sv2TpChannel {
                                 channel_manager_receiver,
                                 channel_manager_sender,
                                 tp_receiver: inbound_rx,
@@ -120,8 +120,8 @@ impl TemplateReceiver {
                             };
 
                             info!(attempt, "TemplateReceiver initialized successfully");
-                            return Ok(TemplateReceiver {
-                                template_receiver_channel,
+                            return Ok(Sv2Tp {
+                                sv2_tp_channel: template_receiver_channel,
                             });
                         }
                         Err(e) => {
@@ -144,7 +144,7 @@ impl TemplateReceiver {
         Err(PoolError::Shutdown)
     }
 
-    /// Start unified message loop for TemplateReceiver.
+    /// Start unified message loop for Sv2Tp.
     ///
     /// Responsibilities:
     /// - Run handshake (`setup_connection`)
@@ -218,7 +218,7 @@ impl TemplateReceiver {
     /// - `TemplateDistribution` messages → forwarded to ChannelManager
     /// - Unsupported messages → logged and ignored
     pub async fn handle_template_provider_message(&mut self) -> PoolResult<()> {
-        let mut sv2_frame = self.template_receiver_channel.tp_receiver.recv().await?;
+        let mut sv2_frame = self.sv2_tp_channel.tp_receiver.recv().await?;
         debug!("Received SV2 frame from Template provider.");
         let header = sv2_frame.get_header().ok_or_else(|| {
             error!("SV2 frame missing header");
@@ -241,7 +241,7 @@ impl TemplateReceiver {
                     TemplateDistribution::try_from((header.msg_type(), sv2_frame.payload()))?
                         .into_static();
 
-                self.template_receiver_channel
+                self.sv2_tp_channel
                     .channel_manager_sender
                     .send(message)
                     .await
@@ -265,16 +265,12 @@ impl TemplateReceiver {
     ///
     /// Forwards outbound frames upstream
     pub async fn handle_channel_manager_message(&self) -> PoolResult<()> {
-        let msg = self
-            .template_receiver_channel
-            .channel_manager_receiver
-            .recv()
-            .await?;
+        let msg = self.sv2_tp_channel.channel_manager_receiver.recv().await?;
         let message = AnyMessage::TemplateDistribution(msg).into_static();
         let frame: Sv2Frame = message.try_into()?;
 
         debug!("Forwarding message from channel manager to outbound_tx");
-        self.template_receiver_channel
+        self.sv2_tp_channel
             .tp_sender
             .send(frame)
             .await
@@ -324,7 +320,7 @@ impl TemplateReceiver {
 
         let frame: Sv2Frame = msg.try_into()?;
         info!("Sending CoinbaseOutputConstraints message upstream");
-        self.template_receiver_channel
+        self.sv2_tp_channel
             .tp_sender
             .send(frame)
             .await
@@ -348,7 +344,7 @@ impl TemplateReceiver {
         let frame: Sv2Frame = Message::Common(setup_msg.into()).try_into()?;
 
         info!("Sending SetupConnection message to the Template Provider");
-        self.template_receiver_channel
+        self.sv2_tp_channel
             .tp_sender
             .send(frame)
             .await
@@ -358,15 +354,10 @@ impl TemplateReceiver {
             })?;
 
         info!("Waiting for upstream handshake response");
-        let mut incoming: Sv2Frame = self
-            .template_receiver_channel
-            .tp_receiver
-            .recv()
-            .await
-            .map_err(|e| {
-                error!(?e, "Upstream connection closed during handshake");
-                PoolError::Noise(Error::ExpectedIncomingHandshakeMessage)
-            })?;
+        let mut incoming: Sv2Frame = self.sv2_tp_channel.tp_receiver.recv().await.map_err(|e| {
+            error!(?e, "Upstream connection closed during handshake");
+            PoolError::Noise(Error::ExpectedIncomingHandshakeMessage)
+        })?;
 
         let header = incoming.get_header().ok_or_else(|| {
             error!("Handshake frame missing header");

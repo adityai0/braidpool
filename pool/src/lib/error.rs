@@ -100,6 +100,12 @@ pub enum PoolError {
     InvalidSupportedExtensionsSequence(binary_sv2::Error),
     /// Client does not support required extensions
     ClientDoesNotSupportRequiredExtensions(Vec<u16>),
+    /// Failed to create BitcoinCore tokio runtime
+    FailedToCreateBitcoinCoreTokioRuntime,
+    /// Failed to send CoinbaseOutputConstraints message
+    FailedToSendCoinbaseOutputConstraints,
+    /// BitcoinCoreSv2 cancellation token activated
+    BitcoinCoreSv2CancellationTokenActivated,
 }
 
 impl std::fmt::Display for PoolError {
@@ -173,6 +179,15 @@ impl std::fmt::Display for PoolError {
                     f,
                     "Client does not support required extensions: {extensions:?}"
                 )
+            }
+            FailedToCreateBitcoinCoreTokioRuntime => {
+                write!(f, "Failed to create BitcoinCore tokio runtime")
+            }
+            FailedToSendCoinbaseOutputConstraints => {
+                write!(f, "Failed to send CoinbaseOutputConstraints message")
+            }
+            BitcoinCoreSv2CancellationTokenActivated => {
+                write!(f, "BitcoinCoreSv2 cancellation token activated")
             }
         }
     }
