@@ -22,7 +22,9 @@ pool_signature = "Stratum V2 SRI Pool"
 # The CLI option --log-file (or -f) will override this setting if provided.
 # log_file = "./pool.log"
 
+# How many shares we expect to receive in a minute (determines difficulty targets)
 shares_per_minute = 6.0
+# How many shares do we want to acknowledge in a batch
 share_batch_size = 10
 
 # Protocol Extensions Configuration
