@@ -24,7 +24,7 @@ tokio-util = { version = "0.7.10", default-features = false, features = ["codec"
 
 # Config helpers dependencies  
 serde = { version = "1.0.89", features = ["derive", "alloc"], default-features = false }
-miniscript = { version = "12.3.4", default-features = false, features = ["no-std"] }
+miniscript = { version = "13.0.0", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing = { version = "0.1" }
 

@@ -2,7 +2,7 @@ mod errors;
 mod serde_types;
 
 use miniscript::{
-    bitcoin::{address::NetworkUnchecked, hex::FromHex as _, Address, Network, ScriptBuf},
+    bitcoin::{address::NetworkUnchecked, Address, Network, ScriptBuf},
     DefiniteDescriptorKey, Descriptor,
 };
 
@@ -20,7 +20,7 @@ pub struct CoinbaseRewardScript {
 
 impl CoinbaseRewardScript {
     /// Creates a new [`CoinbaseRewardScript`] from a descriptor string.
-    pub fn from_descriptor(mut s: &str) -> Result<Self, Error> {
+    pub fn from_descriptor(s: &str) -> Result<Self, Error> {
         // Taproot descriptors cannot be parsed with `expression::Tree::from_str` and
         // need special handling. So we special-case them early and just pass to
         // rust-miniscript. In Miniscript 13 we will not need to do this.
@@ -34,59 +34,37 @@ impl CoinbaseRewardScript {
             });
         }
 
-        // Manually verify the checksum. FIXME in Miniscript 13 we will not need
-        // to do this, since `expression::Tree::from_str` will do the checksum
-        // validation for us. (And yield a much less horrible error type.)
-        if let Some((desc_str, checksum_str)) = s.rsplit_once('#') {
-            let expected_sum = miniscript::descriptor::checksum::desc_checksum(desc_str)?;
-            if checksum_str != expected_sum {
-                return Err(miniscript::Error::BadDescriptor(format!(
-                    "Invalid checksum '{checksum_str}', expected '{expected_sum}'"
-                ))
-                .into());
-            }
-            s = desc_str;
-        }
-
         let tree = miniscript::expression::Tree::from_str(s)?;
-        match tree.name {
+        let root = tree.root();
+        match root.name() {
             "addr" => {
-                // In rust-miniscript 13 these can be replaced with a call to
-                // TreeIterItem::verify_toplevel which will these checks for us
-                // in a uniform way.
-                if tree.args.len() != 1 {
-                    return Err(Error::AddrDescriptorNChildren(tree.args.len()));
-                }
-                if !tree.args[0].args.is_empty() {
-                    return Err(Error::AddrDescriptorGrandchild);
-                }
+                let addr: Address<NetworkUnchecked> = root
+                    .verify_terminal_parent("addr", "a valid Bitcoin address")
+                    .map_err(miniscript::Error::Parse)?;
 
-                let addr = tree.args[0].name.parse::<Address<NetworkUnchecked>>()?;
                 Ok(Self {
                     script_pubkey: addr.assume_checked_ref().script_pubkey(),
                     ok_for_mainnet: addr.is_valid_for_network(Network::Bitcoin),
                 })
             }
             "raw" => {
-                // In rust-miniscript 13 these can be replaced with a call to
-                // TreeIterItem::verify_toplevel which will these checks for us
-                // in a uniform way.
-                if tree.args.len() != 1 {
-                    return Err(Error::RawDescriptorNChildren(tree.args.len()));
-                }
-                if !tree.args[0].args.is_empty() {
-                    return Err(Error::RawDescriptorGrandchild);
-                }
+                let script_hex: String = root
+                    .verify_terminal_parent(
+                        "raw",
+                        "a hex-encoded Bitcoin script without length prefix",
+                    )
+                    .map_err(miniscript::Error::Parse)?;
 
-                let bytes = Vec::<u8>::from_hex(tree.args[0].name)?;
                 Ok(Self {
-                    script_pubkey: ScriptBuf::from(bytes),
+                    script_pubkey: ScriptBuf::from_hex(&script_hex)?,
                     // Users of hex scriptpubkeys are on their own.
                     ok_for_mainnet: true,
                 })
             }
             _ => {
-                let desc = s.parse::<Descriptor<DefiniteDescriptorKey>>()?;
+                use miniscript::expression::FromTree as _;
+
+                let desc = Descriptor::<DefiniteDescriptorKey>::from_tree(root)?;
                 Ok(Self {
                     script_pubkey: desc.script_pubkey(),
                     // Descriptors don't have a way to specify a network, so we assume
@@ -167,7 +145,7 @@ mod tests {
             CoinbaseRewardScript::from_descriptor("addr(1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2,)")
                 .unwrap_err()
                 .to_string(),
-            "Found addr() descriptor with 2 children; must be exactly one valid address",
+            "Miniscript: addr must have 1 children, but found 2",
         );
 
         // Invalid
@@ -176,7 +154,7 @@ mod tests {
             CoinbaseRewardScript::from_descriptor("addr(1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2)#")
                 .unwrap_err()
                 .to_string(),
-            "Miniscript: Invalid descriptor: Invalid checksum '', expected 'wdnlkpe8'",
+            "Miniscript: invalid checksum (length 0, expected 8)",
         );
         assert_eq!(
             CoinbaseRewardScript::from_descriptor(
@@ -184,7 +162,7 @@ mod tests {
             )
             .unwrap_err()
             .to_string(),
-            "Miniscript: Invalid descriptor: Invalid checksum 'wdnlkpe7', expected 'wdnlkpe8'",
+            "Miniscript: invalid checksum wdnlkpe7; expected wdnlkpe8",
         );
         // Bad base58ck checksum even though the descriptor checksum is OK. Note that rust-bitcoin
         // 0.32 interprets bad bech32 checksums as "base58 errors" because it doesn't know
@@ -212,14 +190,14 @@ mod tests {
             CoinbaseRewardScript::from_descriptor("addr(It's a mad mad world!?! 🙃)")
                 .unwrap_err()
                 .to_string(),
-            "Miniscript: unprintable character 0xf0",
+            "Miniscript: invalid character '🙃' (position 29)",
         );
         // This error is just wrong lol. Fixed in Miniscript 13.
         assert_eq!(
             CoinbaseRewardScript::from_descriptor("addr(It's a mad mad world!?! 🙃)#abcdefg")
                 .unwrap_err()
                 .to_string(),
-            "Miniscript: Invalid descriptor: Invalid character in checksum: '🙃'",
+            "Miniscript: invalid character '🙃' (position 29)",
         );
         // Expected error: "Bitcoin address: base58 error: decode: invalid base58 character 0x49"
         // (hex-conservative v0.3.0) or "Bitcoin address: base58 error" (hex-conservative
@@ -232,7 +210,7 @@ mod tests {
             CoinbaseRewardScript::from_descriptor("addr(It's a mad mad world!?!)#🙃🙃🙃🙃🙃🙃")
                 .unwrap_err()
                 .to_string(),
-            "Miniscript: Invalid descriptor: Invalid checksum '🙃🙃🙃🙃🙃🙃', expected 'hmeprl29'",
+            "Miniscript: invalid character '🙃' (position 30)",
         );
     }
 
@@ -245,7 +223,7 @@ mod tests {
             )
             .unwrap_err()
             .to_string(),
-            "Miniscript: unexpected «combo(1 args) while parsing Miniscript»"
+            "Miniscript: unrecognized name 'combo'",
         );
     }
 
@@ -254,11 +232,11 @@ mod tests {
         // We do not support musig descriptors. One day.
         assert_eq!(
             CoinbaseRewardScript::from_descriptor("musig(0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798,03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556)").unwrap_err().to_string(),
-            "Miniscript: unexpected «musig(2 args) while parsing Miniscript»"
+            "Miniscript: unrecognized name '03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556'",
         );
         assert_eq!(
             CoinbaseRewardScript::from_descriptor("tr(musig(0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798,03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556))").unwrap_err().to_string(),
-            "Miniscript: expected )",
+            "Miniscript: internal key must have no children, but found 2",
         );
     }
 
@@ -303,7 +281,7 @@ mod tests {
             CoinbaseRewardScript::from_descriptor("raw(0,1)")
                 .unwrap_err()
                 .to_string(),
-            "Found raw() descriptor with 2 children; must be exactly one hex-encoded script",
+            "Miniscript: raw must have 1 children, but found 2",
         );
     }
 
@@ -346,18 +324,18 @@ mod tests {
         // xpub with hardened path (not allowed)
         assert_eq!(
             CoinbaseRewardScript::from_descriptor("pkh(xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8/1'/2/3)").unwrap_err().to_string(),
-            "Miniscript: unexpected «cannot parse multi-path keys, keys with a wildcard or keys with hardened derivation steps as a DerivedDescriptorKey»",
+            "Miniscript: key with hardened derivation steps cannot be a DerivedDescriptorKey",
         );
         // no wildcards allowed (at least for now; gmax thinks it would be cool if we would
         // instantiate it with the blockheight or something, but need to work out UX)
         assert_eq!(
             CoinbaseRewardScript::from_descriptor("pkh(xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8/*)").unwrap_err().to_string(),
-            "Miniscript: unexpected «cannot parse multi-path keys, keys with a wildcard or keys with hardened derivation steps as a DerivedDescriptorKey»",
+            "Miniscript: key with a wildcard cannot be a DerivedDescriptorKey",
         );
         // No multipath descriptors allowed; this is not a wallet with change
         assert_eq!(
             CoinbaseRewardScript::from_descriptor("pkh(xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8/<0;1>)").unwrap_err().to_string(),
-            "Miniscript: unexpected «cannot parse multi-path keys, keys with a wildcard or keys with hardened derivation steps as a DerivedDescriptorKey»",
+            "Miniscript: multipath key cannot be a DerivedDescriptorKey",
         );
         // Private keys are not allowed, or xprvs.
         assert_eq!(
@@ -366,12 +344,12 @@ mod tests {
             )
             .unwrap_err()
             .to_string(),
-            "Miniscript: unexpected «Key too short (<66 char), doesn't match any format»",
+            "Miniscript: key too short",
         );
         // This is a confusing error message which should be fixed in Miniscript 13.
         assert_eq!(
             CoinbaseRewardScript::from_descriptor("pkh(xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi)").unwrap_err().to_string(),
-            "Miniscript: unexpected «Public keys must be 64/66/130 characters in size»",
+            "Miniscript: public keys must be 64, 66 or 130 characters in size",
         );
     }
 }
