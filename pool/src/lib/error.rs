@@ -20,7 +20,7 @@ use stratum_apps::{
         noise_sv2,
         parsers_sv2::{Mining, ParserError},
     },
-    utils::types::ChannelId,
+    utils::types::{ChannelId, ExtensionType, MessageType},
 };
 
 pub type PoolResult<T> = Result<T, PoolError>;
@@ -69,7 +69,7 @@ pub enum PoolError {
     /// Shutdown
     Shutdown,
     /// Unexpected message
-    UnexpectedMessage(u8),
+    UnexpectedMessage(ExtensionType, MessageType),
     /// Channel error sender
     ChannelErrorSender,
     /// Invalid socket address
@@ -92,6 +92,14 @@ pub enum PoolError {
     ParseInt(std::num::ParseIntError),
     /// Failed to create group channel
     FailedToCreateGroupChannel(GroupChannelError),
+    /// Invalid unsupported extensions sequence
+    InvalidUnsupportedExtensionsSequence(binary_sv2::Error),
+    /// Invalid required extensions sequence
+    InvalidRequiredExtensionsSequence(binary_sv2::Error),
+    /// Invalid supported extensions sequence
+    InvalidSupportedExtensionsSequence(binary_sv2::Error),
+    /// Client does not support required extensions
+    ClientDoesNotSupportRequiredExtensions(Vec<u16>),
 }
 
 impl std::fmt::Display for PoolError {
@@ -117,7 +125,7 @@ impl std::fmt::Display for PoolError {
             }
             Parser(e) => write!(f, "Parser error: `{e:?}`"),
             Shutdown => write!(f, "Shutdown"),
-            UnexpectedMessage(message_type) => write!(f, "message type: {message_type:?}"),
+            UnexpectedMessage(extension_type, message_type) => write!(f, "Unexpected message: extension type: {extension_type:?}, message type: {message_type:?}"),
             ChannelErrorSender => write!(f, "Channel sender error"),
             InvalidSocketAddress(address) => write!(f, "Invalid socket address: {address:?}"),
             BitcoinEncodeError(_) => write!(f, "Error generated during encoding"),
@@ -141,6 +149,30 @@ impl std::fmt::Display for PoolError {
             }
             FailedToCreateGroupChannel(ref e) => {
                 write!(f, "Failed to create group channel: {e:?}")
+            }
+            InvalidUnsupportedExtensionsSequence(e) => {
+                write!(
+                    f,
+                    "Invalid unsupported extensions sequence: {e:?}"
+                )
+            }
+            InvalidRequiredExtensionsSequence(e) => {
+                write!(
+                    f,
+                    "Invalid required extensions sequence: {e:?}"
+                )
+            }
+            InvalidSupportedExtensionsSequence(e) => {
+                write!(
+                    f,
+                    "Invalid supported extensions sequence: {e:?}"
+                )
+            }
+            ClientDoesNotSupportRequiredExtensions(extensions) => {
+                write!(
+                    f,
+                    "Client does not support required extensions: {extensions:?}"
+                )
             }
         }
     }
@@ -216,8 +248,8 @@ impl HandlerErrorType for PoolError {
         PoolError::Parser(error)
     }
 
-    fn unexpected_message(message_type: u8) -> Self {
-        PoolError::UnexpectedMessage(message_type)
+    fn unexpected_message(extension_type: ExtensionType, message_type: MessageType) -> Self {
+        PoolError::UnexpectedMessage(extension_type, message_type)
     }
 }
 

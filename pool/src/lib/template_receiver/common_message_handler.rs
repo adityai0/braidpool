@@ -3,6 +3,7 @@ use stratum_apps::stratum_core::{
         ChannelEndpointChanged, Reconnect, SetupConnectionError, SetupConnectionSuccess,
     },
     handlers_sv2::HandleCommonMessagesFromServerAsync,
+    parsers_sv2::Tlv,
 };
 use tracing::{error, info};
 
@@ -11,10 +12,18 @@ use crate::{error::PoolError, template_receiver::TemplateReceiver};
 impl HandleCommonMessagesFromServerAsync for TemplateReceiver {
     type Error = PoolError;
 
+    fn get_negotiated_extensions_with_server(
+        &self,
+        _server_id: Option<usize>,
+    ) -> Result<Vec<u16>, Self::Error> {
+        Ok(vec![])
+    }
+
     async fn handle_setup_connection_success(
         &mut self,
         _server_id: Option<usize>,
         msg: SetupConnectionSuccess,
+        _tlv_fields: Option<&[Tlv]>,
     ) -> Result<(), Self::Error> {
         info!(
             "Received `SetupConnectionSuccess` from TP: version={}, flags={:b}",
@@ -27,6 +36,7 @@ impl HandleCommonMessagesFromServerAsync for TemplateReceiver {
         &mut self,
         _server_id: Option<usize>,
         msg: ChannelEndpointChanged,
+        _tlv_fields: Option<&[Tlv]>,
     ) -> Result<(), Self::Error> {
         info!(
             "Received ChannelEndpointChanged with channel id: {}",
@@ -39,6 +49,7 @@ impl HandleCommonMessagesFromServerAsync for TemplateReceiver {
         &mut self,
         _server_id: Option<usize>,
         msg: Reconnect<'_>,
+        _tlv_fields: Option<&[Tlv]>,
     ) -> Result<(), Self::Error> {
         info!("Received: {}", msg);
         Ok(())
@@ -48,6 +59,7 @@ impl HandleCommonMessagesFromServerAsync for TemplateReceiver {
         &mut self,
         _server_id: Option<usize>,
         msg: SetupConnectionError<'_>,
+        _tlv_fields: Option<&[Tlv]>,
     ) -> Result<(), Self::Error> {
         error!(
             "Received `SetupConnectionError` from TP with error code {}",
