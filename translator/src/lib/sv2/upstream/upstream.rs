@@ -3,21 +3,23 @@ use crate::{
     status::{handle_error, Status, StatusSender},
     sv2::upstream::channel::UpstreamChannelState,
     task_manager::TaskManager,
-    utils::{message_from_frame, ShutdownMessage},
+    utils::{
+        protocol_message_type, spawn_io_tasks, Message, MessageType, SV2Frame, ShutdownMessage,
+        StdFrame,
+    },
 };
-use async_channel::{Receiver, Sender};
+use async_channel::{unbounded, Receiver, Sender};
 use std::{net::SocketAddr, sync::Arc};
 use stratum_apps::{
     key_utils::Secp256k1PublicKey,
-    network_helpers::noise_connection::Connection,
+    network_helpers::noise_stream::NoiseTcpStream,
     stratum_core::{
-        buffer_sv2,
-        codec_sv2::{HandshakeRole, StandardEitherFrame, StandardSv2Frame},
+        codec_sv2::HandshakeRole,
         common_messages_sv2::{Protocol, SetupConnection},
         framing_sv2,
         handlers_sv2::HandleCommonMessagesFromServerAsync,
         noise_sv2::Initiator,
-        parsers_sv2::AnyMessage,
+        parsers_sv2::{AnyMessage, Mining},
     },
 };
 use tokio::{
@@ -26,13 +28,6 @@ use tokio::{
     time::{sleep, Duration},
 };
 use tracing::{debug, error, info, warn};
-
-/// Type alias for SV2 messages with static lifetime
-pub type Message = AnyMessage<'static>;
-/// Type alias for standard SV2 frames
-pub type StdFrame = StandardSv2Frame<Message>;
-/// Type alias for either handshake or SV2 frames
-pub type EitherFrame = StandardEitherFrame<Message>;
 
 /// Manages the upstream SV2 connection to a mining pool or proxy.
 ///
@@ -71,10 +66,11 @@ impl Upstream {
     /// * `Err(TproxyError)` - Failed to connect to any upstream server
     pub async fn new(
         upstreams: &[(SocketAddr, Secp256k1PublicKey)],
-        channel_manager_sender: Sender<EitherFrame>,
-        channel_manager_receiver: Receiver<EitherFrame>,
+        channel_manager_sender: Sender<Mining<'static>>,
+        channel_manager_receiver: Receiver<Mining<'static>>,
         notify_shutdown: broadcast::Sender<ShutdownMessage>,
         shutdown_complete_tx: mpsc::Sender<()>,
+        task_manager: Arc<TaskManager>,
     ) -> Result<Self, TproxyError> {
         let mut shutdown_rx = notify_shutdown.subscribe();
         const RETRIES_PER_UPSTREAM: u8 = 3;
@@ -94,14 +90,30 @@ impl Upstream {
                         info!(
                             "Connected to upstream at {addr} (attempt {attempt}/{RETRIES_PER_UPSTREAM})"
                         );
+
                         let initiator = Initiator::from_raw_k(pubkey.into_bytes())?;
-                        match Connection::new(socket, HandshakeRole::Initiator(initiator)).await {
-                            Ok((receiver, sender)) => {
+                        match NoiseTcpStream::new(socket, HandshakeRole::Initiator(initiator)).await
+                        {
+                            Ok(stream) => {
+                                let (reader, writer) = stream.into_split();
+
+                                let (outbound_tx, outbound_rx) = unbounded();
+                                let (inbound_tx, inbound_rx) = unbounded();
+
+                                spawn_io_tasks(
+                                    task_manager,
+                                    reader,
+                                    writer,
+                                    outbound_rx,
+                                    inbound_tx,
+                                    notify_shutdown,
+                                );
+
                                 let upstream_channel_state = UpstreamChannelState::new(
                                     channel_manager_sender,
                                     channel_manager_receiver,
-                                    receiver,
-                                    sender,
+                                    inbound_rx,
+                                    outbound_tx,
                                 );
                                 debug!("Successfully initialized upstream channel with {addr}");
 
@@ -214,7 +226,7 @@ impl Upstream {
         // Send SetupConnection message to upstream
         self.upstream_channel_state
             .upstream_sender
-            .send(sv2_frame.into())
+            .send(sv2_frame)
             .await
             .map_err(|e| {
                 error!("Failed to send SetupConnection to upstream: {:?}", e);
@@ -225,7 +237,7 @@ impl Upstream {
             match self.upstream_channel_state.upstream_receiver.recv().await {
                 Ok(frame) => {
                     debug!("Received handshake response from upstream.");
-                    frame.try_into()?
+                    frame
                 }
                 Err(e) => {
                     error!("Failed to receive handshake response from upstream: {}", e);
@@ -259,55 +271,40 @@ impl Upstream {
     ///
     /// Common messages are handled directly, while mining messages are forwarded
     /// to the channel manager for processing and distribution to downstream connections.
-    pub async fn on_upstream_message(&self, message: EitherFrame) -> Result<(), TproxyError> {
-        let mut upstream = self.get_upstream();
-        match message {
-            EitherFrame::Sv2(sv2_frame) => {
-                // Convert to standard frame
-                let std_frame: StdFrame = sv2_frame;
+    pub async fn on_upstream_message(
+        &mut self,
+        mut sv2_frame: SV2Frame,
+    ) -> Result<(), TproxyError> {
+        debug!("Received SV2 frame from upstream.");
+        let Some(message_type) = sv2_frame.get_header().map(|m| m.msg_type()) else {
+            return Err(TproxyError::UnexpectedMessage(0));
+        };
 
-                // Parse message from frame
-                let mut frame: stratum_apps::stratum_core::framing_sv2::framing::Frame<
-                    AnyMessage<'static>,
-                    buffer_sv2::Slice,
-                > = std_frame.clone().into();
-
-                let (messsage_type, mut payload, parsed_message) = message_from_frame(&mut frame)?;
-
-                match parsed_message {
-                    AnyMessage::Common(_) => {
-                        // Handle common upstream messages
-                        upstream
-                            .handle_common_message_frame_from_server(
-                                None,
-                                messsage_type,
-                                &mut payload,
-                            )
-                            .await?;
-                    }
-
-                    AnyMessage::Mining(_) => {
-                        // Forward mining message to channel manager
-                        let frame_to_forward = EitherFrame::Sv2(std_frame.clone());
-                        self.upstream_channel_state
-                            .channel_manager_sender
-                            .send(frame_to_forward)
-                            .await
-                            .map_err(|e| {
-                                error!("Failed to send mining message to channel manager: {:?}", e);
-                                TproxyError::ChannelErrorSender
-                            })?;
-                    }
-
-                    _ => {
-                        error!("Received unsupported message type from upstream.");
-                        return Err(TproxyError::UnexpectedMessage(0));
-                    }
-                }
+        match protocol_message_type(message_type) {
+            MessageType::Common => {
+                info!(?message_type, "Handling common message from Upstream.");
+                self.handle_common_message_frame_from_server(
+                    None,
+                    message_type,
+                    sv2_frame.payload(),
+                )
+                .await?;
             }
-
-            EitherFrame::HandShake(handshake_frame) => {
-                debug!("Received handshake frame: {:?}", handshake_frame);
+            MessageType::Mining => {
+                let mining_message =
+                    Mining::try_from((message_type, sv2_frame.payload()))?.into_static();
+                self.upstream_channel_state
+                    .channel_manager_sender
+                    .send(mining_message)
+                    .await
+                    .map_err(|e| {
+                        error!("Failed to send mining message to channel manager: {:?}", e);
+                        TproxyError::ChannelErrorSender
+                    })?;
+            }
+            _ => {
+                warn!("Received unsupported message type from upstream: {message_type}");
+                return Err(TproxyError::UnexpectedMessage(message_type));
             }
         }
         Ok(())
@@ -315,7 +312,7 @@ impl Upstream {
 
     /// Spawns a unified task to handle upstream message I/O and shutdown logic.
     fn run_upstream_task(
-        self,
+        mut self,
         notify_shutdown: broadcast::Sender<ShutdownMessage>,
         shutdown_complete_tx: mpsc::Sender<()>,
         status_sender: StatusSender,
@@ -402,8 +399,10 @@ impl Upstream {
     /// # Returns
     /// * `Ok(())` - Message sent successfully
     /// * `Err(TproxyError)` - Error sending the message
-    pub async fn send_upstream(&self, sv2_frame: EitherFrame) -> Result<(), TproxyError> {
+    pub async fn send_upstream(&self, message: Mining<'static>) -> Result<(), TproxyError> {
         debug!("Sending message to upstream.");
+        let message = AnyMessage::Mining(message);
+        let sv2_frame: StdFrame = message.try_into()?;
 
         self.upstream_channel_state
             .upstream_sender
@@ -447,11 +446,5 @@ impl Upstream {
             firmware,
             device_id,
         })
-    }
-
-    fn get_upstream(&self) -> Upstream {
-        Upstream {
-            upstream_channel_state: self.upstream_channel_state.clone(),
-        }
     }
 }

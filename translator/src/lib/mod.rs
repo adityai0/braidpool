@@ -92,6 +92,7 @@ impl TranslatorSv2 {
             channel_manager_to_upstream_receiver.clone(),
             notify_shutdown.clone(),
             shutdown_complete_tx.clone(),
+            task_manager.clone(),
         )
         .await
         {
@@ -189,6 +190,7 @@ impl TranslatorSv2 {
                                         channel_manager_to_upstream_receiver.clone(),
                                         notify_shutdown_clone.clone(),
                                         shutdown_complete_tx_clone.clone(),
+                                        task_manager_clone.clone()
                                     ).await {
                                         Ok(upstream) => {
                                             if let Err(e) = upstream

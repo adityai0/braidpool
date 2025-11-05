@@ -1,15 +1,12 @@
 use crate::{
     error::TproxyError,
     status::{handle_error, Status, StatusSender},
-    sv2::{
-        channel_manager::{
-            channel::ChannelState,
-            data::{ChannelManagerData, ChannelMode},
-        },
-        upstream::upstream::{EitherFrame, Message, StdFrame},
+    sv2::channel_manager::{
+        channel::ChannelState,
+        data::{ChannelManagerData, ChannelMode},
     },
     task_manager::TaskManager,
-    utils::{into_static, ShutdownMessage},
+    utils::ShutdownMessage,
 };
 use async_channel::{Receiver, Sender};
 use std::sync::{Arc, RwLock};
@@ -17,10 +14,8 @@ use stratum_apps::{
     custom_mutex::Mutex,
     stratum_core::{
         channels_sv2::client::extended::ExtendedChannel,
-        framing_sv2::framing::Frame,
         handlers_sv2::HandleMiningMessagesFromServerAsync,
-        mining_sv2::OpenExtendedMiningChannelSuccess,
-        parsers_sv2::{AnyMessage, Mining},
+        mining_sv2::OpenExtendedMiningChannelSuccess, parsers_sv2::Mining,
     },
 };
 use tokio::sync::{broadcast, mpsc};
@@ -69,8 +64,8 @@ impl ChannelManager {
     /// # Returns
     /// A new ChannelManager instance ready to handle message routing
     pub fn new(
-        upstream_sender: Sender<EitherFrame>,
-        upstream_receiver: Receiver<EitherFrame>,
+        upstream_sender: Sender<Mining<'static>>,
+        upstream_receiver: Receiver<Mining<'static>>,
         sv1_server_sender: Sender<Mining<'static>>,
         sv1_server_receiver: Receiver<Mining<'static>>,
         mode: ChannelMode,
@@ -192,38 +187,9 @@ impl ChannelManager {
             .await
             .map_err(TproxyError::ChannelErrorReceiver)?;
 
-        let Frame::Sv2(mut frame) = message else {
-            warn!("Received non-SV2 frame from upstream");
-            return Ok(());
-        };
-
-        let header = frame.get_header().ok_or_else(|| {
-            error!("Missing header in SV2 frame");
-            TproxyError::General("Missing frame header".into())
-        })?;
-
-        let message_type = header.msg_type();
-        let mut payload = frame.payload().to_vec();
-
-        let message: AnyMessage<'_> = into_static(
-            (message_type, payload.as_mut_slice())
-                .try_into()
-                .map_err(|e| {
-                    error!("Failed to parse upstream frame into AnyMessage: {:?}", e);
-                    TproxyError::General("Failed to parse AnyMessage".into())
-                })?,
-        )?;
-
-        match message {
-            Message::Mining(_) => {
-                channel_manager
-                    .handle_mining_message_frame_from_server(None, message_type, &mut payload)
-                    .await?;
-            }
-            _ => {
-                warn!("Unhandled upstream message type: {:?}", message);
-            }
-        }
+        channel_manager
+            .handle_mining_message_from_server(None, message)
+            .await?;
 
         Ok(())
     }
@@ -254,9 +220,7 @@ impl ChannelManager {
         match message {
             Mining::OpenExtendedMiningChannel(m) => {
                 let mut open_channel_msg = m.clone();
-                let mut user_identity = std::str::from_utf8(m.user_identity.as_ref())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|_| "unknown".to_string());
+                let mut user_identity = m.user_identity.as_utf8_or_hex();
                 let hashrate = m.nominal_hash_rate;
                 let min_extranonce_size = m.min_extranonce_size as usize;
                 let mode = self
@@ -444,13 +408,10 @@ impl ChannelManager {
                     open_channel_msg
                 );
 
-                let frame = StdFrame::try_from(Message::Mining(Mining::OpenExtendedMiningChannel(
-                    open_channel_msg,
-                )))
-                .map_err(TproxyError::ParserError)?;
+                let message = Mining::OpenExtendedMiningChannel(open_channel_msg);
                 self.channel_state
                     .upstream_sender
-                    .send(frame.into())
+                    .send(message)
                     .await
                     .map_err(|e| {
                         error!("Failed to send open channel message to upstream: {:?}", e);
@@ -572,13 +533,10 @@ impl ChannelManager {
                         "SubmitSharesExtended: valid share, forwarding it to upstream | channel_id: {}, sequence_number: {} ☑️",
                         m.channel_id, m.sequence_number
                     );
-                    let frame: StdFrame = Message::Mining(Mining::SubmitSharesExtended(m))
-                        .try_into()
-                        .map_err(TproxyError::ParserError)?;
-                    let frame: EitherFrame = frame.into();
+                    let message = Mining::SubmitSharesExtended(m);
                     self.channel_state
                         .upstream_sender
-                        .send(frame)
+                        .send(message)
                         .await
                         .map_err(|e| {
                             error!("Error while sending message to upstream: {e:?}");
@@ -611,12 +569,11 @@ impl ChannelManager {
                     m.channel_id
                 );
                 // Forward UpdateChannel message to upstream
-                let frame = StdFrame::try_from(Message::Mining(Mining::UpdateChannel(m)))
-                    .map_err(TproxyError::ParserError)?;
+                let message = Mining::UpdateChannel(m);
 
                 self.channel_state
                     .upstream_sender
-                    .send(frame.into())
+                    .send(message)
                     .await
                     .map_err(|e| {
                         error!("Failed to send UpdateChannel message to upstream: {:?}", e);
@@ -625,12 +582,11 @@ impl ChannelManager {
             }
             Mining::CloseChannel(m) => {
                 debug!("Received CloseChannel from SV1Server: {m}");
-                let frame = StdFrame::try_from(Message::Mining(Mining::CloseChannel(m)))
-                    .map_err(TproxyError::ParserError)?;
+                let message = Mining::CloseChannel(m);
 
                 self.channel_state
                     .upstream_sender
-                    .send(frame.into())
+                    .send(message)
                     .await
                     .map_err(|e| {
                         error!("Failed to send UpdateChannel message to upstream: {:?}", e);

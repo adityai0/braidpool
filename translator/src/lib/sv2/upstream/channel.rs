@@ -1,28 +1,27 @@
 use async_channel::{Receiver, Sender};
-use stratum_apps::stratum_core::{codec_sv2::StandardEitherFrame, parsers_sv2::AnyMessage};
+use stratum_apps::stratum_core::parsers_sv2::Mining;
 use tracing::debug;
 
-pub type Message = AnyMessage<'static>;
-pub type EitherFrame = StandardEitherFrame<Message>;
+use crate::utils::SV2Frame;
 
 #[derive(Debug, Clone)]
 pub struct UpstreamChannelState {
     /// Receiver for the SV2 Upstream role
-    pub upstream_receiver: Receiver<EitherFrame>,
+    pub upstream_receiver: Receiver<SV2Frame>,
     /// Sender for the SV2 Upstream role
-    pub upstream_sender: Sender<EitherFrame>,
+    pub upstream_sender: Sender<SV2Frame>,
     /// Sender for the ChannelManager thread
-    pub channel_manager_sender: Sender<EitherFrame>,
+    pub channel_manager_sender: Sender<Mining<'static>>,
     /// Receiver for the ChannelManager thread
-    pub channel_manager_receiver: Receiver<EitherFrame>,
+    pub channel_manager_receiver: Receiver<Mining<'static>>,
 }
 
 impl UpstreamChannelState {
     pub fn new(
-        channel_manager_sender: Sender<EitherFrame>,
-        channel_manager_receiver: Receiver<EitherFrame>,
-        upstream_receiver: Receiver<EitherFrame>,
-        upstream_sender: Sender<EitherFrame>,
+        channel_manager_sender: Sender<Mining<'static>>,
+        channel_manager_receiver: Receiver<Mining<'static>>,
+        upstream_receiver: Receiver<SV2Frame>,
+        upstream_sender: Sender<SV2Frame>,
     ) -> Self {
         Self {
             channel_manager_sender,

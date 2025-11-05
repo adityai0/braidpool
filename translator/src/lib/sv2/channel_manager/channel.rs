@@ -1,20 +1,19 @@
-use crate::sv2::upstream::upstream::EitherFrame;
 use async_channel::{Receiver, Sender};
 use stratum_apps::stratum_core::parsers_sv2::Mining;
 use tracing::debug;
 
 #[derive(Clone, Debug)]
 pub struct ChannelState {
-    pub upstream_sender: Sender<EitherFrame>,
-    pub upstream_receiver: Receiver<EitherFrame>,
+    pub upstream_sender: Sender<Mining<'static>>,
+    pub upstream_receiver: Receiver<Mining<'static>>,
     pub sv1_server_sender: Sender<Mining<'static>>,
     pub sv1_server_receiver: Receiver<Mining<'static>>,
 }
 
 impl ChannelState {
     pub fn new(
-        upstream_sender: Sender<EitherFrame>,
-        upstream_receiver: Receiver<EitherFrame>,
+        upstream_sender: Sender<Mining<'static>>,
+        upstream_receiver: Receiver<Mining<'static>>,
         sv1_server_sender: Sender<Mining<'static>>,
         sv1_server_receiver: Receiver<Mining<'static>>,
     ) -> Self {
