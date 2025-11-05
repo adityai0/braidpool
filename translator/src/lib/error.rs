@@ -11,8 +11,8 @@
 use ext_config::ConfigError;
 use std::{fmt, sync::PoisonError};
 use stratum_apps::stratum_core::{
-    binary_sv2, framing_sv2, handlers_sv2::HandlerErrorType, noise_sv2,
-    parsers_sv2::ParserError as RolesParserError, sv1_api::server_to_client::SetDifficulty,
+    binary_sv2, framing_sv2, handlers_sv2::HandlerErrorType, noise_sv2, parsers_sv2::ParserError,
+    sv1_api::server_to_client::SetDifficulty,
 };
 use tokio::sync::broadcast;
 
@@ -23,7 +23,7 @@ pub enum TproxyError {
     /// Error from the network helpers library
     NetworkHelpersError(stratum_apps::network_helpers::Error),
     /// Error from roles logic parser library
-    ParserError(RolesParserError),
+    ParserError(ParserError),
     /// Errors on bad CLI argument input.
     BadCliArgs,
     /// Errors on bad `serde_json` serialize/deserialize.
@@ -202,8 +202,14 @@ impl From<stratum_apps::stratum_core::stratum_translation::error::StratumTransla
     }
 }
 
+impl From<ParserError> for TproxyError {
+    fn from(value: ParserError) -> Self {
+        TproxyError::ParserError(value)
+    }
+}
+
 impl HandlerErrorType for TproxyError {
-    fn parse_error(error: RolesParserError) -> Self {
+    fn parse_error(error: ParserError) -> Self {
         TproxyError::ParserError(error)
     }
 
