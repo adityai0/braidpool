@@ -17,7 +17,10 @@ use stratum_apps::{
         template_distribution_sv2::CoinbaseOutputConstraints,
     },
     task_manager::TaskManager,
-    utils::types::{Message, SV2Frame, StdFrame},
+    utils::{
+        protocol_message_type::{protocol_message_type, MessageType},
+        types::{Message, SV2Frame, StdFrame},
+    },
 };
 use tokio::{net::TcpStream, sync::broadcast};
 use tracing::{debug, error, info, warn};
@@ -25,10 +28,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     error::{PoolError, PoolResult},
     status::{handle_error, Status, StatusSender},
-    utils::{
-        get_setup_connection_message_tp, protocol_message_type, spawn_io_tasks, MessageType,
-        ShutdownMessage,
-    },
+    utils::{get_setup_connection_message_tp, spawn_io_tasks, ShutdownMessage},
 };
 
 #[derive(Clone)]
