@@ -403,11 +403,15 @@ impl Sv1Server {
     ) -> Result<(), TproxyError> {
         info!("SV1 Server: Opening extended mining channel for downstream {} after receiving first message", downstream_id);
 
-        let downstreams = self
-            .sv1_server_data
-            .super_safe_lock(|v| v.downstreams.clone());
+        let (request_id, downstreams) = self.sv1_server_data.super_safe_lock(|v| {
+            let request_id = v.request_id_factory.fetch_add(1, Ordering::Relaxed);
+            v.request_id_to_downstream_id
+                .insert(request_id, downstream_id);
+            (request_id, v.downstreams.clone())
+        });
         if let Some(downstream) = Self::get_downstream(downstream_id, downstreams) {
-            self.open_extended_mining_channel(downstream).await?;
+            self.open_extended_mining_channel(request_id, downstream)
+                .await?;
         } else {
             error!(
                 "Downstream {} not found when trying to open channel",
@@ -453,10 +457,13 @@ impl Sv1Server {
                     "Received OpenExtendedMiningChannelSuccess for channel id: {}",
                     m.channel_id
                 );
-                let downstream_id = m.request_id as DownstreamId;
-                let downstreams = self
-                    .sv1_server_data
-                    .super_safe_lock(|v| v.downstreams.clone());
+                let (downstream_id, downstreams) = self.sv1_server_data.super_safe_lock(|v| {
+                    let downstream_id = v
+                        .request_id_to_downstream_id
+                        .remove(&m.request_id)
+                        .expect("Downstream should exist for each request");
+                    (downstream_id, v.downstreams.clone())
+                });
                 if let Some(downstream) = Self::get_downstream(downstream_id, downstreams) {
                     let initial_target =
                         Target::from_le_bytes(m.target.inner_as_ref().try_into().unwrap());
@@ -626,6 +633,7 @@ impl Sv1Server {
     /// * `Err(TproxyError)` - Error setting up the channel
     pub async fn open_extended_mining_channel(
         &self,
+        request_id: u32,
         downstream: Arc<Downstream>,
     ) -> Result<(), TproxyError> {
         let config = &self.config.downstream_difficulty_config;
@@ -658,9 +666,7 @@ impl Sv1Server {
             .safe_lock(|d| d.user_identity = user_identity.clone())?;
 
         if let Ok(open_channel_msg) = build_sv2_open_extended_mining_channel(
-            downstream
-                .downstream_data
-                .super_safe_lock(|d| d.downstream_id) as RequestId,
+            request_id,
             user_identity.clone(),
             hashrate as Hashrate,
             max_target,
