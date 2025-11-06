@@ -22,6 +22,7 @@ use stratum_apps::{
         noise_sv2::Error,
         parsers_sv2::{AnyMessage, Mining},
     },
+    task_manager::TaskManager,
     utils::types::{ChannelId, DownstreamId, Message, SV2Frame, StdFrame},
 };
 use tokio::sync::broadcast;
@@ -30,7 +31,6 @@ use tracing::{debug, error, warn};
 use crate::{
     error::{PoolError, PoolResult},
     status::{handle_error, Status, StatusSender},
-    task_manager::TaskManager,
     utils::{protocol_message_type, spawn_io_tasks, MessageType, ShutdownMessage},
 };
 

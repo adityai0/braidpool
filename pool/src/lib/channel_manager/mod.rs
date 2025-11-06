@@ -29,6 +29,7 @@ use stratum_apps::{
         parsers_sv2::{Mining, TemplateDistribution},
         template_distribution_sv2::{NewTemplate, SetNewPrevHash},
     },
+    task_manager::TaskManager,
     utils::types::{ChannelId, DownstreamId, Message, SharesPerMinute},
 };
 use tokio::{net::TcpListener, select, sync::broadcast};
@@ -39,7 +40,6 @@ use crate::{
     downstream::Downstream,
     error::PoolResult,
     status::{handle_error, Status, StatusSender},
-    task_manager::TaskManager,
     utils::{ShutdownMessage, VardiffKey},
 };
 

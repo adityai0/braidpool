@@ -37,6 +37,7 @@ use stratum_apps::{
             MESSAGE_TYPE_SUBMIT_SOLUTION,
         },
     },
+    task_manager::TaskManager,
     utils::types::{ChannelId, DownstreamId, Message, SV2Frame},
 };
 use tokio::sync::broadcast;
@@ -45,7 +46,6 @@ use tracing::{error, trace, warn, Instrument};
 use crate::{
     error::PoolResult,
     status::{StatusSender, StatusType},
-    task_manager::TaskManager,
 };
 
 /// Represents a message that can trigger shutdown of various system components.

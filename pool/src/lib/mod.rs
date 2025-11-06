@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use async_channel::unbounded;
-use stratum_apps::stratum_core::{
-    bitcoin::consensus::Encodable, parsers_sv2::TemplateDistribution,
+use stratum_apps::{
+    stratum_core::{bitcoin::consensus::Encodable, parsers_sv2::TemplateDistribution},
+    task_manager::TaskManager,
 };
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
@@ -12,7 +13,6 @@ use crate::{
     config::PoolConfig,
     error::PoolResult,
     status::{State, Status},
-    task_manager::TaskManager,
     template_receiver::TemplateReceiver,
     utils::ShutdownMessage,
 };
@@ -22,7 +22,6 @@ pub mod config;
 pub mod downstream;
 pub mod error;
 pub mod status;
-pub mod task_manager;
 pub mod template_receiver;
 pub mod utils;
 
