@@ -6,7 +6,6 @@ use crate::{
         downstream::{channel::DownstreamChannelState, data::DownstreamData},
         sv1_server::data::Sv1ServerData,
     },
-    task_manager::TaskManager,
     utils::ShutdownMessage,
 };
 use async_channel::{Receiver, Sender};
@@ -20,6 +19,7 @@ use stratum_apps::{
             server_to_client, IsServer,
         },
     },
+    task_manager::TaskManager,
     utils::types::{ChannelId, DownstreamId, Hashrate},
 };
 use tokio::sync::{broadcast, mpsc};

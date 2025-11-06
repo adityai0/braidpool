@@ -13,6 +13,7 @@
 #![allow(clippy::module_inception)]
 use async_channel::unbounded;
 use std::{net::SocketAddr, sync::Arc};
+use stratum_apps::task_manager::TaskManager;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -24,7 +25,6 @@ use crate::{
     status::{State, Status},
     sv1::sv1_server::sv1_server::Sv1Server,
     sv2::{channel_manager::ChannelMode, ChannelManager, Upstream},
-    task_manager::TaskManager,
     utils::ShutdownMessage,
 };
 
@@ -33,7 +33,6 @@ pub mod error;
 pub mod status;
 pub mod sv1;
 pub mod sv2;
-mod task_manager;
 pub mod utils;
 
 /// The main struct that manages the SV1/SV2 translator.

@@ -59,7 +59,7 @@ use stratum_apps::stratum_core::{
 use tokio::sync::broadcast;
 use tracing::{debug, error, trace, warn, Instrument};
 
-use crate::{error::TproxyError, task_manager::TaskManager};
+use crate::error::TproxyError;
 
 /// Validates an SV1 share against the target difficulty and job parameters.
 ///

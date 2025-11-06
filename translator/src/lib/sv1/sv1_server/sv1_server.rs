@@ -9,7 +9,6 @@ use crate::{
             difficulty_manager::DifficultyManager,
         },
     },
-    task_manager::TaskManager,
     utils::ShutdownMessage,
 };
 use async_channel::{Receiver, Sender};
@@ -39,6 +38,7 @@ use stratum_apps::{
         },
         sv1_api::IsServer,
     },
+    task_manager::TaskManager,
     utils::types::{DownstreamId, RequestId, SharesPerMinute},
 };
 use tokio::{

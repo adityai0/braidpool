@@ -5,7 +5,6 @@ use crate::{
         channel::ChannelState,
         data::{ChannelManagerData, ChannelMode},
     },
-    task_manager::TaskManager,
     utils::ShutdownMessage,
 };
 use async_channel::{Receiver, Sender};
@@ -17,6 +16,7 @@ use stratum_apps::{
         handlers_sv2::HandleMiningMessagesFromServerAsync,
         mining_sv2::OpenExtendedMiningChannelSuccess, parsers_sv2::Mining,
     },
+    task_manager::TaskManager,
     utils::types::DownstreamId,
 };
 use tokio::sync::{broadcast, mpsc};
