@@ -8,7 +8,7 @@ use stratum_apps::{
         framing_sv2::framing::Frame,
     },
     task_manager::TaskManager,
-    utils::types::{ChannelId, DownstreamId, Message, SV2Frame},
+    utils::types::{DownstreamId, Message, SV2Frame},
 };
 use tokio::sync::broadcast;
 use tracing::{error, trace, warn, Instrument};
@@ -209,20 +209,5 @@ pub fn spawn_io_tasks(
             "writer_task",
             spawned_at = %format!("{}:{}", caller.file(), caller.line())
         )));
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Hash)]
-pub struct VardiffKey {
-    pub downstream_id: DownstreamId,
-    pub channel_id: ChannelId,
-}
-
-impl From<(DownstreamId, ChannelId)> for VardiffKey {
-    fn from(value: (DownstreamId, ChannelId)) -> Self {
-        VardiffKey {
-            downstream_id: value.0,
-            channel_id: value.1,
-        }
     }
 }

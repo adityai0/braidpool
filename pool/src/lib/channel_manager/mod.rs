@@ -30,7 +30,7 @@ use stratum_apps::{
         template_distribution_sv2::{NewTemplate, SetNewPrevHash},
     },
     task_manager::TaskManager,
-    utils::types::{ChannelId, DownstreamId, Message, SharesPerMinute},
+    utils::types::{ChannelId, DownstreamId, Message, SharesPerMinute, VardiffKey},
 };
 use tokio::{net::TcpListener, select, sync::broadcast};
 use tracing::{debug, error, info, warn};
@@ -40,7 +40,7 @@ use crate::{
     downstream::Downstream,
     error::PoolResult,
     status::{handle_error, Status, StatusSender},
-    utils::{ShutdownMessage, VardiffKey},
+    utils::ShutdownMessage,
 };
 
 mod mining_message_handler;
