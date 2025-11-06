@@ -21,6 +21,7 @@ pub mod channel_manager;
 pub mod config;
 pub mod downstream;
 pub mod error;
+mod io_task;
 pub mod status;
 pub mod template_receiver;
 pub mod utils;

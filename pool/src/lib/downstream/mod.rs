@@ -33,8 +33,9 @@ use tracing::{debug, error, warn};
 
 use crate::{
     error::{PoolError, PoolResult},
+    io_task::spawn_io_tasks,
     status::{handle_error, Status, StatusSender},
-    utils::{spawn_io_tasks, ShutdownMessage},
+    utils::ShutdownMessage,
 };
 
 mod common_message_handler;
