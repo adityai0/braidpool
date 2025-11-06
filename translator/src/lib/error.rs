@@ -66,6 +66,8 @@ pub enum TproxyError {
     General(String),
     /// Error bubbling up from translator-core library
     TranslatorCore(stratum_apps::stratum_core::stratum_translation::error::StratumTranslationError),
+    /// Downstream mapped to request id not found
+    DownstreamNotFound(u32),
 }
 
 impl std::error::Error for TproxyError {}
@@ -109,6 +111,10 @@ impl fmt::Display for TproxyError {
             TranslatorCore(ref e) => write!(f, "Translator core error: {e:?}"),
             NetworkHelpersError(ref e) => write!(f, "Network helpers error: {e:?}"),
             ParserError(ref e) => write!(f, "Roles logic parser error: {e:?}"),
+            DownstreamNotFound(request_id) => write!(
+                f,
+                "Downstream id associated to request id: {request_id} not found"
+            ),
         }
     }
 }

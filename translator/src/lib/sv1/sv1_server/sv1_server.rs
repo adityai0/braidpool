@@ -458,12 +458,12 @@ impl Sv1Server {
                     m.channel_id
                 );
                 let (downstream_id, downstreams) = self.sv1_server_data.super_safe_lock(|v| {
-                    let downstream_id = v
-                        .request_id_to_downstream_id
-                        .remove(&m.request_id)
-                        .expect("Downstream should exist for each request");
+                    let downstream_id = v.request_id_to_downstream_id.remove(&m.request_id);
                     (downstream_id, v.downstreams.clone())
                 });
+                let Some(downstream_id) = downstream_id else {
+                    return Err(TproxyError::DownstreamNotFound(m.request_id));
+                };
                 if let Some(downstream) = Self::get_downstream(downstream_id, downstreams) {
                     let initial_target =
                         Target::from_le_bytes(m.target.inner_as_ref().try_into().unwrap());
