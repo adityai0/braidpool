@@ -1,8 +1,9 @@
 use crate::{
     error::TproxyError,
+    io_task::spawn_io_tasks,
     status::{handle_error, Status, StatusSender},
     sv2::upstream::channel::UpstreamChannelState,
-    utils::{spawn_io_tasks, ShutdownMessage},
+    utils::ShutdownMessage,
 };
 use async_channel::{unbounded, Receiver, Sender};
 use std::{net::SocketAddr, sync::Arc};

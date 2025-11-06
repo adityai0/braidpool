@@ -30,6 +30,7 @@ use crate::{
 
 pub mod config;
 pub mod error;
+mod io_task;
 pub mod status;
 pub mod sv1;
 pub mod sv2;
