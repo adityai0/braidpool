@@ -19,3 +19,18 @@ pub type Message = AnyMessage<'static>;
 pub type StdFrame = StandardSv2Frame<Message>;
 pub type EitherFrame = StandardEitherFrame<Message>;
 pub type SV2Frame = Sv2Frame<Message, buffer_sv2::Slice>;
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub struct VardiffKey {
+    pub downstream_id: DownstreamId,
+    pub channel_id: ChannelId,
+}
+
+impl From<(DownstreamId, ChannelId)> for VardiffKey {
+    fn from(value: (DownstreamId, ChannelId)) -> Self {
+        VardiffKey {
+            downstream_id: value.0,
+            channel_id: value.1,
+        }
+    }
+}
