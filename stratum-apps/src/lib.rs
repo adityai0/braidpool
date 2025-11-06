@@ -64,3 +64,7 @@ pub mod utils;
 
 // Task orchestrator used in SRI apps.
 pub mod task_manager;
+/// Template provider type
+///
+/// Provides the type of template provider that will be used.
+pub mod tp_type;
