@@ -11,6 +11,7 @@ use stratum_apps::{
         stratum_translation::sv2_to_sv1::build_sv1_set_difficulty_from_sv2_target,
         sv1_api::json_rpc,
     },
+    utils::types::{ChannelId, DownstreamId, Hashrate, SharesPerMinute},
 };
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, trace, warn};
@@ -23,7 +24,7 @@ use tracing::{debug, error, info, trace, warn};
 /// - Handles both aggregated and non-aggregated channel modes
 /// - Coordinates with the channel manager for target updates
 pub struct DifficultyManager {
-    shares_per_minute: f32,
+    shares_per_minute: SharesPerMinute,
     is_aggregated: bool,
 }
 
@@ -33,7 +34,7 @@ impl DifficultyManager {
     /// # Arguments
     /// * `shares_per_minute` - Target shares per minute for difficulty adjustment
     /// * `is_aggregated` - Whether channels are operating in aggregated mode
-    pub fn new(shares_per_minute: f32, is_aggregated: bool) -> Self {
+    pub fn new(shares_per_minute: SharesPerMinute, is_aggregated: bool) -> Self {
         Self {
             shares_per_minute,
             is_aggregated,
@@ -47,8 +48,12 @@ impl DifficultyManager {
     pub async fn spawn_vardiff_loop(
         sv1_server_data: Arc<Mutex<Sv1ServerData>>,
         channel_manager_sender: Sender<Mining<'static>>,
-        sv1_server_to_downstream_sender: broadcast::Sender<(u32, Option<u32>, json_rpc::Message)>,
-        shares_per_minute: f32,
+        sv1_server_to_downstream_sender: broadcast::Sender<(
+            ChannelId,
+            Option<DownstreamId>,
+            json_rpc::Message,
+        )>,
+        shares_per_minute: SharesPerMinute,
         is_aggregated: bool,
         enable_vardiff: bool,
     ) {
@@ -94,7 +99,11 @@ impl DifficultyManager {
         &self,
         sv1_server_data: &Arc<Mutex<Sv1ServerData>>,
         channel_manager_sender: &Sender<Mining<'static>>,
-        sv1_server_to_downstream_sender: &broadcast::Sender<(u32, Option<u32>, json_rpc::Message)>,
+        sv1_server_to_downstream_sender: &broadcast::Sender<(
+            ChannelId,
+            Option<DownstreamId>,
+            json_rpc::Message,
+        )>,
     ) {
         let vardiff_map = sv1_server_data.super_safe_lock(|v| v.vardiff.clone());
         let mut immediate_updates = Vec::new();
@@ -237,8 +246,10 @@ impl DifficultyManager {
     /// - Non-aggregated: Send individual UpdateChannel for each downstream
     async fn send_update_channel_messages(
         &self,
-        all_updates: Vec<(u32, u32, Target, f32)>, /* (downstream_id, channel_id, new_target,
-                                                    * new_hashrate) */
+        all_updates: Vec<(DownstreamId, ChannelId, Target, Hashrate)>, /* (downstream_id,
+                                                                        * channel_id,
+                                                                        * new_target,
+                                                                        * new_hashrate) */
         sv1_server_data: &Arc<Mutex<Sv1ServerData>>,
         channel_manager_sender: &Sender<Mining<'static>>,
     ) {
@@ -261,7 +272,7 @@ impl DifficultyManager {
                 });
 
                 // Get total hashrate of ALL downstreams, not just the ones with updates
-                let total_hashrate: f32 = sv1_server_data.super_safe_lock(|data| {
+                let total_hashrate: Hashrate = sv1_server_data.super_safe_lock(|data| {
                     data.downstreams
                         .values()
                         .map(|downstream| {
@@ -331,7 +342,11 @@ impl DifficultyManager {
         set_target: SetTarget<'_>,
         sv1_server_data: &Arc<Mutex<Sv1ServerData>>,
         channel_manager_sender: &Sender<Mining<'static>>,
-        sv1_server_to_downstream_sender: &broadcast::Sender<(u32, Option<u32>, json_rpc::Message)>,
+        sv1_server_to_downstream_sender: &broadcast::Sender<(
+            ChannelId,
+            Option<DownstreamId>,
+            json_rpc::Message,
+        )>,
         is_aggregated: bool,
     ) {
         let new_upstream_target =
@@ -366,15 +381,19 @@ impl DifficultyManager {
     /// Updates all downstreams and processes all pending set_difficulty messages.
     async fn handle_aggregated_set_target(
         new_upstream_target: Target,
-        channel_id: u32,
+        channel_id: ChannelId,
         sv1_server_data: &Arc<Mutex<Sv1ServerData>>,
         _channel_manager_sender: &Sender<Mining<'static>>,
-        sv1_server_to_downstream_sender: &broadcast::Sender<(u32, Option<u32>, json_rpc::Message)>,
+        sv1_server_to_downstream_sender: &broadcast::Sender<(
+            ChannelId,
+            Option<DownstreamId>,
+            json_rpc::Message,
+        )>,
     ) {
         debug!("Aggregated mode: Updating upstream target for all downstreams");
 
         // Update upstream target for ALL downstreams
-        let downstream_ids: Vec<u32> =
+        let downstream_ids: Vec<DownstreamId> =
             sv1_server_data.super_safe_lock(|data| data.downstreams.keys().cloned().collect());
 
         for downstream_id in downstream_ids {
@@ -405,11 +424,15 @@ impl DifficultyManager {
     /// Handles SetTarget in non-aggregated mode.
     /// Updates the specific downstream and processes its pending set_difficulty message.
     async fn handle_non_aggregated_set_target(
-        channel_id: u32,
+        channel_id: ChannelId,
         new_upstream_target: Target,
         sv1_server_data: &Arc<Mutex<Sv1ServerData>>,
         _channel_manager_sender: &Sender<Mining<'static>>,
-        sv1_server_to_downstream_sender: &broadcast::Sender<(u32, Option<u32>, json_rpc::Message)>,
+        sv1_server_to_downstream_sender: &broadcast::Sender<(
+            ChannelId,
+            Option<DownstreamId>,
+            json_rpc::Message,
+        )>,
     ) {
         debug!(
             "Non-aggregated mode: Processing SetTarget for channel {}",
@@ -464,8 +487,8 @@ impl DifficultyManager {
     /// Logs a warning if the upstream target is higher than any requested target.
     fn get_pending_difficulty_updates(
         new_upstream_target: Target,
-        downstream_id: Option<u32>,
-        channel_id: u32,
+        downstream_id: Option<DownstreamId>,
+        channel_id: ChannelId,
         sv1_server_data: &Arc<Mutex<Sv1ServerData>>,
     ) -> Vec<PendingTargetUpdate> {
         let mut applicable_updates = Vec::new();
@@ -503,7 +526,11 @@ impl DifficultyManager {
     async fn send_pending_set_difficulty_messages_to_downstream(
         difficulty_updates: Vec<PendingTargetUpdate>,
         sv1_server_data: &Arc<Mutex<Sv1ServerData>>,
-        sv1_server_to_downstream_sender: &broadcast::Sender<(u32, Option<u32>, json_rpc::Message)>,
+        sv1_server_to_downstream_sender: &broadcast::Sender<(
+            ChannelId,
+            Option<DownstreamId>,
+            json_rpc::Message,
+        )>,
     ) {
         for pending_update in &difficulty_updates {
             // Get channel_id for this downstream
@@ -556,7 +583,7 @@ impl DifficultyManager {
                 // upstream extended channel id)
                 let channel_id = 0;
 
-                let total_hashrate: f32 = data
+                let total_hashrate: Hashrate = data
                     .downstreams
                     .values()
                     .map(|downstream| {

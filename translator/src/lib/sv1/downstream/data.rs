@@ -8,6 +8,7 @@ use stratum_apps::{
         bitcoin::Target,
         sv1_api::{json_rpc, utils::HexU32Be},
     },
+    utils::types::{ChannelId, DownstreamId, Hashrate},
 };
 use tracing::debug;
 
@@ -16,8 +17,8 @@ use crate::sv1::sv1_server::data::Sv1ServerData;
 
 #[derive(Debug)]
 pub struct DownstreamData {
-    pub channel_id: Option<u32>,
-    pub downstream_id: u32,
+    pub channel_id: Option<ChannelId>,
+    pub downstream_id: DownstreamId,
     pub extranonce1: Vec<u8>,
     pub extranonce2_len: usize,
     pub version_rolling_mask: Option<HexU32Be>,
@@ -26,11 +27,11 @@ pub struct DownstreamData {
     pub authorized_worker_name: String,
     pub user_identity: String,
     pub target: Target,
-    pub hashrate: Option<f32>,
+    pub hashrate: Option<Hashrate>,
     pub cached_set_difficulty: Option<json_rpc::Message>,
     pub cached_notify: Option<json_rpc::Message>,
     pub pending_target: Option<Target>,
-    pub pending_hashrate: Option<f32>,
+    pub pending_hashrate: Option<Hashrate>,
     // Flag to track if SV1 handshake is complete (subscribe + authorize)
     pub sv1_handshake_complete: AtomicBool,
     // Queue of Sv1 handshake messages received while waiting for SV2 channel to open
@@ -48,9 +49,9 @@ pub struct DownstreamData {
 
 impl DownstreamData {
     pub fn new(
-        downstream_id: u32,
+        downstream_id: DownstreamId,
         target: Target,
-        hashrate: Option<f32>,
+        hashrate: Option<Hashrate>,
         sv1_server_data: Arc<Mutex<Sv1ServerData>>,
     ) -> Self {
         DownstreamData {
@@ -83,7 +84,7 @@ impl DownstreamData {
         debug!("Downstream {}: Set pending target", self.downstream_id);
     }
 
-    pub fn set_pending_hashrate(&mut self, new_hashrate: Option<f32>) {
+    pub fn set_pending_hashrate(&mut self, new_hashrate: Option<Hashrate>) {
         self.pending_hashrate = new_hashrate;
         debug!("Downstream {}: Set pending hashrate", self.downstream_id);
     }

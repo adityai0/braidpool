@@ -6,6 +6,7 @@
 //! Each task wraps its report in a [`Status`] and sends it over an async channel,
 //! tagged with a [`Sender`] variant that identifies the source subsystem.
 
+use stratum_apps::utils::types::DownstreamId;
 use tracing::{debug, error, warn};
 
 use crate::error::TproxyError;
@@ -18,7 +19,7 @@ use crate::error::TproxyError;
 pub enum StatusSender {
     /// A specific downstream connection.
     Downstream {
-        downstream_id: u32,
+        downstream_id: DownstreamId,
         tx: async_channel::Sender<Status>,
     },
     /// The SV1 server listener.
@@ -61,7 +62,7 @@ impl StatusSender {
 pub enum State {
     /// Downstream task exited or encountered an unrecoverable error.
     DownstreamShutdown {
-        downstream_id: u32,
+        downstream_id: DownstreamId,
         reason: TproxyError,
     },
     /// SV1 server listener exited unexpectedly.

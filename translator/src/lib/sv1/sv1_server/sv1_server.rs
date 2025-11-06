@@ -39,6 +39,7 @@ use stratum_apps::{
         },
         sv1_api::IsServer,
     },
+    utils::types::{DownstreamId, RequestId, SharesPerMinute},
 };
 use tokio::{
     net::TcpListener,
@@ -59,7 +60,7 @@ use tracing::{debug, error, info, warn};
 pub struct Sv1Server {
     sv1_server_channel_state: Sv1ServerChannelState,
     sv1_server_data: Arc<Mutex<Sv1ServerData>>,
-    shares_per_minute: f32,
+    shares_per_minute: SharesPerMinute,
     listener_addr: SocketAddr,
     config: TranslatorConfig,
     clean_job: AtomicBool,
@@ -398,7 +399,7 @@ impl Sv1Server {
     /// Handles channel opening requests from downstream when they send their first message.
     async fn handle_open_channel_request(
         self: &Arc<Self>,
-        downstream_id: u32,
+        downstream_id: DownstreamId,
     ) -> Result<(), TproxyError> {
         info!("SV1 Server: Opening extended mining channel for downstream {} after receiving first message", downstream_id);
 
@@ -452,7 +453,7 @@ impl Sv1Server {
                     "Received OpenExtendedMiningChannelSuccess for channel id: {}",
                     m.channel_id
                 );
-                let downstream_id = m.request_id;
+                let downstream_id = m.request_id as DownstreamId;
                 let downstreams = self
                     .sv1_server_data
                     .super_safe_lock(|v| v.downstreams.clone());
@@ -659,9 +660,9 @@ impl Sv1Server {
         if let Ok(open_channel_msg) = build_sv2_open_extended_mining_channel(
             downstream
                 .downstream_data
-                .super_safe_lock(|d| d.downstream_id),
+                .super_safe_lock(|d| d.downstream_id) as RequestId,
             user_identity.clone(),
-            hashrate as f32,
+            hashrate as SharesPerMinute,
             max_target,
             min_extranonce_size,
         ) {
@@ -687,8 +688,8 @@ impl Sv1Server {
     /// * `Some(Downstream)` - If a downstream with the given ID exists
     /// * `None` - If no downstream with the given ID is found
     pub fn get_downstream(
-        downstream_id: u32,
-        downstream: HashMap<u32, Arc<Downstream>>,
+        downstream_id: DownstreamId,
+        downstream: HashMap<DownstreamId, Arc<Downstream>>,
     ) -> Option<Arc<Downstream>> {
         downstream.get(&downstream_id).cloned()
     }
@@ -700,7 +701,7 @@ impl Sv1Server {
     ///
     /// # Returns
     /// The downstream ID as a u32
-    pub fn get_downstream_id(downstream: Downstream) -> u32 {
+    pub fn get_downstream_id(downstream: Downstream) -> DownstreamId {
         downstream
             .downstream_data
             .super_safe_lock(|s| s.downstream_id)

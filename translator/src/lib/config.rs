@@ -13,7 +13,10 @@
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
-use stratum_apps::key_utils::Secp256k1PublicKey;
+use stratum_apps::{
+    key_utils::Secp256k1PublicKey,
+    utils::types::{Hashrate, SharesPerMinute},
+};
 
 /// Configuration for the Translator.
 #[derive(Debug, Deserialize, Clone)]
@@ -106,9 +109,9 @@ impl TranslatorConfig {
 #[derive(Debug, Deserialize, Clone)]
 pub struct DownstreamDifficultyConfig {
     /// The minimum hashrate expected from an individual miner on the downstream connection.
-    pub min_individual_miner_hashrate: f32,
+    pub min_individual_miner_hashrate: Hashrate,
     /// The target number of shares per minute for difficulty adjustment.
-    pub shares_per_minute: f32,
+    pub shares_per_minute: SharesPerMinute,
     /// Whether to enable variable difficulty adjustment mechanism.
     /// If false, difficulty will be managed by upstream (useful with JDC).
     pub enable_vardiff: bool,
@@ -117,8 +120,8 @@ pub struct DownstreamDifficultyConfig {
 impl DownstreamDifficultyConfig {
     /// Creates a new `DownstreamDifficultyConfig` instance.
     pub fn new(
-        min_individual_miner_hashrate: f32,
-        shares_per_minute: f32,
+        min_individual_miner_hashrate: Hashrate,
+        shares_per_minute: SharesPerMinute,
         enable_vardiff: bool,
     ) -> Self {
         Self {

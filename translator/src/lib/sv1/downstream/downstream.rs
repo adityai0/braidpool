@@ -20,6 +20,7 @@ use stratum_apps::{
             server_to_client, IsServer,
         },
     },
+    utils::types::{ChannelId, DownstreamId, Hashrate},
 };
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error, info, warn};
@@ -47,13 +48,17 @@ impl Downstream {
     /// Creates a new downstream connection instance.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        downstream_id: u32,
+        downstream_id: DownstreamId,
         downstream_sv1_sender: Sender<json_rpc::Message>,
         downstream_sv1_receiver: Receiver<json_rpc::Message>,
         sv1_server_sender: Sender<DownstreamMessages>,
-        sv1_server_receiver: broadcast::Receiver<(u32, Option<u32>, json_rpc::Message)>,
+        sv1_server_receiver: broadcast::Receiver<(
+            ChannelId,
+            Option<DownstreamId>,
+            json_rpc::Message,
+        )>,
         target: Target,
-        hashrate: Option<f32>,
+        hashrate: Option<Hashrate>,
         sv1_server_data: Arc<Mutex<Sv1ServerData>>,
     ) -> Self {
         let downstream_data = Arc::new(Mutex::new(DownstreamData::new(
@@ -178,7 +183,11 @@ impl Downstream {
     ///   then notify)
     pub async fn handle_sv1_server_message(
         self: Arc<Self>,
-        sv1_server_receiver: &mut broadcast::Receiver<(u32, Option<u32>, json_rpc::Message)>,
+        sv1_server_receiver: &mut broadcast::Receiver<(
+            ChannelId,
+            Option<DownstreamId>,
+            json_rpc::Message,
+        )>,
     ) -> Result<(), TproxyError> {
         match sv1_server_receiver.recv().await {
             Ok((channel_id, downstream_id, message)) => {

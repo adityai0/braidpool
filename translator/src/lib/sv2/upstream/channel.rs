@@ -1,8 +1,6 @@
 use async_channel::{Receiver, Sender};
-use stratum_apps::stratum_core::parsers_sv2::Mining;
+use stratum_apps::{stratum_core::parsers_sv2::Mining, utils::types::SV2Frame};
 use tracing::debug;
-
-use crate::utils::SV2Frame;
 
 #[derive(Debug, Clone)]
 pub struct UpstreamChannelState {

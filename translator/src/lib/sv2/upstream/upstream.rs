@@ -3,10 +3,7 @@ use crate::{
     status::{handle_error, Status, StatusSender},
     sv2::upstream::channel::UpstreamChannelState,
     task_manager::TaskManager,
-    utils::{
-        protocol_message_type, spawn_io_tasks, Message, MessageType, SV2Frame, ShutdownMessage,
-        StdFrame,
-    },
+    utils::{protocol_message_type, spawn_io_tasks, MessageType, ShutdownMessage},
 };
 use async_channel::{unbounded, Receiver, Sender};
 use std::{net::SocketAddr, sync::Arc};
@@ -21,6 +18,7 @@ use stratum_apps::{
         noise_sv2::Initiator,
         parsers_sv2::{AnyMessage, Mining},
     },
+    utils::types::{Message, SV2Frame, StdFrame},
 };
 use tokio::{
     net::TcpStream,

@@ -7,6 +7,7 @@ use stratum_apps::{
     stratum_core::{
         channels_sv2::client::extended::ExtendedChannel, mining_sv2::ExtendedExtranonce,
     },
+    utils::types::{ChannelId, DownstreamId, Hashrate},
 };
 
 /// Defines the operational mode for channel management.
@@ -36,9 +37,9 @@ pub enum ChannelMode {
 pub struct ChannelManagerData {
     /// Store pending channel info by downstream_id: (user_identity, hashrate,
     /// downstream_extranonce_len)
-    pub pending_channels: HashMap<u32, (String, f32, usize)>,
+    pub pending_channels: HashMap<DownstreamId, (String, Hashrate, usize)>,
     /// Map of active extended channels by channel ID
-    pub extended_channels: HashMap<u32, Arc<RwLock<ExtendedChannel<'static>>>>,
+    pub extended_channels: HashMap<ChannelId, Arc<RwLock<ExtendedChannel<'static>>>>,
     /// The upstream extended channel used in aggregated mode
     pub upstream_extended_channel: Option<Arc<RwLock<ExtendedChannel<'static>>>>,
     /// Extranonce prefix factory for allocating unique prefixes in aggregated mode
@@ -51,7 +52,7 @@ pub struct ChannelManagerData {
     pub share_sequence_counters: HashMap<u32, u32>,
     /// Per-channel extranonce factories for non-aggregated mode when extranonce adjustment is
     /// needed
-    pub extranonce_factories: Option<HashMap<u32, Arc<Mutex<ExtendedExtranonce>>>>,
+    pub extranonce_factories: Option<HashMap<ChannelId, Arc<Mutex<ExtendedExtranonce>>>>,
 }
 
 impl ChannelManagerData {

@@ -23,6 +23,7 @@ use stratum_apps::{
         },
         parsers_sv2::Mining,
     },
+    utils::types::DownstreamId,
 };
 use tracing::{debug, error, info, warn};
 
@@ -57,7 +58,9 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
         let (user_identity, nominal_hashrate, downstream_extranonce_len) = self
             .channel_manager_data
             .safe_lock(|channel_manager_data| {
-                channel_manager_data.pending_channels.remove(&m.request_id)
+                channel_manager_data
+                    .pending_channels
+                    .remove(&(m.request_id as DownstreamId))
             })
             .map_err(|e| {
                 error!("Failed to lock channel manager data: {:?}", e);

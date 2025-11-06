@@ -11,16 +11,15 @@ use stratum_apps::{
             hashes::Hash,
             CompactTarget, Target, TxMerkleNode,
         },
-        buffer_sv2,
         channels_sv2::{
             merkle_root::merkle_root_from_path,
             target::{bytes_to_hex, u256_to_block_hash},
         },
-        codec_sv2::StandardSv2Frame,
-        framing_sv2::framing::{Frame, Sv2Frame},
-        parsers_sv2::AnyMessage,
+        framing_sv2::framing::Frame,
         sv1_api::{client_to_server, utils::HexU32Be},
     },
+    task_manager::TaskManager,
+    utils::types::{ChannelId, DownstreamId, Message, SV2Frame},
 };
 
 use stratum_apps::stratum_core::{
@@ -62,13 +61,6 @@ use tracing::{debug, error, trace, warn, Instrument};
 
 use crate::{error::TproxyError, task_manager::TaskManager};
 
-/// Type alias for SV2 messages with static lifetime
-pub type Message = AnyMessage<'static>;
-/// Type alias for standard SV2 frames
-pub type StdFrame = StandardSv2Frame<Message>;
-/// Type alias for sv2 frame
-pub type SV2Frame = Sv2Frame<Message, buffer_sv2::Slice>;
-
 /// Validates an SV1 share against the target difficulty and job parameters.
 ///
 /// This function performs complete share validation by:
@@ -96,7 +88,7 @@ pub fn validate_sv1_share(
     extranonce1: Vec<u8>,
     version_rolling_mask: Option<HexU32Be>,
     sv1_server_data: std::sync::Arc<Mutex<crate::sv1::sv1_server::data::Sv1ServerData>>,
-    channel_id: u32,
+    channel_id: ChannelId,
 ) -> Result<bool, TproxyError> {
     let job_id = share.job_id.clone();
 
@@ -217,7 +209,7 @@ pub enum ShutdownMessage {
     /// Shutdown all downstream connections
     DownstreamShutdownAll,
     /// Shutdown a specific downstream connection by ID
-    DownstreamShutdown(u32),
+    DownstreamShutdown(DownstreamId),
     /// Reset channel manager state and shutdown downstreams due to upstream reconnection
     UpstreamReconnectedResetAndShutdownDownstreams,
 }
