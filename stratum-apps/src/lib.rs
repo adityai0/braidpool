@@ -58,3 +58,6 @@ pub mod rpc;
 /// Provides Secp256k1 key management, serialization/deserialization, and signature services.
 /// Supports both standard and no_std environments.
 pub mod key_utils;
+
+/// Utility methods used in roles
+pub mod utils;
