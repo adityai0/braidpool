@@ -29,6 +29,7 @@ use stratum_apps::{
         parsers_sv2::{Mining, TemplateDistribution},
         template_distribution_sv2::{NewTemplate, SetNewPrevHash},
     },
+    utils::types::{ChannelId, DownstreamId, Message, SharesPerMinute},
 };
 use tokio::{net::TcpListener, select, sync::broadcast};
 use tracing::{debug, error, info, warn};
@@ -39,7 +40,7 @@ use crate::{
     error::PoolResult,
     status::{handle_error, Status, StatusSender},
     task_manager::TaskManager,
-    utils::{Message, ShutdownMessage, VardiffKey},
+    utils::{ShutdownMessage, VardiffKey},
 };
 
 mod mining_message_handler;
@@ -52,7 +53,7 @@ pub const FULL_EXTRANONCE_SIZE: usize = POOL_ALLOCATION_BYTES + CLIENT_SEARCH_SP
 pub struct ChannelManagerData {
     // Mapping of `downstream_id` → `Downstream` object,
     // used by the channel manager to locate and interact with downstream clients.
-    downstream: HashMap<usize, Downstream>,
+    downstream: HashMap<DownstreamId, Downstream>,
     // Extranonce prefix factory for **extended downstream channels**.
     // Each new extended downstream receives a unique extranonce prefix.
     extranonce_prefix_factory_extended: ExtendedExtranonce,
@@ -89,7 +90,7 @@ pub struct ChannelManager {
     channel_manager_channel: ChannelManagerChannel,
     pool_tag_string: String,
     share_batch_size: usize,
-    shares_per_minute: f32,
+    shares_per_minute: SharesPerMinute,
     coinbase_reward_script: CoinbaseRewardScript,
 }
 
@@ -100,8 +101,8 @@ impl ChannelManager {
         config: PoolConfig,
         tp_sender: Sender<TemplateDistribution<'static>>,
         tp_receiver: Receiver<TemplateDistribution<'static>>,
-        downstream_sender: broadcast::Sender<(usize, Mining<'static>)>,
-        downstream_receiver: Receiver<(usize, Mining<'static>)>,
+        downstream_sender: broadcast::Sender<(DownstreamId, Mining<'static>)>,
+        downstream_receiver: Receiver<(DownstreamId, Mining<'static>)>,
         coinbase_outputs: Vec<u8>,
     ) -> PoolResult<Self> {
         let range_0 = 0..0;
@@ -167,8 +168,8 @@ impl ChannelManager {
         task_manager: Arc<TaskManager>,
         notify_shutdown: broadcast::Sender<ShutdownMessage>,
         status_sender: Sender<Status>,
-        channel_manager_sender: Sender<(usize, Mining<'static>)>,
-        channel_manager_receiver: broadcast::Sender<(usize, Mining<'static>)>,
+        channel_manager_sender: Sender<(DownstreamId, Mining<'static>)>,
+        channel_manager_receiver: broadcast::Sender<(DownstreamId, Mining<'static>)>,
     ) -> PoolResult<()> {
         info!("Starting downstream server at {listening_address}");
         let server = TcpListener::bind(listening_address).await.map_err(|e| {
@@ -335,7 +336,7 @@ impl ChannelManager {
     // 1. Removes the corresponding Downstream from the `downstream` map.
     // 2. Removes the channels of the corresponding Downstream from `vardiff` map.
     #[allow(clippy::result_large_err)]
-    fn remove_downstream(&self, downstream_id: usize) -> PoolResult<()> {
+    fn remove_downstream(&self, downstream_id: DownstreamId) -> PoolResult<()> {
         self.channel_manager_data.super_safe_lock(|cm_data| {
             cm_data.downstream.remove(&downstream_id);
             cm_data
@@ -375,8 +376,8 @@ impl ChannelManager {
 
     // Runs the vardiff on extended channel.
     fn run_vardiff_on_extended_channel(
-        downstream_id: usize,
-        channel_id: u32,
+        downstream_id: DownstreamId,
+        channel_id: ChannelId,
         channel_state: &mut ExtendedChannel<'static, DefaultJobStore<ExtendedJob<'static>>>,
         vardiff_state: &mut VardiffState,
         updates: &mut Vec<RouteMessageTo>,
@@ -420,8 +421,8 @@ impl ChannelManager {
 
     // Runs the vardiff on the standard channel.
     fn run_vardiff_on_standard_channel(
-        downstream_id: usize,
-        channel_id: u32,
+        downstream_id: DownstreamId,
+        channel_id: ChannelId,
         channel: &mut StandardChannel<'static, DefaultJobStore<StandardJob<'static>>>,
         vardiff_state: &mut VardiffState,
         updates: &mut Vec<RouteMessageTo>,
@@ -534,7 +535,7 @@ pub enum RouteMessageTo<'a> {
     /// Route to the template provider subsystem.
     TemplateProvider(TemplateDistribution<'a>),
     /// Route to a specific downstream client by ID, along with its mining message.
-    Downstream((usize, Mining<'a>)),
+    Downstream((DownstreamId, Mining<'a>)),
 }
 
 impl<'a> From<TemplateDistribution<'a>> for RouteMessageTo<'a> {
@@ -543,8 +544,8 @@ impl<'a> From<TemplateDistribution<'a>> for RouteMessageTo<'a> {
     }
 }
 
-impl<'a> From<(usize, Mining<'a>)> for RouteMessageTo<'a> {
-    fn from(value: (usize, Mining<'a>)) -> Self {
+impl<'a> From<(DownstreamId, Mining<'a>)> for RouteMessageTo<'a> {
+    fn from(value: (DownstreamId, Mining<'a>)) -> Self {
         Self::Downstream(value)
     }
 }

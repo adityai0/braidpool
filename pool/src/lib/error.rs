@@ -4,20 +4,23 @@ use std::{
     sync::{MutexGuard, PoisonError},
 };
 
-use stratum_apps::stratum_core::{
-    binary_sv2, bitcoin,
-    channels_sv2::{
-        server::{
-            error::{ExtendedChannelError, GroupChannelError, StandardChannelError},
-            share_accounting::ShareValidationError,
+use stratum_apps::{
+    stratum_core::{
+        binary_sv2, bitcoin,
+        channels_sv2::{
+            server::{
+                error::{ExtendedChannelError, GroupChannelError, StandardChannelError},
+                share_accounting::ShareValidationError,
+            },
+            vardiff::error::VardiffError,
         },
-        vardiff::error::VardiffError,
+        codec_sv2, framing_sv2,
+        handlers_sv2::HandlerErrorType,
+        mining_sv2::ExtendedExtranonceError,
+        noise_sv2,
+        parsers_sv2::{Mining, ParserError},
     },
-    codec_sv2, framing_sv2,
-    handlers_sv2::HandlerErrorType,
-    mining_sv2::ExtendedExtranonceError,
-    noise_sv2,
-    parsers_sv2::{Mining, ParserError},
+    utils::types::ChannelId,
 };
 
 pub type PoolResult<T> = Result<T, PoolError>;
@@ -74,7 +77,7 @@ pub enum PoolError {
     /// Bitcoin Encode Error
     BitcoinEncodeError(bitcoin::consensus::encode::Error),
     /// Downstream not found for the channel
-    DownstreamNotFoundWithChannelId(u32),
+    DownstreamNotFoundWithChannelId(ChannelId),
     /// Downstream not found
     DownstreamNotFound(usize),
     /// Downstream Id not found
@@ -84,7 +87,7 @@ pub enum PoolError {
     /// Last new prevhash not found
     LastNewPrevhashNotFound,
     /// Vardiff associated to channel not found
-    VardiffNotFound(u32),
+    VardiffNotFound(ChannelId),
     /// Errors on bad `String` to `int` conversion.
     ParseInt(std::num::ParseIntError),
     /// Failed to create group channel

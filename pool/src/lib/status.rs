@@ -6,6 +6,7 @@
 //! and receive status updates via typed channels. Errors are automatically
 //! converted into shutdown signals, allowing coordinated teardown of tasks.
 
+use stratum_apps::utils::types::DownstreamId;
 use tracing::{debug, error, warn};
 
 use crate::error::PoolError;
@@ -15,7 +16,7 @@ use crate::error::PoolError;
 pub enum StatusSender {
     /// Status updates from a specific downstream connection.
     Downstream {
-        downstream_id: usize,
+        downstream_id: DownstreamId,
         tx: async_channel::Sender<Status>,
     },
     /// Status updates from the template receiver.
@@ -28,7 +29,7 @@ pub enum StatusSender {
 #[derive(Debug, PartialEq, Eq)]
 pub enum StatusType {
     /// A downstream connection identified by its ID.
-    Downstream(usize),
+    Downstream(DownstreamId),
     /// The template receiver component.
     TemplateReceiver,
     /// The channel manager component.
@@ -76,7 +77,7 @@ impl StatusSender {
 pub enum State {
     /// A downstream connection has shut down with a reason.
     DownstreamShutdown {
-        downstream_id: usize,
+        downstream_id: DownstreamId,
         reason: PoolError,
     },
     /// Template receiver has shut down with a reason.

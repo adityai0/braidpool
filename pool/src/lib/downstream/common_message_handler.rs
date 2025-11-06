@@ -1,11 +1,14 @@
-use crate::{downstream::Downstream, error::PoolError, utils::StdFrame};
+use crate::{downstream::Downstream, error::PoolError};
 use std::{convert::TryInto, sync::atomic::Ordering};
-use stratum_apps::stratum_core::{
-    common_messages_sv2::{
-        has_requires_std_job, has_work_selection, SetupConnection, SetupConnectionSuccess,
+use stratum_apps::{
+    stratum_core::{
+        common_messages_sv2::{
+            has_requires_std_job, has_work_selection, SetupConnection, SetupConnectionSuccess,
+        },
+        handlers_sv2::HandleCommonMessagesFromClientAsync,
+        parsers_sv2::AnyMessage,
     },
-    handlers_sv2::HandleCommonMessagesFromClientAsync,
-    parsers_sv2::AnyMessage,
+    utils::types::StdFrame,
 };
 use tracing::info;
 

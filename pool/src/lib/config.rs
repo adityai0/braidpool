@@ -17,6 +17,7 @@ use stratum_apps::{
     config_helpers::CoinbaseRewardScript,
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
     stratum_core::bitcoin::{Amount, TxOut},
+    utils::types::{SharesBatchSize, SharesPerMinute},
 };
 
 /// Configuration for the Pool, including connection, authority, and coinbase settings.
@@ -30,8 +31,8 @@ pub struct PoolConfig {
     cert_validity_sec: u64,
     coinbase_reward_script: CoinbaseRewardScript,
     pool_signature: String,
-    shares_per_minute: f32,
-    share_batch_size: usize,
+    shares_per_minute: SharesPerMinute,
+    share_batch_size: SharesBatchSize,
     log_file: Option<PathBuf>,
     server_id: u16,
 }
@@ -47,8 +48,8 @@ impl PoolConfig {
         template_provider: TemplateProviderConfig,
         authority_config: AuthorityConfig,
         coinbase_reward_script: CoinbaseRewardScript,
-        shares_per_minute: f32,
-        share_batch_size: usize,
+        shares_per_minute: SharesPerMinute,
+        share_batch_size: SharesBatchSize,
         server_id: u16,
     ) -> Self {
         Self {

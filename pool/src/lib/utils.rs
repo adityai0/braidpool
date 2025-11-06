@@ -4,14 +4,12 @@ use async_channel::{Receiver, Sender};
 use stratum_apps::{
     network_helpers::noise_stream::{NoiseTcpReadHalf, NoiseTcpWriteHalf},
     stratum_core::{
-        buffer_sv2,
-        codec_sv2::{StandardEitherFrame, StandardSv2Frame},
         common_messages_sv2::{
             Protocol, SetupConnection, MESSAGE_TYPE_CHANNEL_ENDPOINT_CHANGED,
             MESSAGE_TYPE_RECONNECT, MESSAGE_TYPE_SETUP_CONNECTION,
             MESSAGE_TYPE_SETUP_CONNECTION_ERROR, MESSAGE_TYPE_SETUP_CONNECTION_SUCCESS,
         },
-        framing_sv2::framing::{Frame, Sv2Frame},
+        framing_sv2::framing::Frame,
         job_declaration_sv2::{
             MESSAGE_TYPE_ALLOCATE_MINING_JOB_TOKEN, MESSAGE_TYPE_ALLOCATE_MINING_JOB_TOKEN_SUCCESS,
             MESSAGE_TYPE_DECLARE_MINING_JOB, MESSAGE_TYPE_DECLARE_MINING_JOB_ERROR,
@@ -32,7 +30,6 @@ use stratum_apps::{
             MESSAGE_TYPE_SUBMIT_SHARES_SUCCESS, MESSAGE_TYPE_UPDATE_CHANNEL,
             MESSAGE_TYPE_UPDATE_CHANNEL_ERROR,
         },
-        parsers_sv2::AnyMessage,
         template_distribution_sv2::{
             MESSAGE_TYPE_COINBASE_OUTPUT_CONSTRAINTS, MESSAGE_TYPE_NEW_TEMPLATE,
             MESSAGE_TYPE_REQUEST_TRANSACTION_DATA, MESSAGE_TYPE_REQUEST_TRANSACTION_DATA_ERROR,
@@ -40,6 +37,7 @@ use stratum_apps::{
             MESSAGE_TYPE_SUBMIT_SOLUTION,
         },
     },
+    utils::types::{ChannelId, DownstreamId, Message, SV2Frame},
 };
 use tokio::sync::broadcast;
 use tracing::{error, trace, warn, Instrument};
@@ -50,11 +48,6 @@ use crate::{
     task_manager::TaskManager,
 };
 
-pub type Message = AnyMessage<'static>;
-pub type StdFrame = StandardSv2Frame<Message>;
-pub type EitherFrame = StandardEitherFrame<Message>;
-pub type SV2Frame = Sv2Frame<Message, buffer_sv2::Slice>;
-
 /// Represents a message that can trigger shutdown of various system components.
 #[derive(Debug, Clone)]
 pub enum ShutdownMessage {
@@ -63,7 +56,7 @@ pub enum ShutdownMessage {
     /// Shutdown all downstream connections
     DownstreamShutdownAll,
     /// Shutdown a specific downstream connection by ID
-    DownstreamShutdown(usize),
+    DownstreamShutdown(DownstreamId),
 }
 
 /// Constructs a `SetupConnection` message for the mining protocol.
@@ -341,12 +334,12 @@ pub fn protocol_message_type(message_type: u8) -> MessageType {
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct VardiffKey {
-    pub downstream_id: usize,
-    pub channel_id: u32,
+    pub downstream_id: DownstreamId,
+    pub channel_id: ChannelId,
 }
 
-impl From<(usize, u32)> for VardiffKey {
-    fn from(value: (usize, u32)) -> Self {
+impl From<(DownstreamId, ChannelId)> for VardiffKey {
+    fn from(value: (DownstreamId, ChannelId)) -> Self {
         VardiffKey {
             downstream_id: value.0,
             channel_id: value.1,

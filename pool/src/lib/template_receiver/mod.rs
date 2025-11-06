@@ -16,6 +16,7 @@ use stratum_apps::{
         parsers_sv2::{AnyMessage, TemplateDistribution},
         template_distribution_sv2::CoinbaseOutputConstraints,
     },
+    utils::types::{Message, SV2Frame, StdFrame},
 };
 use tokio::{net::TcpStream, sync::broadcast};
 use tracing::{debug, error, info, warn};
@@ -25,8 +26,8 @@ use crate::{
     status::{handle_error, Status, StatusSender},
     task_manager::TaskManager,
     utils::{
-        get_setup_connection_message_tp, protocol_message_type, spawn_io_tasks, Message,
-        MessageType, SV2Frame, ShutdownMessage, StdFrame,
+        get_setup_connection_message_tp, protocol_message_type, spawn_io_tasks, MessageType,
+        ShutdownMessage,
     },
 };
 

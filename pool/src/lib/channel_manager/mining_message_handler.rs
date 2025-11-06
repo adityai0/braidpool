@@ -121,7 +121,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                     let group_channel_id = downstream_data.channel_id_factory.fetch_add(1, Ordering::SeqCst);
                     let job_store = DefaultJobStore::new();
 
-                    let mut group_channel = match GroupChannel::new_for_pool(group_channel_id as u32, job_store, FULL_EXTRANONCE_SIZE, self.pool_tag_string.clone()) {
+                    let mut group_channel = match GroupChannel::new_for_pool(group_channel_id, job_store, FULL_EXTRANONCE_SIZE, self.pool_tag_string.clone()) {
                         Ok(channel) => channel,
                         Err(e) => {
                             error!(?e, "Failed to create group channel");
@@ -140,7 +140,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                 let channel_id = downstream_data.channel_id_factory.fetch_add(1, Ordering::SeqCst);
                 let job_store = DefaultJobStore::new();
 
-                let mut standard_channel = match StandardChannel::new_for_pool(channel_id as u32, user_identity.to_string(), extranonce_prefix.to_vec(), requested_max_target, nominal_hash_rate, self.share_batch_size, self.shares_per_minute, job_store, self.pool_tag_string.clone()) {
+                let mut standard_channel = match StandardChannel::new_for_pool(channel_id, user_identity.to_string(), extranonce_prefix.to_vec(), requested_max_target, nominal_hash_rate, self.share_batch_size, self.shares_per_minute, job_store, self.pool_tag_string.clone()) {
                     Ok(channel) => channel,
                     Err(e) => match e {
                         StandardChannelError::InvalidNominalHashrate => {
@@ -176,7 +176,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
 
                 let open_standard_mining_channel_success = OpenStandardMiningChannelSuccess {
                     request_id: msg.request_id,
-                    channel_id: channel_id as u32,
+                    channel_id,
                     target: standard_channel.get_target().to_le_bytes().into(),
                     extranonce_prefix: standard_channel.get_extranonce_prefix().clone().try_into().expect("Extranonce_prefix must be valid"),
                     group_channel_id
@@ -206,7 +206,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                 let header_timestamp = last_set_new_prev_hash_tdp.header_timestamp;
                 let n_bits = last_set_new_prev_hash_tdp.n_bits;
                 let set_new_prev_hash_mining = SetNewPrevHash {
-                    channel_id: channel_id as u32,
+                    channel_id,
                     job_id: *future_standard_job_id,
                     prev_hash,
                     min_ntime: header_timestamp,
@@ -219,12 +219,12 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
 
                 messages.push((downstream_id, Mining::SetNewPrevHash(set_new_prev_hash_mining)).into());
 
-                downstream_data.standard_channels.insert(channel_id as u32, standard_channel);
+                downstream_data.standard_channels.insert(channel_id, standard_channel);
                 if let Some(group_channel) = downstream_data.group_channels.as_mut() {
-                    group_channel.add_standard_channel_id(channel_id as u32);
+                    group_channel.add_standard_channel_id(channel_id);
                 }
                 let vardiff = VardiffState::new()?;
-                channel_manager_data.vardiff.insert((downstream_id, channel_id as u32).into(), vardiff);
+                channel_manager_data.vardiff.insert((downstream_id, channel_id).into(), vardiff);
 
                 Ok(messages)
             })
@@ -295,7 +295,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                         let job_store = DefaultJobStore::new();
 
                         let mut extended_channel = match ExtendedChannel::new_for_pool(
-                            channel_id as u32,
+                            channel_id,
                             user_identity.to_string(),
                             extranonce_prefix,
                             requested_max_target,
@@ -373,7 +373,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                         let open_extended_mining_channel_success =
                             OpenExtendedMiningChannelSuccess {
                                 request_id,
-                                channel_id: channel_id as u32,
+                                channel_id,
                                 target: extended_channel.get_target().to_le_bytes().into(),
                                 extranonce_prefix: extended_channel
                                     .get_extranonce_prefix()
@@ -455,7 +455,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                             let header_timestamp = last_set_new_prev_hash_tdp.header_timestamp;
                             let n_bits = last_set_new_prev_hash_tdp.n_bits;
                             let set_new_prev_hash_mining = SetNewPrevHash {
-                                channel_id: channel_id as u32,
+                                channel_id,
                                 job_id: *future_extended_job_id,
                                 prev_hash,
                                 min_ntime: header_timestamp,
@@ -475,11 +475,11 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
 
                         downstream_data
                             .extended_channels
-                            .insert(channel_id as u32, extended_channel);
+                            .insert(channel_id, extended_channel);
                         let vardiff = VardiffState::new()?;
                         channel_manager_data
                             .vardiff
-                            .insert((downstream_id, channel_id as u32).into(), vardiff);
+                            .insert((downstream_id, channel_id).into(), vardiff);
 
                         Ok(messages)
                     })
