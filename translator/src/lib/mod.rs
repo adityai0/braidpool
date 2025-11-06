@@ -13,7 +13,7 @@
 #![allow(clippy::module_inception)]
 use async_channel::{unbounded, Receiver, Sender};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
-use stratum_apps::{stratum_core::parsers_sv2::Mining, task_manager::TaskManager};
+use stratum_apps::{task_manager::TaskManager, utils::types::Sv2Frame};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error, info, warn};
 
@@ -110,6 +110,7 @@ impl TranslatorSv2 {
                 shutdown_complete_tx.clone(),
                 task_manager.clone(),
                 sv1_server.clone(),
+                self.config.required_extensions.clone(),
             )
             .await
         {
@@ -128,6 +129,8 @@ impl TranslatorSv2 {
             } else {
                 ChannelMode::NonAggregated
             },
+            self.config.supported_extensions.clone(),
+            self.config.required_extensions.clone(),
         ));
 
         info!("Launching ChannelManager tasks...");
@@ -180,7 +183,8 @@ impl TranslatorSv2 {
                                     status_sender.clone(),
                                     shutdown_complete_tx.clone(),
                                     task_manager.clone(),
-                                    sv1_server.clone()
+                                    sv1_server.clone(),
+                                    self.config.required_extensions.clone(),
                                 ).await {
                                     error!("Couldn't perform fallback, shutting system down: {e:?}");
                                     let _ = notify_shutdown.send(ShutdownMessage::ShutdownAll);
@@ -226,13 +230,14 @@ impl TranslatorSv2 {
     pub async fn initialize_upstream(
         &self,
         upstreams: &mut [UpstreamEntry],
-        channel_manager_to_upstream_receiver: Receiver<Mining<'static>>,
-        upstream_to_channel_manager_sender: Sender<Mining<'static>>,
+        channel_manager_to_upstream_receiver: Receiver<Sv2Frame>,
+        upstream_to_channel_manager_sender: Sender<Sv2Frame>,
         notify_shutdown: broadcast::Sender<ShutdownMessage>,
         status_sender: Sender<Status>,
         shutdown_complete_tx: mpsc::Sender<()>,
         task_manager: Arc<TaskManager>,
         sv1_server_instance: Arc<Sv1Server>,
+        required_extensions: Vec<u16>,
     ) -> Result<(), TproxyError> {
         const MAX_RETRIES: usize = 3;
         let upstream_len = upstreams.len();
@@ -264,6 +269,7 @@ impl TranslatorSv2 {
                     status_sender.clone(),
                     shutdown_complete_tx.clone(),
                     task_manager.clone(),
+                    required_extensions.clone(),
                 )
                 .await
                 {
@@ -308,14 +314,16 @@ impl TranslatorSv2 {
 }
 
 // Attempts to initialize a single upstream.
+#[allow(clippy::too_many_arguments)]
 async fn try_initialize_upstream(
     upstream_addr: &UpstreamEntry,
-    upstream_to_channel_manager_sender: Sender<Mining<'static>>,
-    channel_manager_to_upstream_receiver: Receiver<Mining<'static>>,
+    upstream_to_channel_manager_sender: Sender<Sv2Frame>,
+    channel_manager_to_upstream_receiver: Receiver<Sv2Frame>,
     notify_shutdown: broadcast::Sender<ShutdownMessage>,
     status_sender: Sender<Status>,
     shutdown_complete_tx: mpsc::Sender<()>,
     task_manager: Arc<TaskManager>,
+    required_extensions: Vec<u16>,
 ) -> Result<(), TproxyError> {
     let upstream = Upstream::new(
         upstream_addr,
@@ -324,6 +332,7 @@ async fn try_initialize_upstream(
         notify_shutdown.clone(),
         shutdown_complete_tx.clone(),
         task_manager.clone(),
+        required_extensions,
     )
     .await?;
 

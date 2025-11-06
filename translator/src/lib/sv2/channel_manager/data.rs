@@ -53,6 +53,8 @@ pub struct ChannelManagerData {
     /// Per-channel extranonce factories for non-aggregated mode when extranonce adjustment is
     /// needed
     pub extranonce_factories: Option<HashMap<ChannelId, Arc<Mutex<ExtendedExtranonce>>>>,
+    /// Extensions that have been successfully negotiated with the upstream server
+    pub negotiated_extensions: Vec<u16>,
 }
 
 impl ChannelManagerData {
@@ -60,6 +62,8 @@ impl ChannelManagerData {
     ///
     /// # Arguments
     /// * `mode` - The operational mode (Aggregated or NonAggregated)
+    /// * `supported_extensions` - Extensions that the translator supports
+    /// * `required_extensions` - Extensions that the translator requires
     ///
     /// # Returns
     /// A new ChannelManagerData instance with empty state
@@ -72,6 +76,7 @@ impl ChannelManagerData {
             mode,
             share_sequence_counters: HashMap::new(),
             extranonce_factories: None,
+            negotiated_extensions: Vec::new(),
         }
     }
 
@@ -79,11 +84,12 @@ impl ChannelManagerData {
     ///
     /// This method clears all existing channel state that becomes invalid
     /// when the upstream connection is lost and reestablished. It preserves
-    /// the operational mode but clears:
+    /// the operational mode and extension configuration but clears:
     /// - All pending channel requests
     /// - All active extended channels
     /// - The upstream extended channel
     /// - The extranonce prefix factory
+    /// - Negotiated extensions (will be renegotiated with new connection)
     ///
     /// This ensures that new channels will be properly opened with the
     /// newly connected upstream server.
@@ -94,7 +100,9 @@ impl ChannelManagerData {
         self.extranonce_prefix_factory = None;
         self.share_sequence_counters.clear();
         self.extranonce_factories = None;
-        // Note: we intentionally preserve `mode` as it's a configuration setting
+        self.negotiated_extensions.clear();
+        // Note: we intentionally preserve `mode`, `supported_extensions`, and `required_extensions`
+        // as they are configuration settings
     }
 
     /// Gets the next sequence number for a valid share and increments the counter.

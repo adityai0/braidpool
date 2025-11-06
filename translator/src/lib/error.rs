@@ -10,9 +10,15 @@
 
 use ext_config::ConfigError;
 use std::{fmt, sync::PoisonError};
-use stratum_apps::stratum_core::{
-    binary_sv2, framing_sv2, handlers_sv2::HandlerErrorType, noise_sv2, parsers_sv2::ParserError,
-    sv1_api::server_to_client::SetDifficulty,
+use stratum_apps::{
+    stratum_core::{
+        binary_sv2, framing_sv2,
+        handlers_sv2::HandlerErrorType,
+        noise_sv2,
+        parsers_sv2::{self, ParserError},
+        sv1_api::server_to_client::SetDifficulty,
+    },
+    utils::types::{ExtensionType, MessageType},
 };
 use tokio::sync::broadcast;
 
@@ -53,7 +59,7 @@ pub enum TproxyError {
     /// Error converting SetDifficulty to Message
     SetDifficultyToMessage(SetDifficulty),
     /// Received an unexpected message type
-    UnexpectedMessage(u8),
+    UnexpectedMessage(ExtensionType, MessageType),
     /// Job not found during share validation
     JobNotFound,
     /// Invalid merkle root during share validation
@@ -64,12 +70,18 @@ pub enum TproxyError {
     Fallback,
     /// Pending channel not found for the given request ID
     PendingChannelNotFound(u32),
+    /// Server does not support required extensions
+    RequiredExtensionsNotSupported(Vec<u16>),
+    /// Server requires extensions that the translator doesn't support
+    ServerRequiresUnsupportedExtensions(Vec<u16>),
     /// Represents a generic channel send failure, described by a string.
     General(String),
     /// Error bubbling up from translator-core library
     TranslatorCore(stratum_apps::stratum_core::stratum_translation::error::StratumTranslationError),
     /// Downstream mapped to request id not found
     DownstreamNotFound(u32),
+    /// Error about TLV encoding/decoding
+    TlvError(parsers_sv2::TlvError),
 }
 
 impl std::error::Error for TproxyError {}
@@ -97,10 +109,10 @@ impl fmt::Display for TproxyError {
             SetDifficultyToMessage(ref e) => {
                 write!(f, "Error converting SetDifficulty to Message: `{e:?}`")
             }
-            UnexpectedMessage(message_type) => {
+            UnexpectedMessage(extension_type, message_type) => {
                 write!(
                     f,
-                    "Received a message type that was not expected: {message_type}"
+                    "Received a message type that was not expected: {extension_type}, {message_type}"
                 )
             }
             JobNotFound => write!(f, "Job not found during share validation"),
@@ -110,6 +122,20 @@ impl fmt::Display for TproxyError {
             PendingChannelNotFound(request_id) => {
                 write!(f, "No pending channel found for request_id: {}", request_id)
             }
+            RequiredExtensionsNotSupported(extensions) => {
+                write!(
+                    f,
+                    "Server does not support required extensions: {:?}",
+                    extensions
+                )
+            }
+            ServerRequiresUnsupportedExtensions(extensions) => {
+                write!(
+                    f,
+                    "Server requires extensions that we don't support: {:?}",
+                    extensions
+                )
+            }
             SV1Error => write!(f, "Sv1 error"),
             TranslatorCore(ref e) => write!(f, "Translator core error: {e:?}"),
             NetworkHelpersError(ref e) => write!(f, "Network helpers error: {e:?}"),
@@ -118,6 +144,7 @@ impl fmt::Display for TproxyError {
                 f,
                 "Downstream id associated to request id: {request_id} not found"
             ),
+            TlvError(ref e) => write!(f, "TLV error: {e:?}"),
         }
     }
 }
@@ -222,7 +249,7 @@ impl HandlerErrorType for TproxyError {
         TproxyError::ParserError(error)
     }
 
-    fn unexpected_message(message_type: u8) -> Self {
-        TproxyError::UnexpectedMessage(message_type)
+    fn unexpected_message(extension_type: ExtensionType, message_type: MessageType) -> Self {
+        TproxyError::UnexpectedMessage(extension_type, message_type)
     }
 }
