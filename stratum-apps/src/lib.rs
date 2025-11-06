@@ -59,5 +59,8 @@ pub mod rpc;
 /// Supports both standard and no_std environments.
 pub mod key_utils;
 
-/// Utility methods used in roles
+/// Utility methods used in roles.
 pub mod utils;
+
+/// Task orchestrator for SRI roles.
+pub mod task_manager;
