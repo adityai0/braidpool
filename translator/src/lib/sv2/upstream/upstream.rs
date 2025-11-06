@@ -2,7 +2,7 @@ use crate::{
     error::TproxyError,
     status::{handle_error, Status, StatusSender},
     sv2::upstream::channel::UpstreamChannelState,
-    utils::{protocol_message_type, spawn_io_tasks, MessageType, ShutdownMessage},
+    utils::{spawn_io_tasks, ShutdownMessage},
 };
 use async_channel::{unbounded, Receiver, Sender};
 use std::{net::SocketAddr, sync::Arc};
@@ -18,7 +18,10 @@ use stratum_apps::{
         parsers_sv2::{AnyMessage, Mining},
     },
     task_manager::TaskManager,
-    utils::types::{Message, SV2Frame, StdFrame},
+    utils::{
+        protocol_message_type::{protocol_message_type, MessageType},
+        types::{Message, SV2Frame, StdFrame},
+    },
 };
 use tokio::{
     net::TcpStream,
