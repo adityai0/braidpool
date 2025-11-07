@@ -147,15 +147,15 @@ impl Sv1Server {
         .unwrap();
 
         let vardiff_fut = DifficultyManager::spawn_vardiff_loop(
-                self.sv1_server_data.clone(),
-                self.sv1_server_channel_state.channel_manager_sender.clone(),
-                self.sv1_server_channel_state
-                    .sv1_server_to_downstream_sender
-                    .clone(),
-                self.shares_per_minute,
-                self.config.aggregate_channels,
-                self.config.downstream_difficulty_config.enable_vardiff
-            );
+            self.sv1_server_data.clone(),
+            self.sv1_server_channel_state.channel_manager_sender.clone(),
+            self.sv1_server_channel_state
+                .sv1_server_to_downstream_sender
+                .clone(),
+            self.shares_per_minute,
+            self.config.aggregate_channels,
+            self.config.downstream_difficulty_config.enable_vardiff,
+        );
 
         let listener = TcpListener::bind(self.listener_addr).await.map_err(|e| {
             error!("Failed to bind to {}: {}", self.listener_addr, e);

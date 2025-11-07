@@ -50,29 +50,30 @@ impl DifficultyManager {
         sv1_server_to_downstream_sender: broadcast::Sender<(u32, Option<u32>, json_rpc::Message)>,
         shares_per_minute: f32,
         is_aggregated: bool,
-        enable_vardiff: bool
+        enable_vardiff: bool,
     ) {
-
         if !enable_vardiff {
             info!("Variable difficulty adjustment disabled - upstream will manage difficulty, SV1 server will forward SetTarget messages to downstreams");
+            tokio::time::sleep(tokio::time::Duration::MAX).await;
             return;
         }
 
         info!("Variable difficulty adjustment enabled - starting vardiff loop");
-        
-        let difficulty_manager = DifficultyManager::new(shares_per_minute, is_aggregated);
 
+        let difficulty_manager = DifficultyManager::new(shares_per_minute, is_aggregated);
 
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             ticker.tick().await;
             info!("Starting vardiff loop for downstreams");
 
-            difficulty_manager.handle_vardiff_updates(
-                &sv1_server_data,
-                &channel_manager_sender,
-                &sv1_server_to_downstream_sender,
-            ).await;
+            difficulty_manager
+                .handle_vardiff_updates(
+                    &sv1_server_data,
+                    &channel_manager_sender,
+                    &sv1_server_to_downstream_sender,
+                )
+                .await;
         }
     }
 
