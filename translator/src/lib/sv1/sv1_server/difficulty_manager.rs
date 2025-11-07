@@ -1,9 +1,6 @@
-use crate::{
-    sv1::sv1_server::data::{PendingTargetUpdate, Sv1ServerData},
-    utils::ShutdownMessage,
-};
+use crate::sv1::sv1_server::data::{PendingTargetUpdate, Sv1ServerData};
 use async_channel::Sender;
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 use stratum_apps::{
     custom_mutex::Mutex,
     stratum_core::{
@@ -15,8 +12,8 @@ use stratum_apps::{
         sv1_api::json_rpc,
     },
 };
-use tokio::{sync::broadcast, time};
-use tracing::{debug, error, trace, warn};
+use tokio::sync::broadcast;
+use tracing::{debug, error, info, trace, warn};
 
 /// Handles all variable difficulty adjustment logic for the SV1 server.
 ///
@@ -53,33 +50,30 @@ impl DifficultyManager {
         sv1_server_to_downstream_sender: broadcast::Sender<(u32, Option<u32>, json_rpc::Message)>,
         shares_per_minute: f32,
         is_aggregated: bool,
-        mut notify_shutdown: broadcast::Receiver<ShutdownMessage>,
-        shutdown_complete_tx: tokio::sync::mpsc::Sender<()>,
+        enable_vardiff: bool
     ) {
+
+        if !enable_vardiff {
+            info!("Variable difficulty adjustment disabled - upstream will manage difficulty, SV1 server will forward SetTarget messages to downstreams");
+            return;
+        }
+
+        info!("Variable difficulty adjustment enabled - starting vardiff loop");
+        
         let difficulty_manager = DifficultyManager::new(shares_per_minute, is_aggregated);
 
-        'vardiff_loop: loop {
-            tokio::select! {
-                message = notify_shutdown.recv() => {
-                    match message {
-                        Ok(ShutdownMessage::ShutdownAll) => {
-                            debug!("SV1 Server: Vardiff loop received shutdown signal. Exiting.");
-                            break 'vardiff_loop;
-                        }
-                        _ => {}
-                    }
-                }
-                _ = time::sleep(Duration::from_secs(60)) => {
-                    difficulty_manager.handle_vardiff_updates(
-                        &sv1_server_data,
-                        &channel_manager_sender,
-                        &sv1_server_to_downstream_sender,
-                    ).await;
-                }
-            }
+
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            ticker.tick().await;
+            info!("Starting vardiff loop for downstreams");
+
+            difficulty_manager.handle_vardiff_updates(
+                &sv1_server_data,
+                &channel_manager_sender,
+                &sv1_server_to_downstream_sender,
+            ).await;
         }
-        drop(shutdown_complete_tx);
-        debug!("SV1 Server: Vardiff loop exited.");
     }
 
     /// Handles variable difficulty adjustments for all connected downstreams.

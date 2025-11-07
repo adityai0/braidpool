@@ -136,7 +136,6 @@ impl Sv1Server {
     ) -> Result<(), TproxyError> {
         info!("Starting SV1 server on {}", self.listener_addr);
         let mut shutdown_rx_main = notify_shutdown.subscribe();
-        let shutdown_complete_tx_main_clone = shutdown_complete_tx.clone();
 
         // get the first target for the first set difficulty message
         let first_target: Target = hash_rate_to_target(
@@ -147,10 +146,7 @@ impl Sv1Server {
         )
         .unwrap();
 
-        // Spawn vardiff loop only if enabled
-        if self.config.downstream_difficulty_config.enable_vardiff {
-            info!("Variable difficulty adjustment enabled - starting vardiff loop");
-            task_manager.spawn(DifficultyManager::spawn_vardiff_loop(
+        let vardiff_fut = DifficultyManager::spawn_vardiff_loop(
                 self.sv1_server_data.clone(),
                 self.sv1_server_channel_state.channel_manager_sender.clone(),
                 self.sv1_server_channel_state
@@ -158,12 +154,8 @@ impl Sv1Server {
                     .clone(),
                 self.shares_per_minute,
                 self.config.aggregate_channels,
-                notify_shutdown.subscribe(),
-                shutdown_complete_tx_main_clone.clone(),
-            ));
-        } else {
-            info!("Variable difficulty adjustment disabled - upstream will manage difficulty, SV1 server will forward SetTarget messages to downstreams");
-        }
+                self.config.downstream_difficulty_config.enable_vardiff
+            );
 
         let listener = TcpListener::bind(self.listener_addr).await.map_err(|e| {
             error!("Failed to bind to {}: {}", self.listener_addr, e);
@@ -175,6 +167,7 @@ impl Sv1Server {
         let sv1_status_sender = StatusSender::Sv1Server(status_sender.clone());
         let task_manager_clone = task_manager.clone();
         task_manager_clone.spawn(async move {
+            tokio::pin!(vardiff_fut);
             loop {
                 tokio::select! {
                     message = shutdown_rx_main.recv() => {
@@ -317,6 +310,7 @@ impl Sv1Server {
                             break;
                         }
                     }
+                    _ = &mut vardiff_fut => {}
                 }
             }
             self.sv1_server_channel_state.drop();
