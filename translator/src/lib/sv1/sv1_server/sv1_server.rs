@@ -173,161 +173,157 @@ impl Sv1Server {
         info!("Translator Proxy: listening on {}", self.listener_addr);
 
         let sv1_status_sender = StatusSender::Sv1Server(status_sender.clone());
+        let task_manager_clone = task_manager.clone();
+        task_manager_clone.spawn(async move {
+            loop {
+                tokio::select! {
+                    message = shutdown_rx_main.recv() => {
+                        match message {
+                            Ok(ShutdownMessage::ShutdownAll) => {
+                                debug!("SV1 Server: Vardiff loop received shutdown signal. Exiting.");
+                                break;
+                            }
+                            Ok(ShutdownMessage::DownstreamShutdown(downstream_id)) => {
+                                let current_downstream = self.sv1_server_data.super_safe_lock(|d| {
+                                    // Only remove from vardiff map if vardiff is enabled
+                                    if self.config.downstream_difficulty_config.enable_vardiff {
+                                        d.vardiff.remove(&downstream_id);
+                                    }
+                                    d.downstreams.remove(&downstream_id)
+                                });
+                                if let Some(downstream) = current_downstream {
+                                    info!("🔌 Downstream: {downstream_id} disconnected and removed from sv1 server downstreams");
+                                    // In aggregated mode, send UpdateChannel to reflect the new state (only if vardiff enabled)
+                                    if self.config.downstream_difficulty_config.enable_vardiff {
+                                        DifficultyManager::send_update_channel_on_downstream_state_change(
+                                            &self.sv1_server_data,
+                                            &self.sv1_server_channel_state.channel_manager_sender,
+                                            self.config.aggregate_channels,
+                                        ).await;
+                                    }
 
-        loop {
-            tokio::select! {
-                message = shutdown_rx_main.recv() => {
-                    match message {
-                        Ok(ShutdownMessage::ShutdownAll) => {
-                            debug!("SV1 Server: Vardiff loop received shutdown signal. Exiting.");
-                            break;
-                        }
-                        Ok(ShutdownMessage::DownstreamShutdown(downstream_id)) => {
-                            let current_downstream = self.sv1_server_data.super_safe_lock(|d| {
-                                // Only remove from vardiff map if vardiff is enabled
-                                if self.config.downstream_difficulty_config.enable_vardiff {
-                                    d.vardiff.remove(&downstream_id);
+                                    let channel_id = downstream.downstream_data.super_safe_lock(|d| d.channel_id);
+                                    if let Some(channel_id) = channel_id {
+                                        if !self.config.aggregate_channels {
+                                            info!("Sending CloseChannel message: {channel_id} for downstream: {downstream_id}");
+                                            let reason_code =  Str0255::try_from("downstream disconnected".to_string()).unwrap();
+                                            _ = self.sv1_server_channel_state
+                                                .channel_manager_sender
+                                                .send(Mining::CloseChannel(CloseChannel {
+                                                    channel_id,
+                                                    reason_code,
+                                                }))
+                                                .await;
+                                        }
+                                    }
                                 }
-                                d.downstreams.remove(&downstream_id)
-                            });
-                            if let Some(downstream) = current_downstream {
-                                info!("🔌 Downstream: {downstream_id} disconnected and removed from sv1 server downstreams");
-
-                                // In aggregated mode, send UpdateChannel to reflect the new state (only if vardiff enabled)
+                            }
+                            Ok(ShutdownMessage::DownstreamShutdownAll) => {
+                                self.sv1_server_data.super_safe_lock(|d|{
+                                    if self.config.downstream_difficulty_config.enable_vardiff {
+                                        d.vardiff = HashMap::new();
+                                    }
+                                    d.downstreams = HashMap::new();
+                                });
+                                info!("🔌 All downstreams removed from sv1 server as upstream changed");
+                                // In aggregated mode, send UpdateChannel to reflect the new state (no downstreams)
                                 if self.config.downstream_difficulty_config.enable_vardiff {
                                     DifficultyManager::send_update_channel_on_downstream_state_change(
-                                        &self.sv1_server_data,
-                                        &self.sv1_server_channel_state.channel_manager_sender,
-                                        self.config.aggregate_channels,
-                                    ).await;
-                                }
-
-                                let channel_id = downstream.downstream_data.super_safe_lock(|d| d.channel_id);
-
-                                if let Some(channel_id) = channel_id {
-                                    if !self.config.aggregate_channels {
-                                        info!("Sending CloseChannel message: {channel_id} for downstream: {downstream_id}");
-                                        let reason_code =  Str0255::try_from("downstream disconnected".to_string()).unwrap();
-                                        _ = self.sv1_server_channel_state
-                                            .channel_manager_sender
-                                            .send(Mining::CloseChannel(CloseChannel {
-                                                channel_id,
-                                                reason_code,
-                                            }))
-                                            .await;
-                                    }
+                                            &self.sv1_server_data,
+                                            &self.sv1_server_channel_state.channel_manager_sender,
+                                            self.config.aggregate_channels,
+                                        ).await;
                                 }
                             }
-                        }
-                        Ok(ShutdownMessage::DownstreamShutdownAll) => {
-                            self.sv1_server_data.super_safe_lock(|d|{
-                                if self.config.downstream_difficulty_config.enable_vardiff {
-                                    d.vardiff = HashMap::new();
-                                }
-                                d.downstreams = HashMap::new();
-                            });
-                            info!("🔌 All downstreams removed from sv1 server as upstream changed");
-
-                            // In aggregated mode, send UpdateChannel to reflect the new state (no downstreams)
-                            if self.config.downstream_difficulty_config.enable_vardiff {
-                                DifficultyManager::send_update_channel_on_downstream_state_change(
-                                        &self.sv1_server_data,
-                                        &self.sv1_server_channel_state.channel_manager_sender,
-                                        self.config.aggregate_channels,
-                                    ).await;
-                            }
-                        }
-                        Ok(ShutdownMessage::UpstreamReconnectedResetAndShutdownDownstreams) => {
-                            self.sv1_server_data.super_safe_lock(|d|{
-                                if self.config.downstream_difficulty_config.enable_vardiff {
-                                    d.vardiff = HashMap::new();
-                                }
-                                d.downstreams = HashMap::new();
-                            });
-                            info!("🔌 All downstreams removed from sv1 server as upstream reconnected");
-
-                            // In aggregated mode, send UpdateChannel to reflect the new state (no downstreams)
-                            if self.config.downstream_difficulty_config.enable_vardiff {
-                                DifficultyManager::send_update_channel_on_downstream_state_change(
-                                        &self.sv1_server_data,
-                                        &self.sv1_server_channel_state.channel_manager_sender,
-                                        self.config.aggregate_channels,
-                                    ).await;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                result = listener.accept() => {
-                    match result {
-                        Ok((stream, addr)) => {
-                            info!("New SV1 downstream connection from {}", addr);
-
-                            let connection = ConnectionSV1::new(stream).await;
-                            let downstream_id = self.sv1_server_data.super_safe_lock(|v| v.downstream_id_factory.fetch_add(1, Ordering::Relaxed));
-                            let downstream = Arc::new(Downstream::new(
-                                downstream_id,
-                                connection.sender().clone(),
-                                connection.receiver().clone(),
-                                self.sv1_server_channel_state.downstream_to_sv1_server_sender.clone(),
-                                self.sv1_server_channel_state.sv1_server_to_downstream_sender.clone().subscribe(),
-                                first_target,
-                                Some(self.config.downstream_difficulty_config.min_individual_miner_hashrate),
-                                self.sv1_server_data.clone(),
-                            ));
-                            // vardiff initialization (only if enabled)
-                            _ = self.sv1_server_data
-                                .safe_lock(|d| {
-                                    d.downstreams.insert(downstream_id, downstream.clone());
-                                    // Insert vardiff state for this downstream only if vardiff is enabled
+                            Ok(ShutdownMessage::UpstreamReconnectedResetAndShutdownDownstreams) => {
+                                self.sv1_server_data.super_safe_lock(|d|{
                                     if self.config.downstream_difficulty_config.enable_vardiff {
-                                        let vardiff = Arc::new(RwLock::new(VardiffState::new().expect("Failed to create vardiffstate")));
-                                        d.vardiff.insert(downstream_id, vardiff);
+                                        d.vardiff = HashMap::new();
                                     }
+                                    d.downstreams = HashMap::new();
                                 });
-                            info!("Downstream {} registered successfully (channel will be opened after first message)", downstream_id);
-
-                            // Start downstream tasks immediately, but defer channel opening until first message
-                            let status_sender = StatusSender::Downstream {
-                                downstream_id,
-                                tx: status_sender.clone(),
-                            };
-
-                            Downstream::run_downstream_tasks(
-                                downstream,
-                                notify_shutdown.clone(),
-                                shutdown_complete_tx.clone(),
-                                status_sender,
-                                task_manager.clone(),
-                            );
-                        }
-                        Err(e) => {
-                            warn!("Failed to accept new connection: {:?}", e);
+                                info!("🔌 All downstreams removed from sv1 server as upstream reconnected");
+                                // In aggregated mode, send UpdateChannel to reflect the new state (no downstreams)
+                                if self.config.downstream_difficulty_config.enable_vardiff {
+                                    DifficultyManager::send_update_channel_on_downstream_state_change(
+                                            &self.sv1_server_data,
+                                            &self.sv1_server_channel_state.channel_manager_sender,
+                                            self.config.aggregate_channels,
+                                        ).await;
+                                }
+                            }
+                            _ => {}
                         }
                     }
-                }
-                res = Self::handle_downstream_message(
-                    Arc::clone(&self)
-                ) => {
-                    if let Err(e) = res {
-                        handle_error(&sv1_status_sender, e).await;
-                        break;
+                    result = listener.accept() => {
+                        match result {
+                            Ok((stream, addr)) => {
+                                info!("New SV1 downstream connection from {}", addr);
+                                let connection = ConnectionSV1::new(stream).await;
+                                let downstream_id = self.sv1_server_data.super_safe_lock(|v| v.downstream_id_factory.fetch_add(1, Ordering::Relaxed));
+                                let downstream = Arc::new(Downstream::new(
+                                    downstream_id,
+                                    connection.sender().clone(),
+                                    connection.receiver().clone(),
+                                    self.sv1_server_channel_state.downstream_to_sv1_server_sender.clone(),
+                                    self.sv1_server_channel_state.sv1_server_to_downstream_sender.clone().subscribe(),
+                                    first_target,
+                                    Some(self.config.downstream_difficulty_config.min_individual_miner_hashrate),
+                                    self.sv1_server_data.clone(),
+                                ));
+                                // vardiff initialization (only if enabled)
+                                _ = self.sv1_server_data
+                                    .safe_lock(|d| {
+                                        d.downstreams.insert(downstream_id, downstream.clone());
+                                        // Insert vardiff state for this downstream only if vardiff is enabled
+                                        if self.config.downstream_difficulty_config.enable_vardiff {
+                                            let vardiff = Arc::new(RwLock::new(VardiffState::new().expect("Failed to create vardiffstate")));
+                                            d.vardiff.insert(downstream_id, vardiff);
+                                        }
+                                    });
+                                info!("Downstream {} registered successfully (channel will be opened after first message)", downstream_id);
+                                // Start downstream tasks immediately, but defer channel opening until first message
+                                let status_sender = StatusSender::Downstream {
+                                    downstream_id,
+                                    tx: status_sender.clone(),
+                                };
+                                Downstream::run_downstream_tasks(
+                                    downstream,
+                                    notify_shutdown.clone(),
+                                    shutdown_complete_tx.clone(),
+                                    status_sender,
+                                    task_manager.clone(),
+                                );
+                            }
+                            Err(e) => {
+                                warn!("Failed to accept new connection: {:?}", e);
+                            }
+                        }
                     }
-                }
-                res = Self::handle_upstream_message(
-                    Arc::clone(&self),
-                    first_target,
-                ) => {
-                    if let Err(e) = res {
-                        handle_error(&sv1_status_sender, e).await;
-                        break;
+                    res = Self::handle_downstream_message(
+                        Arc::clone(&self)
+                    ) => {
+                        if let Err(e) = res {
+                            handle_error(&sv1_status_sender, e).await;
+                            break;
+                        }
+                    }
+                    res = Self::handle_upstream_message(
+                        Arc::clone(&self),
+                        first_target,
+                    ) => {
+                        if let Err(e) = res {
+                            handle_error(&sv1_status_sender, e).await;
+                            break;
+                        }
                     }
                 }
             }
-        }
-        self.sv1_server_channel_state.drop();
-        drop(shutdown_complete_tx);
-        debug!("SV1 Server main listener loop exited.");
+            self.sv1_server_channel_state.drop();
+            drop(shutdown_complete_tx);
+            debug!("SV1 Server main listener loop exited.");
+        });
+
         Ok(())
     }
 
