@@ -3,7 +3,7 @@ use crate::{
     utils::ShutdownMessage,
 };
 use async_channel::Sender;
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use stratum_apps::{
     custom_mutex::Mutex,
     stratum_core::{
@@ -16,7 +16,7 @@ use stratum_apps::{
     },
 };
 use tokio::{sync::broadcast, time};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 /// Handles all variable difficulty adjustment logic for the SV1 server.
 ///
@@ -65,39 +65,6 @@ impl DifficultyManager {
                         Ok(ShutdownMessage::ShutdownAll) => {
                             debug!("SV1 Server: Vardiff loop received shutdown signal. Exiting.");
                             break 'vardiff_loop;
-                        }
-                        Ok(ShutdownMessage::DownstreamShutdown(downstream_id)) => {
-                            sv1_server_data.super_safe_lock(|d| {
-                                d.vardiff.remove(&downstream_id);
-                            });
-                        }
-                        Ok(ShutdownMessage::DownstreamShutdownAll) => {
-                            sv1_server_data.super_safe_lock(|d|{
-                                d.vardiff = HashMap::new();
-                                d.downstreams = HashMap::new();
-                            });
-                            info!("🔌 All downstreams removed from sv1 server as upstream changed");
-
-                            // In aggregated mode, send UpdateChannel to reflect the new state (no downstreams)
-                            Self::send_update_channel_on_downstream_state_change(
-                                &sv1_server_data,
-                                &channel_manager_sender,
-                                is_aggregated,
-                            ).await;
-                        }
-                        Ok(ShutdownMessage::UpstreamReconnectedResetAndShutdownDownstreams) => {
-                            sv1_server_data.super_safe_lock(|d|{
-                                d.vardiff = HashMap::new();
-                                d.downstreams = HashMap::new();
-                            });
-                            info!("🔌 All downstreams removed from sv1 server as upstream reconnected");
-
-                            // In aggregated mode, send UpdateChannel to reflect the new state (no downstreams)
-                            Self::send_update_channel_on_downstream_state_change(
-                                &sv1_server_data,
-                                &channel_manager_sender,
-                                is_aggregated,
-                            ).await;
                         }
                         _ => {}
                     }
