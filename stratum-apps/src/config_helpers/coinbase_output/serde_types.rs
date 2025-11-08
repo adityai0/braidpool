@@ -15,7 +15,6 @@ pub(super) struct LegacyCoinbaseOutput {
     /// - `"P2PKH"`: Pay-to-Public-Key-Hash
     /// - `"P2SH"`: Pay-to-Script-Hash
     /// - `"P2WPKH"`: Pay-to-Witness-Public-Key-Hash:w
-
     /// - `"P2WSH"`: Pay-to-Witness-Script-Hash
     /// - `"P2TR"`: Pay-to-Taproot
     pub(super) output_script_type: String,
