@@ -146,7 +146,7 @@ impl Sv1Server {
         )
         .unwrap();
 
-        let vardiff_fut = DifficultyManager::spawn_vardiff_loop(
+        let vardiff_future = DifficultyManager::spawn_vardiff_loop(
             self.sv1_server_data.clone(),
             self.sv1_server_channel_state.channel_manager_sender.clone(),
             self.sv1_server_channel_state
@@ -167,7 +167,7 @@ impl Sv1Server {
         let sv1_status_sender = StatusSender::Sv1Server(status_sender.clone());
         let task_manager_clone = task_manager.clone();
         task_manager_clone.spawn(async move {
-            tokio::pin!(vardiff_fut);
+            tokio::pin!(vardiff_future);
             loop {
                 tokio::select! {
                     message = shutdown_rx_main.recv() => {
@@ -310,7 +310,7 @@ impl Sv1Server {
                             break;
                         }
                     }
-                    _ = &mut vardiff_fut => {}
+                    _ = &mut vardiff_future => {}
                 }
             }
             self.sv1_server_channel_state.drop();
