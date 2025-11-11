@@ -21,7 +21,7 @@ use stratum_apps::{
     task_manager::TaskManager,
     utils::{
         protocol_message_type::{protocol_message_type, MessageType},
-        types::{Message, SV2Frame, StdFrame},
+        types::{Message, StdFrame},
     },
 };
 use tokio::{
@@ -275,7 +275,7 @@ impl Upstream {
     /// to the channel manager for processing and distribution to downstream connections.
     pub async fn on_upstream_message(
         &mut self,
-        mut sv2_frame: SV2Frame,
+        mut sv2_frame: StdFrame,
     ) -> Result<(), TproxyError> {
         debug!("Received SV2 frame from upstream.");
         let Some(message_type) = sv2_frame.get_header().map(|m| m.msg_type()) else {

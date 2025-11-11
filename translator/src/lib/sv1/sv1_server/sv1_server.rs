@@ -39,7 +39,7 @@ use stratum_apps::{
         sv1_api::IsServer,
     },
     task_manager::TaskManager,
-    utils::types::{DownstreamId, RequestId, SharesPerMinute},
+    utils::types::{DownstreamId, Hashrate, RequestId, SharesPerMinute},
 };
 use tokio::{
     net::TcpListener,
@@ -662,7 +662,7 @@ impl Sv1Server {
                 .downstream_data
                 .super_safe_lock(|d| d.downstream_id) as RequestId,
             user_identity.clone(),
-            hashrate as SharesPerMinute,
+            hashrate as Hashrate,
             max_target,
             min_extranonce_size,
         ) {

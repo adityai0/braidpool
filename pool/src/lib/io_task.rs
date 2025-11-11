@@ -5,7 +5,7 @@ use stratum_apps::{
     network_helpers::noise_stream::{NoiseTcpReadHalf, NoiseTcpWriteHalf},
     stratum_core::framing_sv2::framing::Frame,
     task_manager::TaskManager,
-    utils::types::{Message, SV2Frame},
+    utils::types::{Message, StdFrame},
 };
 use tokio::sync::broadcast;
 use tracing::{error, trace, warn, Instrument as _};
@@ -22,8 +22,8 @@ pub fn spawn_io_tasks(
     task_manager: Arc<TaskManager>,
     mut reader: NoiseTcpReadHalf<Message>,
     mut writer: NoiseTcpWriteHalf<Message>,
-    outbound_rx: Receiver<SV2Frame>,
-    inbound_tx: Sender<SV2Frame>,
+    outbound_rx: Receiver<StdFrame>,
+    inbound_tx: Sender<StdFrame>,
     notify_shutdown: broadcast::Sender<ShutdownMessage>,
     status_sender: StatusSender,
 ) {

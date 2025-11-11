@@ -25,7 +25,7 @@ use stratum_apps::{
     task_manager::TaskManager,
     utils::{
         protocol_message_type::{protocol_message_type, MessageType},
-        types::{ChannelId, DownstreamId, Message, SV2Frame, StdFrame},
+        types::{ChannelId, DownstreamId, Message, StdFrame},
     },
 };
 use tokio::sync::broadcast;
@@ -68,8 +68,8 @@ pub struct DownstreamData {
 pub struct DownstreamChannel {
     channel_manager_sender: Sender<(DownstreamId, Mining<'static>)>,
     channel_manager_receiver: broadcast::Sender<(DownstreamId, Mining<'static>)>,
-    downstream_sender: Sender<SV2Frame>,
-    downstream_receiver: Receiver<SV2Frame>,
+    downstream_sender: Sender<StdFrame>,
+    downstream_receiver: Receiver<StdFrame>,
 }
 
 /// Represents a downstream client connected to this node.
@@ -98,8 +98,8 @@ impl Downstream {
             downstream_id,
             tx: status_sender,
         };
-        let (inbound_tx, inbound_rx) = unbounded::<SV2Frame>();
-        let (outbound_tx, outbound_rx) = unbounded::<SV2Frame>();
+        let (inbound_tx, inbound_rx) = unbounded::<StdFrame>();
+        let (outbound_tx, outbound_rx) = unbounded::<StdFrame>();
         spawn_io_tasks(
             task_manager,
             noise_stream_reader,
