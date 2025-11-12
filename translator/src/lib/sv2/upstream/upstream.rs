@@ -21,7 +21,7 @@ use stratum_apps::{
     task_manager::TaskManager,
     utils::{
         protocol_message_type::{protocol_message_type, MessageType},
-        types::{Message, StdFrame},
+        types::{Message, Sv2Frame},
     },
 };
 use tokio::{
@@ -217,7 +217,7 @@ impl Upstream {
         debug!("Upstream: initiating SV2 handshake...");
         // Build SetupConnection message
         let setup_conn_msg = Self::get_setup_connection_message(2, 2, false)?;
-        let sv2_frame: StdFrame =
+        let sv2_frame: Sv2Frame =
             Message::Common(setup_conn_msg.into())
                 .try_into()
                 .map_err(|e| {
@@ -235,7 +235,7 @@ impl Upstream {
                 TproxyError::ChannelErrorSender
             })?;
 
-        let mut incoming: StdFrame =
+        let mut incoming: Sv2Frame =
             match self.upstream_channel_state.upstream_receiver.recv().await {
                 Ok(frame) => {
                     debug!("Received handshake response from upstream.");
@@ -275,7 +275,7 @@ impl Upstream {
     /// to the channel manager for processing and distribution to downstream connections.
     pub async fn on_upstream_message(
         &mut self,
-        mut sv2_frame: StdFrame,
+        mut sv2_frame: Sv2Frame,
     ) -> Result<(), TproxyError> {
         debug!("Received SV2 frame from upstream.");
         let Some(message_type) = sv2_frame.get_header().map(|m| m.msg_type()) else {
@@ -404,7 +404,7 @@ impl Upstream {
     pub async fn send_upstream(&self, message: Mining<'static>) -> Result<(), TproxyError> {
         debug!("Sending message to upstream.");
         let message = AnyMessage::Mining(message);
-        let sv2_frame: StdFrame = message.try_into()?;
+        let sv2_frame: Sv2Frame = message.try_into()?;
 
         self.upstream_channel_state
             .upstream_sender

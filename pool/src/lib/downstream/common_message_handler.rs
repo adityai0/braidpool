@@ -8,7 +8,7 @@ use stratum_apps::{
         handlers_sv2::HandleCommonMessagesFromClientAsync,
         parsers_sv2::AnyMessage,
     },
-    utils::types::StdFrame,
+    utils::types::Sv2Frame,
 };
 use tracing::info;
 
@@ -34,7 +34,7 @@ impl HandleCommonMessagesFromClientAsync for Downstream {
             used_version: 2,
             flags: msg.flags,
         };
-        let frame: StdFrame = AnyMessage::Common(response.into_static().into()).try_into()?;
+        let frame: Sv2Frame = AnyMessage::Common(response.into_static().into()).try_into()?;
         self.downstream_channel
             .downstream_sender
             .send(frame)

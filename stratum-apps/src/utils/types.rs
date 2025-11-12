@@ -11,7 +11,7 @@ pub type SharesPerMinute = f32;
 pub type SharesBatchSize = usize;
 
 pub type Message = AnyMessage<'static>;
-pub type StdFrame = StandardSv2Frame<Message>;
+pub type Sv2Frame = StandardSv2Frame<Message>;
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct VardiffKey {
