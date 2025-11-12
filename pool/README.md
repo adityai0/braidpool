@@ -23,6 +23,20 @@ It can receive templates from two potential sources:
 - Sv2 Template Provider: a separate Sv2 application running either locally or on a different machine, for which a (optionally encrypted) TCP connection will be established
 - Bitcoin Core v30+: an officially released Bitcoin Core node running locally, on the same machine, for which a UNIX socket connection will be established
 
+## Requirements
+
+In order to build this, crate you need `capnproto` on your system.
+
+For example, on Ubuntu/Debian:
+```
+apt-get install capnproto libcapnp-dev
+```
+
+Or macOS:
+```
+brew install capnproto
+```
+
 ## Setup
 
 ### Configuration File
