@@ -1,14 +1,17 @@
 use crate::sv1::downstream::downstream::Downstream;
 use std::{
     collections::HashMap,
-    sync::{atomic::AtomicUsize, Arc, RwLock},
+    sync::{
+        atomic::{AtomicU32, AtomicUsize},
+        Arc, RwLock,
+    },
 };
 use stratum_apps::{
     stratum_core::{
         bitcoin::Target, channels_sv2::vardiff::classic::VardiffState, mining_sv2::SetNewPrevHash,
         sv1_api::server_to_client,
     },
-    utils::types::{ChannelId, DownstreamId, Hashrate},
+    utils::types::{ChannelId, DownstreamId, Hashrate, RequestId},
 };
 
 #[derive(Debug, Clone)]
@@ -21,7 +24,7 @@ pub struct PendingTargetUpdate {
 #[derive(Debug)]
 pub struct Sv1ServerData {
     pub downstreams: HashMap<DownstreamId, Arc<Downstream>>,
-    pub request_id_to_downstream_id: HashMap<u32, u32>,
+    pub request_id_to_downstream_id: HashMap<RequestId, DownstreamId>,
     pub vardiff: HashMap<DownstreamId, Arc<RwLock<VardiffState>>>,
     pub prevhash: Option<SetNewPrevHash<'static>>,
     pub downstream_id_factory: AtomicUsize,

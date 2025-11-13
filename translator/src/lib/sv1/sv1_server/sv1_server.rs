@@ -39,7 +39,7 @@ use stratum_apps::{
         sv1_api::IsServer,
     },
     task_manager::TaskManager,
-    utils::types::{DownstreamId, Hashrate, RequestId, SharesPerMinute},
+    utils::types::{DownstreamId, Hashrate, SharesPerMinute},
 };
 use tokio::{
     net::TcpListener,
