@@ -11,10 +11,12 @@
 //! It relies on several sub-modules (`config`, `downstream_sv1`, `upstream_sv2`, `proxy`, `status`,
 //! etc.) for specialized functionalities.
 #![allow(clippy::module_inception)]
-use async_channel::unbounded;
-use std::{net::SocketAddr, sync::Arc};
-use stratum_apps::task_manager::TaskManager;
-use tokio::sync::mpsc;
+use async_channel::{unbounded, Receiver, Sender};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
+use stratum_apps::{
+    key_utils::Secp256k1PublicKey, stratum_core::parsers_sv2::Mining, task_manager::TaskManager,
+};
+use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error, info, warn};
 
 pub use stratum_apps::stratum_core::sv1_api::server_to_client;
@@ -22,6 +24,7 @@ pub use stratum_apps::stratum_core::sv1_api::server_to_client;
 use config::TranslatorConfig;
 
 use crate::{
+    error::TproxyError,
     status::{State, Status},
     sv1::sv1_server::sv1_server::Sv1Server,
     sv2::{channel_manager::ChannelMode, ChannelManager, Upstream},
@@ -75,36 +78,32 @@ impl TranslatorSv2 {
 
         debug!("Channels initialized.");
 
-        let upstream_addresses = self
+        let mut upstream_addresses = self
             .config
             .upstreams
             .iter()
             .map(|upstream| {
                 let upstream_addr =
                     SocketAddr::new(upstream.address.parse().unwrap(), upstream.port);
-                (upstream_addr, upstream.authority_pubkey)
+                (upstream_addr, upstream.authority_pubkey, false)
             })
             .collect::<Vec<_>>();
 
-        let upstream = match Upstream::new(
-            &upstream_addresses,
-            upstream_to_channel_manager_sender.clone(),
-            channel_manager_to_upstream_receiver.clone(),
-            notify_shutdown.clone(),
-            shutdown_complete_tx.clone(),
-            task_manager.clone(),
-        )
-        .await
+        if let Err(e) = self
+            .initialize_upstream(
+                &mut upstream_addresses,
+                channel_manager_to_upstream_receiver.clone(),
+                upstream_to_channel_manager_sender.clone(),
+                notify_shutdown.clone(),
+                status_sender.clone(),
+                shutdown_complete_tx.clone(),
+                task_manager.clone(),
+            )
+            .await
         {
-            Ok(upstream) => {
-                debug!("Upstream initialized successfully.");
-                upstream
-            }
-            Err(e) => {
-                error!("Failed to initialize upstream connection: {e:?}");
-                return;
-            }
-        };
+            error!("Failed to initialize any upstream connection: {e:?}");
+            return;
+        }
 
         let channel_manager = Arc::new(ChannelManager::new(
             channel_manager_to_upstream_sender,
@@ -139,19 +138,6 @@ impl TranslatorSv2 {
             task_manager.clone(),
         )
         .await;
-
-        if let Err(e) = upstream
-            .start(
-                notify_shutdown.clone(),
-                shutdown_complete_tx.clone(),
-                status_sender.clone(),
-                task_manager.clone(),
-            )
-            .await
-        {
-            error!("Failed to start upstream listener: {e:?}");
-            return;
-        }
 
         if let Err(e) = Sv1Server::start(
             sv1_server,
@@ -193,38 +179,22 @@ impl TranslatorSv2 {
                             State::UpstreamShutdown(msg) => {
                                 warn!("Upstream connection dropped: {msg:?} — attempting reconnection...");
 
-                                match Upstream::new(
-                                    &upstream_addresses,
-                                    upstream_to_channel_manager_sender.clone(),
+                                if let Err(e) = self.initialize_upstream(
+                                    &mut upstream_addresses,
                                     channel_manager_to_upstream_receiver.clone(),
+                                    upstream_to_channel_manager_sender.clone(),
                                     notify_shutdown.clone(),
+                                    status_sender.clone(),
                                     shutdown_complete_tx.clone(),
                                     task_manager.clone()
                                 ).await {
-                                    Ok(upstream) => {
-                                        if let Err(e) = upstream
-                                            .start(
-                                                notify_shutdown.clone(),
-                                                shutdown_complete_tx.clone(),
-                                                status_sender.clone(),
-                                                task_manager.clone()
-                                            )
-                                            .await
-                                        {
-                                            error!("Restarted upstream failed to start: {e:?}");
-                                            let _ = notify_shutdown.send(ShutdownMessage::ShutdownAll);
-                                            break;
-                                        } else {
-                                            info!("Upstream restarted successfully.");
-                                            // Reset channel manager state and shutdown downstreams in one message
-                                            let _ = notify_shutdown.send(ShutdownMessage::UpstreamReconnectedResetAndShutdownDownstreams);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to reinitialize upstream after disconnect: {e:?}");
-                                        let _ = notify_shutdown.send(ShutdownMessage::ShutdownAll);
-                                        break;
-                                    }
+                                    error!("Couldn't perform fallback, shutting system down: {e:?}");
+                                    let _ = notify_shutdown.send(ShutdownMessage::ShutdownAll);
+                                    break;
+                                } else {
+                                    info!("Upstream restarted successfully.");
+                                    // Reset channel manager state and shutdown downstreams in one message
+                                    let _ = notify_shutdown.send(ShutdownMessage::UpstreamReconnectedResetAndShutdownDownstreams);
                                 }
                             }
                         }
@@ -249,4 +219,116 @@ impl TranslatorSv2 {
         task_manager.join_all().await;
         info!("TranslatorSv2 shutdown complete.");
     }
+
+    /// Initializes the upstream connection list, handling retries, fallbacks, and flagging.
+    ///
+    /// Upstreams are tried sequentially, each receiving a fixed number of retries before we
+    /// advance to the next entry. This ensures we exhaust every healthy upstream before shutting
+    /// the translator down.
+    ///
+    /// The boolean flag in the `(SocketAddr, Secp256k1PublicKey, bool)` tuple acts as the
+    /// upstream's state machine: `false` means "never tried", while `true` means "already
+    /// connected or marked as malicious". Once an upstream is flagged we skip it on future loops
+    /// to avoid hammering known-bad endpoints during failover.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn initialize_upstream(
+        &self,
+        upstreams: &mut [(SocketAddr, Secp256k1PublicKey, bool)],
+        channel_manager_to_upstream_receiver: Receiver<Mining<'static>>,
+        upstream_to_channel_manager_sender: Sender<Mining<'static>>,
+        notify_shutdown: broadcast::Sender<ShutdownMessage>,
+        status_sender: Sender<Status>,
+        shutdown_complete_tx: mpsc::Sender<()>,
+        task_manager: Arc<TaskManager>,
+    ) -> Result<(), TproxyError> {
+        const MAX_RETRIES: usize = 3;
+        let upstream_len = upstreams.len();
+        for (i, upstream_addr) in upstreams.iter_mut().enumerate() {
+            info!(
+                "Trying upstream {} of {}: {:?}",
+                i + 1,
+                upstream_len,
+                upstream_addr
+            );
+
+            tokio::time::sleep(Duration::from_secs(1)).await;
+
+            if upstream_addr.2 {
+                info!(
+                    "Upstream previously marked as malicious, skipping initial attempt warnings."
+                );
+                continue;
+            }
+
+            for attempt in 1..=MAX_RETRIES {
+                info!("Connection attempt {}/{}...", attempt, MAX_RETRIES);
+
+                match try_initialize_single(
+                    upstream_addr,
+                    upstream_to_channel_manager_sender.clone(),
+                    channel_manager_to_upstream_receiver.clone(),
+                    notify_shutdown.clone(),
+                    status_sender.clone(),
+                    shutdown_complete_tx.clone(),
+                    task_manager.clone(),
+                )
+                .await
+                {
+                    Ok(pair) => {
+                        upstream_addr.2 = true;
+                        return Ok(pair);
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Attempt {}/{} failed for {:?}: {:?}",
+                            attempt, MAX_RETRIES, upstream_addr, e
+                        );
+                        if attempt == MAX_RETRIES {
+                            warn!(
+                                "Max retries reached for {:?}, moving to next upstream",
+                                upstream_addr
+                            );
+                        }
+                    }
+                }
+            }
+            upstream_addr.2 = true;
+        }
+
+        tracing::error!("All upstreams failed after {} retries each", MAX_RETRIES);
+        Err(TproxyError::Shutdown)
+    }
+}
+
+// Attempts to initialize a single upstream.
+#[allow(clippy::too_many_arguments)]
+async fn try_initialize_single(
+    upstream_addr: &(SocketAddr, Secp256k1PublicKey, bool),
+    upstream_to_channel_manager_sender: Sender<Mining<'static>>,
+    channel_manager_to_upstream_receiver: Receiver<Mining<'static>>,
+    notify_shutdown: broadcast::Sender<ShutdownMessage>,
+    status_sender: Sender<Status>,
+    shutdown_complete_tx: mpsc::Sender<()>,
+    task_manager: Arc<TaskManager>,
+) -> Result<(), TproxyError> {
+    info!("Upstream connection in-progress at initialize single");
+    let upstream = Upstream::new(
+        upstream_addr,
+        upstream_to_channel_manager_sender,
+        channel_manager_to_upstream_receiver,
+        notify_shutdown.clone(),
+        shutdown_complete_tx.clone(),
+        task_manager.clone(),
+    )
+    .await?;
+
+    upstream
+        .start(
+            notify_shutdown,
+            shutdown_complete_tx,
+            status_sender,
+            task_manager,
+        )
+        .await?;
+    Ok(())
 }

@@ -174,7 +174,7 @@ impl Sv1Server {
                     message = shutdown_rx_main.recv() => {
                         match message {
                             Ok(ShutdownMessage::ShutdownAll) => {
-                                debug!("SV1 Server: Vardiff loop received shutdown signal. Exiting.");
+                                debug!("SV1 Server: received shutdown signal. Exiting.");
                                 break;
                             }
                             Ok(ShutdownMessage::DownstreamShutdown(downstream_id)) => {
