@@ -598,19 +598,6 @@ impl Sv1Server {
                     self.handle_set_target_without_vardiff(m).await;
                 }
             }
-
-            Mining::CloseChannel(_) => {
-                todo!("Handle CloseChannel message from upstream");
-            }
-
-            Mining::OpenMiningChannelError(_) => {
-                todo!("Handle OpenMiningChannelError message from upstream");
-            }
-
-            Mining::UpdateChannelError(_) => {
-                todo!("Handle UpdateChannelError message from upstream");
-            }
-
             _ => unreachable!("Unexpected message type received from upstream"),
         }
 
