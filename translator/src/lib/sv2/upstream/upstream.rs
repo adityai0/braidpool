@@ -350,7 +350,7 @@ impl Upstream {
                                 debug!("Upstream: received frame.");
                                 if let Err(e) = self.on_upstream_message(frame).await {
                                     error!("Upstream: error while processing message: {e:?}");
-                                    handle_error(&status_sender, TproxyError::ChannelErrorSender).await;
+                                    handle_error(&status_sender, e).await;
                                 }
                             }
                             Err(e) => {
@@ -368,7 +368,7 @@ impl Upstream {
                                 debug!("Upstream: sending message from channel manager: {:?}", msg);
                                 if let Err(e) = self.send_upstream(msg).await {
                                     error!("Upstream: failed to send message: {e:?}");
-                                    handle_error(&status_sender, TproxyError::ChannelErrorSender).await;
+                                    handle_error(&status_sender, e).await;
                                 }
                             }
                             Err(e) => {

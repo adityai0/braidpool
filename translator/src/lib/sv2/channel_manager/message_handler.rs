@@ -2,6 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::{
     error::TproxyError,
+    status::{State, Status},
     sv2::{channel_manager::ChannelMode, ChannelManager},
     utils::proxy_extranonce_prefix_len,
 };
@@ -249,7 +250,14 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
         m: OpenMiningChannelError<'_>,
     ) -> Result<(), Self::Error> {
         warn!("Received: {}", m);
-        todo!("OpenMiningChannelError not handled yet");
+        _ = self
+            .channel_state
+            .status_sender
+            .send(Status {
+                state: State::UpstreamShutdown(TproxyError::Shutdown),
+            })
+            .await;
+        Ok(())
     }
 
     async fn handle_update_channel_error(

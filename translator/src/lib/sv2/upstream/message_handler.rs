@@ -16,7 +16,7 @@ impl HandleCommonMessagesFromServerAsync for Upstream {
         msg: SetupConnectionError<'_>,
     ) -> Result<(), Self::Error> {
         error!("Received: {}", msg);
-        todo!()
+        Err(TproxyError::Shutdown)
     }
 
     async fn handle_setup_connection_success(
