@@ -590,7 +590,9 @@ impl Sv1Server {
                     self.handle_set_target_without_vardiff(m).await;
                 }
             }
-            _ => unreachable!("Unexpected message type received from upstream"),
+            // Guaranteed unreachable: the channel manager only forwards valid,
+            // pre-filtered messages, so no other variants can arrive here.
+            _ => unreachable!("Invalid message: should have been filtered earlier"),
         }
 
         Ok(())
