@@ -1,6 +1,4 @@
 mod args;
-use std::process;
-
 use stratum_apps::config_helpers::logging::init_logging;
 pub use translator_sv2::{config, error, status, sv1, sv2, TranslatorSv2};
 
@@ -20,6 +18,4 @@ async fn main() {
     init_logging(proxy_config.log_dir());
 
     TranslatorSv2::new(proxy_config).start().await;
-
-    process::exit(1);
 }
