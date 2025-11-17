@@ -237,14 +237,6 @@ impl Sv1Server {
                                     d.downstreams = HashMap::new();
                                 });
                                 info!("🔌 All downstreams removed from sv1 server as upstream reconnected");
-                                // In aggregated mode, send UpdateChannel to reflect the new state (no downstreams)
-                                if self.config.downstream_difficulty_config.enable_vardiff {
-                                    DifficultyManager::send_update_channel_on_downstream_state_change(
-                                            &self.sv1_server_data,
-                                            &self.sv1_server_channel_state.channel_manager_sender,
-                                            self.config.aggregate_channels,
-                                        ).await;
-                                }
                             }
                             _ => {}
                         }
