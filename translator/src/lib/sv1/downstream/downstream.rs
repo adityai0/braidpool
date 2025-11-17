@@ -120,7 +120,7 @@ impl Downstream {
                                 info!("All downstream shutdown message received");
                                 break;
                             }
-                            Ok(ShutdownMessage::UpstreamReconnectedResetAndShutdownDownstreams) => {
+                            Ok(ShutdownMessage::UpstreamFallback) => {
                                 info!("All downstream shutdown message received (upstream reconnected)");
                                 break;
                             }

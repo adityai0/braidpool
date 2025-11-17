@@ -170,7 +170,7 @@ pub enum ShutdownMessage {
     /// Shutdown a specific downstream connection by ID
     DownstreamShutdown(DownstreamId),
     /// Reset channel manager state and shutdown downstreams due to upstream reconnection
-    UpstreamReconnectedResetAndShutdownDownstreams,
+    UpstreamFallback,
 }
 
 #[cfg(test)]
@@ -189,14 +189,14 @@ mod tests {
         let msg1 = ShutdownMessage::ShutdownAll;
         let msg2 = ShutdownMessage::DownstreamShutdown(123);
         let msg3 = ShutdownMessage::DownstreamShutdownAll;
-        let msg4 = ShutdownMessage::UpstreamReconnectedResetAndShutdownDownstreams;
+        let msg4 = ShutdownMessage::UpstreamFallback;
 
         // Test Debug implementation
         assert!(format!("{:?}", msg1).contains("ShutdownAll"));
         assert!(format!("{:?}", msg2).contains("DownstreamShutdown"));
         assert!(format!("{:?}", msg2).contains("123"));
         assert!(format!("{:?}", msg3).contains("DownstreamShutdownAll"));
-        assert!(format!("{:?}", msg4).contains("UpstreamReconnected"));
+        assert!(format!("{:?}", msg4).contains("UpstreamFallback"));
     }
 
     #[test]

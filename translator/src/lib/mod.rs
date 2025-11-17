@@ -178,6 +178,7 @@ impl TranslatorSv2 {
                             }
                             State::UpstreamShutdown(msg) => {
                                 warn!("Upstream connection dropped: {msg:?} — attempting reconnection...");
+                                _ = notify_shutdown.send(ShutdownMessage::DownstreamShutdownAll);
 
                                 if let Err(e) = self.initialize_upstream(
                                     &mut upstream_addresses,
@@ -194,7 +195,7 @@ impl TranslatorSv2 {
                                 } else {
                                     info!("Upstream restarted successfully.");
                                     // Reset channel manager state and shutdown downstreams in one message
-                                    let _ = notify_shutdown.send(ShutdownMessage::UpstreamReconnectedResetAndShutdownDownstreams);
+                                    let _ = notify_shutdown.send(ShutdownMessage::UpstreamFallback);
                                 }
                             }
                         }

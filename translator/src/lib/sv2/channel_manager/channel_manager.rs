@@ -118,7 +118,7 @@ impl ChannelManager {
                                 info!("ChannelManager: received shutdown signal.");
                                 break;
                             }
-                            Ok(ShutdownMessage::UpstreamReconnectedResetAndShutdownDownstreams) => {
+                            Ok(ShutdownMessage::UpstreamFallback) => {
                                 info!("ChannelManager: upstream reconnected, resetting channel state.");
                                 self.channel_manager_data.super_safe_lock(|data| {
                                     data.reset_for_upstream_reconnection();
