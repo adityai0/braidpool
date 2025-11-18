@@ -57,9 +57,9 @@ impl Upstream {
     ///
     /// # Arguments
     /// * `upstreams` - A single `(address, public_key, is_flagged)` tuple representing the upstream
-    ///   candidate currently being attempted. The `is_flagged` is set once the upstream has
-    ///   either been connected to successfully or marked as malicious. Because `new` is only called
-    ///   from `try_initialize_upstream`, we can treat this flag as the definitive state for that
+    ///   candidate currently being attempted. The `is_flagged` is set once the upstream has either
+    ///   been connected to successfully or marked as malicious. Because `new` is only called from
+    ///   `try_initialize_upstream`, we can treat this flag as the definitive state for that
     ///   upstream.
     /// * `channel_manager_sender` - Channel to send messages to the channel manager
     /// * `channel_manager_receiver` - Channel to receive messages from the channel manager

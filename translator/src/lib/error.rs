@@ -60,6 +60,8 @@ pub enum TproxyError {
     InvalidMerkleRoot,
     /// Shutdown signal received
     Shutdown,
+    /// Fallback
+    Fallback,
     /// Pending channel not found for the given request ID
     PendingChannelNotFound(u32),
     /// Represents a generic channel send failure, described by a string.
@@ -104,6 +106,7 @@ impl fmt::Display for TproxyError {
             JobNotFound => write!(f, "Job not found during share validation"),
             InvalidMerkleRoot => write!(f, "Invalid merkle root during share validation"),
             Shutdown => write!(f, "Shutdown signal"),
+            Fallback => write!(f, "Fallback signal"),
             PendingChannelNotFound(request_id) => {
                 write!(f, "No pending channel found for request_id: {}", request_id)
             }

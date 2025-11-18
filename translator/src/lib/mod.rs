@@ -252,10 +252,10 @@ impl TranslatorSv2 {
                 upstream_addr
             );
 
-            tokio::time::sleep(Duration::from_secs(1)).await;
-
+            // Skip upstreams already marked as malicious. We’ve previously failed or
+            // blacklisted them, so no need to warn or attempt reconnecting again.
             if upstream_addr.2 {
-                info!(
+                debug!(
                     "Upstream previously marked as malicious, skipping initial attempt warnings."
                 );
                 continue;
@@ -263,8 +263,9 @@ impl TranslatorSv2 {
 
             for attempt in 1..=MAX_RETRIES {
                 info!("Connection attempt {}/{}...", attempt, MAX_RETRIES);
+                tokio::time::sleep(Duration::from_secs(1)).await;
 
-                match try_initialize_single(
+                match try_initialize_upstream(
                     upstream_addr,
                     upstream_to_channel_manager_sender.clone(),
                     channel_manager_to_upstream_receiver.clone(),
@@ -302,8 +303,7 @@ impl TranslatorSv2 {
 }
 
 // Attempts to initialize a single upstream.
-#[allow(clippy::too_many_arguments)]
-async fn try_initialize_single(
+async fn try_initialize_upstream(
     upstream_addr: &(SocketAddr, Secp256k1PublicKey, bool),
     upstream_to_channel_manager_sender: Sender<Mining<'static>>,
     channel_manager_to_upstream_receiver: Receiver<Mining<'static>>,
@@ -312,7 +312,6 @@ async fn try_initialize_single(
     shutdown_complete_tx: mpsc::Sender<()>,
     task_manager: Arc<TaskManager>,
 ) -> Result<(), TproxyError> {
-    info!("Upstream connection in-progress at initialize single");
     let upstream = Upstream::new(
         upstream_addr,
         upstream_to_channel_manager_sender,

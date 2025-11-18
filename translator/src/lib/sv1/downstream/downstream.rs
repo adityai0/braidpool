@@ -121,7 +121,7 @@ impl Downstream {
                                 break;
                             }
                             Ok(ShutdownMessage::UpstreamFallback) => {
-                                info!("All downstream shutdown message received (upstream reconnected)");
+                                info!("Upstream fallback happened, disconnecting downstream.");
                                 break;
                             }
                             Ok(_) => {
