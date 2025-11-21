@@ -1,5 +1,8 @@
+use std::net::SocketAddr;
+
 use stratum_apps::{
     custom_mutex::Mutex,
+    key_utils::Secp256k1PublicKey,
     stratum_core::{
         binary_sv2::{Sv2DataType, U256},
         bitcoin::{
@@ -16,6 +19,7 @@ use stratum_apps::{
     utils::types::{ChannelId, DownstreamId},
 };
 
+use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::error::TproxyError;
@@ -165,16 +169,23 @@ pub fn proxy_extranonce_prefix_len(
 pub enum ShutdownMessage {
     /// Shutdown all components immediately
     ShutdownAll,
-    /// Shutdown all downstream connections
-    DownstreamShutdownAll,
     /// Shutdown a specific downstream connection by ID
     DownstreamShutdown(DownstreamId),
     /// Reset channel manager state and shutdown downstreams due to upstream reconnection
-    UpstreamFallback,
+    UpstreamFallback { tx: mpsc::Sender<()> },
+}
+
+#[derive(Debug)]
+pub struct UpstreamEntry {
+    pub addr: SocketAddr,
+    pub authority_pubkey: Secp256k1PublicKey,
+    pub tried_or_flagged: bool,
 }
 
 #[cfg(test)]
 mod tests {
+    use tokio::sync::mpsc;
+
     use super::*;
 
     #[test]
@@ -188,15 +199,14 @@ mod tests {
     fn test_shutdown_message_debug() {
         let msg1 = ShutdownMessage::ShutdownAll;
         let msg2 = ShutdownMessage::DownstreamShutdown(123);
-        let msg3 = ShutdownMessage::DownstreamShutdownAll;
-        let msg4 = ShutdownMessage::UpstreamFallback;
+        let (tx, _rx) = mpsc::channel(1);
+        let msg3 = ShutdownMessage::UpstreamFallback { tx };
 
         // Test Debug implementation
         assert!(format!("{:?}", msg1).contains("ShutdownAll"));
         assert!(format!("{:?}", msg2).contains("DownstreamShutdown"));
         assert!(format!("{:?}", msg2).contains("123"));
-        assert!(format!("{:?}", msg3).contains("DownstreamShutdownAll"));
-        assert!(format!("{:?}", msg4).contains("UpstreamFallback"));
+        assert!(format!("{:?}", msg3).contains("UpstreamFallback"));
     }
 
     #[test]

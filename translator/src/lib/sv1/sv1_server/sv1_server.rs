@@ -175,6 +175,7 @@ impl Sv1Server {
                         match message {
                             Ok(ShutdownMessage::ShutdownAll) => {
                                 debug!("SV1 Server: received shutdown signal. Exiting.");
+                                self.sv1_server_channel_state.drop();
                                 break;
                             }
                             Ok(ShutdownMessage::DownstreamShutdown(downstream_id)) => {
@@ -212,23 +213,16 @@ impl Sv1Server {
                                     }
                                 }
                             }
-                            Ok(ShutdownMessage::DownstreamShutdownAll) => {
+                            Ok(ShutdownMessage::UpstreamFallback {tx}) => {
                                 self.sv1_server_data.super_safe_lock(|d|{
                                     if self.config.downstream_difficulty_config.enable_vardiff {
                                         d.vardiff = HashMap::new();
                                     }
                                     d.downstreams = HashMap::new();
                                 });
-                                info!("🔌 All downstreams removed from sv1 server as upstream changed");
-                            }
-                            Ok(ShutdownMessage::UpstreamFallback) => {
-                                self.sv1_server_data.super_safe_lock(|d|{
-                                    if self.config.downstream_difficulty_config.enable_vardiff {
-                                        d.vardiff = HashMap::new();
-                                    }
-                                    d.downstreams = HashMap::new();
-                                });
-                                info!("🔌 All downstreams removed from sv1 server as upstream reconnected");
+                                info!("Fallback in processing stopping sv1 server");
+                                drop(tx);
+                                break;
                             }
                             _ => {}
                         }
@@ -283,6 +277,7 @@ impl Sv1Server {
                     ) => {
                         if let Err(e) = res {
                             handle_error(&sv1_status_sender, e).await;
+                            self.sv1_server_channel_state.drop();
                             break;
                         }
                     }
@@ -292,13 +287,13 @@ impl Sv1Server {
                     ) => {
                         if let Err(e) = res {
                             handle_error(&sv1_status_sender, e).await;
+                            self.sv1_server_channel_state.drop();
                             break;
                         }
                     }
                     _ = &mut vardiff_future => {}
                 }
             }
-            self.sv1_server_channel_state.drop();
             drop(shutdown_complete_tx);
             debug!("SV1 Server main listener loop exited.");
         });

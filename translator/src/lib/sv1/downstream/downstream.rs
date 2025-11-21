@@ -116,12 +116,9 @@ impl Downstream {
                                 info!("Downstream {downstream_id}: received targeted shutdown");
                                 break;
                             }
-                            Ok(ShutdownMessage::DownstreamShutdownAll) => {
-                                info!("All downstream shutdown message received");
-                                break;
-                            }
-                            Ok(ShutdownMessage::UpstreamFallback) => {
+                            Ok(ShutdownMessage::UpstreamFallback{tx}) => {
                                 info!("Upstream fallback happened, disconnecting downstream.");
+                                drop(tx);
                                 break;
                             }
                             Ok(_) => {

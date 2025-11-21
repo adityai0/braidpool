@@ -3,12 +3,11 @@ use crate::{
     io_task::spawn_io_tasks,
     status::{handle_error, Status, StatusSender},
     sv2::upstream::channel::UpstreamChannelState,
-    utils::ShutdownMessage,
+    utils::{ShutdownMessage, UpstreamEntry},
 };
 use async_channel::{unbounded, Receiver, Sender};
-use std::{net::SocketAddr, sync::Arc};
+use std::sync::Arc;
 use stratum_apps::{
-    key_utils::Secp256k1PublicKey,
     network_helpers::noise_stream::NoiseTcpStream,
     stratum_core::{
         codec_sv2::HandshakeRole,
@@ -56,9 +55,9 @@ impl Upstream {
     /// to connect to each server multiple times before giving up.
     ///
     /// # Arguments
-    /// * `upstreams` - A single `(address, public_key, is_flagged)` tuple representing the upstream
-    ///   candidate currently being attempted. The `is_flagged` is set once the upstream has either
-    ///   been connected to successfully or marked as malicious. Because `new` is only called from
+    /// * `upstreams` - A single `UpstreamEntry` representing the upstream candidate currently being
+    ///   attempted. The `tried_or_flagged` is set once the upstream has either been connected to
+    ///   successfully or marked as malicious. Because `new` is only called from
     ///   `try_initialize_upstream`, we can treat this flag as the definitive state for that
     ///   upstream.
     /// * `channel_manager_sender` - Channel to send messages to the channel manager
@@ -70,7 +69,7 @@ impl Upstream {
     /// * `Ok(Upstream)` - Successfully connected to an upstream server
     /// * `Err(TproxyError)` - Failed to connect to any upstream server
     pub async fn new(
-        upstreams: &(SocketAddr, Secp256k1PublicKey, bool),
+        upstream: &UpstreamEntry,
         channel_manager_sender: Sender<Mining<'static>>,
         channel_manager_receiver: Receiver<Mining<'static>>,
         notify_shutdown: broadcast::Sender<ShutdownMessage>,
@@ -79,8 +78,7 @@ impl Upstream {
     ) -> Result<Self, TproxyError> {
         let mut shutdown_rx = notify_shutdown.subscribe();
 
-        let (addr, pubkey, _) = upstreams;
-        info!("Trying to connect to upstream at {}", addr);
+        info!("Trying to connect to upstream at {}", upstream.addr);
 
         if shutdown_rx.try_recv().is_ok() {
             info!("Shutdown signal received during upstream connection attempt. Aborting.");
@@ -88,11 +86,11 @@ impl Upstream {
             return Err(TproxyError::Shutdown);
         }
 
-        match TcpStream::connect(addr).await {
+        match TcpStream::connect(upstream.addr).await {
             Ok(socket) => {
-                info!("Connected to upstream at {addr}");
+                info!("Connected to upstream at {}", upstream.addr);
 
-                let initiator = Initiator::from_raw_k(pubkey.into_bytes())?;
+                let initiator = Initiator::from_raw_k(upstream.authority_pubkey.into_bytes())?;
                 match NoiseTcpStream::new(socket, HandshakeRole::Initiator(initiator)).await {
                     Ok(stream) => {
                         let (reader, writer) = stream.into_split();
@@ -115,19 +113,25 @@ impl Upstream {
                             inbound_rx,
                             outbound_tx,
                         );
-                        debug!("Successfully initialized upstream channel with {addr}");
+                        debug!(
+                            "Successfully initialized upstream channel with {}",
+                            upstream.addr
+                        );
 
                         return Ok(Self {
                             upstream_channel_state,
                         });
                     }
                     Err(e) => {
-                        error!("Failed Noise handshake with {addr}: {e:?}. Retrying...");
+                        error!(
+                            "Failed Noise handshake with {}: {e:?}. Retrying...",
+                            upstream.addr
+                        );
                     }
                 }
             }
             Err(e) => {
-                error!("Failed to connect to {addr}: {e}.");
+                error!("Failed to connect to {}: {e}.", upstream.addr);
             }
         }
 
@@ -168,6 +172,12 @@ impl Upstream {
                     Ok(ShutdownMessage::ShutdownAll) => {
                         info!("Upstream: shutdown signal received during connection setup.");
                         drop(shutdown_complete_tx);
+                        return Ok(());
+                    }
+                    Ok(ShutdownMessage::UpstreamFallback{tx}) => {
+                        info!("Upstream: shutdown signal received during connection setup.");
+                        drop(shutdown_complete_tx);
+                        drop(tx);
                         return Ok(());
                     }
                     Ok(_) => {}
@@ -321,6 +331,11 @@ impl Upstream {
                         match shutdown {
                             Ok(ShutdownMessage::ShutdownAll) => {
                                 info!("Upstream: received ShutdownAll signal. Exiting loop.");
+                                break;
+                            }
+                            Ok(ShutdownMessage::UpstreamFallback{tx}) => {
+                                info!("Upstream: fallback initiated");
+                                drop(tx);
                                 break;
                             }
                             Ok(_) => {
