@@ -9,6 +9,8 @@ pub type ChannelId = u32;
 pub type Hashrate = f32;
 pub type SharesPerMinute = f32;
 pub type SharesBatchSize = usize;
+pub type ExtensionType = u16;
+pub type MessageType = u8;
 
 pub type Message = AnyMessage<'static>;
 pub type Sv2Frame = StandardSv2Frame<Message>;
