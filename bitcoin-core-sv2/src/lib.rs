@@ -116,7 +116,7 @@ use stratum_core::{
 };
 
 use std::sync::RwLock;
-use tokio::net::UnixStream;
+use tokio::{net::UnixStream, task::JoinHandle};
 use tokio_util::compat::*;
 pub use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -164,6 +164,7 @@ pub struct BitcoinCoreSv2 {
     thread_map: ThreadMapIpcClient,
     thread_ipc_client: ThreadIpcClient,
     mining_ipc_client: MiningIpcClient,
+    monitor_ipc_templates_handle: Rc<RefCell<Option<JoinHandle<()>>>>,
     current_template_ipc_client: Rc<RefCell<Option<BlockTemplateIpcClient>>>,
     current_prev_hash: Rc<RefCell<Option<U256<'static>>>>,
     template_data: Rc<RwLock<HashMap<u64, TemplateData>>>,
@@ -250,6 +251,7 @@ impl BitcoinCoreSv2 {
             thread_map,
             thread_ipc_client,
             mining_ipc_client,
+            monitor_ipc_templates_handle: Rc::new(RefCell::new(None)),
             template_id_factory: Rc::new(AtomicU64::new(0)),
             current_template_ipc_client: Rc::new(RefCell::new(None)),
             current_prev_hash: Rc::new(RefCell::new(None)),

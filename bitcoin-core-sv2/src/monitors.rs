@@ -16,7 +16,7 @@ impl BitcoinCoreSv2 {
     pub fn monitor_ipc_templates(&self) {
         let mut self_clone = self.clone();
 
-        tokio::task::spawn_local(async move {
+        let handle = tokio::task::spawn_local(async move {
             tracing::debug!("monitor_ipc_templates() task started");
             // a dedicated thread_ipc_client is used for waitNext requests
             // this is because waitNext requests are blocking, and we don't want to block the main
@@ -263,8 +263,13 @@ impl BitcoinCoreSv2 {
                     }
                 }
             }
+
             tracing::debug!("monitor_ipc_templates() task exiting");
         });
+
+        // Store the handle so we can wait for this task to finish before spawning a new one
+        // when handle_coinbase_output_constraints is called
+        *self.monitor_ipc_templates_handle.borrow_mut() = Some(handle);
     }
 
     /// Spawns a new task to monitor the incoming messages

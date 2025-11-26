@@ -24,6 +24,7 @@ pub enum BitcoinCoreSv2Error {
     FailedToSetThread,
     FailedToGetWaitNextRequestOptions,
     FailedToSendInterruptWaitRequest,
+    FailedToWaitForMonitorIpcTemplatesTask,
 }
 
 impl From<capnp::Error> for BitcoinCoreSv2Error {

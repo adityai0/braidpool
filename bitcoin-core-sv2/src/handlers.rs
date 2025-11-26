@@ -34,12 +34,26 @@ impl BitcoinCoreSv2 {
                 e
             })?;
 
-        let mut current_template_ipc_client_guard = self.current_template_ipc_client.borrow_mut();
-        *current_template_ipc_client_guard = Some(template_ipc_client);
+        {
+            let mut current_template_ipc_client_guard =
+                self.current_template_ipc_client.borrow_mut();
+            *current_template_ipc_client_guard = Some(template_ipc_client);
+        }
         tracing::debug!("Updated current_template_ipc_client");
 
         self.template_ipc_client_cancellation_token = CancellationToken::new();
         tracing::debug!("Created new template_ipc_client_cancellation_token");
+
+        // Wait for the old monitor_ipc_templates task to finish before spawning a new one
+        tracing::debug!("Waiting for current monitor_ipc_templates() task to finish");
+        let handle = self.monitor_ipc_templates_handle.borrow_mut().take();
+        #[allow(clippy::collapsible_if)]
+        if let Some(handle) = handle {
+            if let Err(e) = handle.await {
+                tracing::error!("monitor_ipc_templates task panicked: {:?}", e);
+                return Err(BitcoinCoreSv2Error::FailedToWaitForMonitorIpcTemplatesTask);
+            }
+        }
 
         tracing::debug!("Spawning new monitor_ipc_templates() task");
         self.monitor_ipc_templates();
