@@ -760,6 +760,7 @@ impl BitcoinCoreSv2 {
                 removed_template_data
             };
 
+            tracing::debug!("Creating a dedicated thread IPC client for destroy_ipc_client");
             let thread_ipc_client = match self_clone.new_thread_ipc_client().await {
                 Ok(thread_ipc_client) => thread_ipc_client,
                 Err(e) => {

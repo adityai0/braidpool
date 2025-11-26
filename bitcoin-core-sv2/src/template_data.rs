@@ -52,7 +52,6 @@ impl TemplateData {
         &self,
         thread_ipc_client: ThreadIpcClient,
     ) -> Result<(), TemplateDataError> {
-        tracing::debug!("Creating a dedicated thread IPC client for destroy_ipc_client");
         tracing::debug!("Destroying template IPC client: {}", self.template_id);
         let mut destroy_ipc_client_request = self.template_ipc_client.destroy_request();
         let destroy_ipc_client_request_params = destroy_ipc_client_request.get();
