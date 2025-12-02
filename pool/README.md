@@ -68,6 +68,8 @@ For connections with a Sv2 Template Provider, you may want to verify that your T
 # 2024-02-13T14:59:24Z Template Provider authority key: EguTM8URcZDQVeEBsM4B5vg9weqEUnufA8pm85fG4bZd
 ```
 
+Make sure the machine running the Pool application has its clock synced with an NTP server. Certificate validation is time-sensitive, and even a small drift of a few seconds can trigger an `InvalidCertificate` error.
+
 ### Run
 
 There are three example configuration files found in `pool-apps/pool/config-examples`:

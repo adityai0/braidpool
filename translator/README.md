@@ -63,6 +63,8 @@ authority_pubkey = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"
 
 ### Configuration Parameters
 
+Make sure the machine running the Translator Proxy has its clock synced with an NTP server. Certificate validation is time-sensitive, and even a small drift of a few seconds can trigger an `InvalidCertificate` error.
+
 #### **Downstream Configuration**
 - `downstream_address`: IP address for SV1 miners to connect to
 - `downstream_port`: Port for SV1 miners to connect to
