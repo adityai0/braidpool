@@ -7,7 +7,7 @@ max_supported_version = 2
 min_supported_version = 2
 
 # Extranonce2 size for downstream connections
-# This controls the rollable part of the extranonce for downstream miners
+# This controls the rollable part of the extranonce for downstream SV1 miners
 # Max value for CGminer: 8
 # Min value: 2
 downstream_extranonce2_size = 4
@@ -47,6 +47,13 @@ shares_per_minute = 6.0
 enable_vardiff = true
 
 [[upstreams]]
-address = "127.0.0.1"
-port = 34254
+# SRI Pool Primary Pool
+address = "75.119.150.111"
+port = 3333
 authority_pubkey = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"
+
+# Braiins Pool Backup Pool
+[[upstreams]]
+address = "107.170.42.64" 
+port = 3333
+authority_pubkey = "9awtMD5KQgvRUh2yFbjVeT7b6hjipWcAsQHd6wEhgtDT9soosna"
