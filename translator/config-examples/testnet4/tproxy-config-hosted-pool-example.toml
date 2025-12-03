@@ -49,5 +49,5 @@ enable_vardiff = true
 [[upstreams]]
 # SRI Pool Primary Pool
 address = "75.119.150.111"
-port = 3335
+port = 43333
 authority_pubkey = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"
