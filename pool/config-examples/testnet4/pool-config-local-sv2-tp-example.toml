@@ -42,4 +42,4 @@ required_extensions = [
 
 # Local Sv2 Template Provider config
 [template_provider_type.Sv2Tp]
-address = "127.0.0.1:8443"
+address = "127.0.0.1:48442"
