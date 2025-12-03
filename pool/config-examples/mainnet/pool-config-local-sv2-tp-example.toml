@@ -2,13 +2,13 @@
 authority_public_key = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"
 authority_secret_key = "mkDLTBBRxdBv998612qipDYoTK3YUrqLe8uWw7gu3iXbSrn2n"
 cert_validity_sec = 3600
-listen_address = "0.0.0.0:34254"
+listen_address = "0.0.0.0:3333"
 
 # Coinbase outputs are specified as descriptors. A full list of descriptors is available at
 #     https://github.com/bitcoin/bips/blob/master/bip-0380.mediawiki#appendix-b-index-of-script-expressions
 # Although the `musig` descriptor is not yet supported and the legacy `combo` descriptor never
 # will be. If you have an address, embed it in a descriptor like `addr(<address here>)`.
-coinbase_reward_script = "addr(tb1qa0sm0hxzj0x25rh8gw5xlzwlsfvvyz8u96w3p8)"
+coinbase_reward_script = "addr(bc1qtzqxqaxyy6lda2fhdtp5dp0v56vlf6g0tljy2x)"
 
 # Server Id (number to guarantee unique search space allocation across different Pool servers)
 server_id = 1
@@ -40,7 +40,6 @@ required_extensions = [
     # 0x0002,
 ]
 
-# Hosted Sv2 Template Provider config
+# Local Sv2 Template Provider config
 [template_provider_type.Sv2Tp]
-address = "75.119.150.111:8442"
-public_key = "9bwHCYnjhbHm4AS3pWg9MtAH83mzWohoJJJDELYBqZhDNqszDLc"
+address = "127.0.0.1:8442"
