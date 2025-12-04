@@ -15,6 +15,7 @@ pub mod noise_stream;
 pub mod sv1_connection;
 
 use async_channel::{RecvError, SendError};
+use std::fmt;
 use stratum_core::codec_sv2::Error as CodecError;
 
 /// Networking errors that can occur in SV2 connections
@@ -30,6 +31,24 @@ pub enum Error {
     SendError,
     /// Socket was closed, likely by the peer
     SocketClosed,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::HandshakeRemoteInvalidMessage => {
+                write!(f, "Invalid handshake message received from remote peer")
+            }
+
+            Error::CodecError(e) => write!(f, "{}", e),
+
+            Error::RecvError => write!(f, "Error receiving from async channel"),
+
+            Error::SendError => write!(f, "Error sending to async channel"),
+
+            Error::SocketClosed => write!(f, "Socket was closed (likely by the peer)"),
+        }
+    }
 }
 
 impl From<CodecError> for Error {

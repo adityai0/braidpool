@@ -130,7 +130,7 @@ impl Upstream {
                     }
                     Err(e) => {
                         error!(
-                            "Failed Noise handshake with {}: {e:?}. Retrying...",
+                            "Failed Noise handshake with {}: {e}. Retrying...",
                             upstream.addr
                         );
                     }
