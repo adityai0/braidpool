@@ -218,12 +218,10 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                 // create a future standard job based on the last future template
                 standard_channel.on_new_template(last_future_template, vec![pool_coinbase_output.clone()])?;
                 let future_standard_job_id = standard_channel
-                    .get_future_template_to_job_id()
-                    .get(&template_id)
+                    .get_future_job_id_from_template_id(template_id)
                     .expect("future job id must exist");
                 let future_standard_job = standard_channel
-                    .get_future_jobs()
-                    .get(future_standard_job_id)
+                    .get_future_job(future_standard_job_id)
                     .expect("future job must exist");
                 let future_standard_job_message =
                     future_standard_job.get_job_message().clone().into_static();
@@ -234,12 +232,11 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                 let n_bits = last_set_new_prev_hash_tdp.n_bits;
                 let set_new_prev_hash_mining = SetNewPrevHash {
                     channel_id,
-                    job_id: *future_standard_job_id,
+                    job_id: future_standard_job_id,
                     prev_hash,
                     min_ntime: header_timestamp,
                     nbits: n_bits,
                 };
-
 
                 standard_channel
                 .on_set_new_prev_hash(last_set_new_prev_hash_tdp.clone())?;
@@ -456,12 +453,10 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                             )?;
 
                             let future_extended_job_id = extended_channel
-                                .get_future_template_to_job_id()
-                                .get(&last_future_template.template_id)
+                                .get_future_job_id_from_template_id(last_future_template.template_id)
                                 .expect("future job id must exist");
                             let future_extended_job = extended_channel
-                                .get_future_jobs()
-                                .get(future_extended_job_id)
+                                .get_future_job(future_extended_job_id)
                                 .expect("future job must exist");
 
                             let future_extended_job_message =
@@ -484,7 +479,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                             let n_bits = last_set_new_prev_hash_tdp.n_bits;
                             let set_new_prev_hash_mining = SetNewPrevHash {
                                 channel_id,
-                                job_id: *future_extended_job_id,
+                                job_id: future_extended_job_id,
                                 prev_hash,
                                 min_ntime: header_timestamp,
                                 nbits: n_bits,
