@@ -61,7 +61,7 @@ use tracing::{debug, error, info, warn};
 /// variable difficulty adjustment based on share submission rates.
 pub struct Sv1Server {
     sv1_server_channel_state: Sv1ServerChannelState,
-    sv1_server_data: Arc<Mutex<Sv1ServerData>>,
+    pub(crate) sv1_server_data: Arc<Mutex<Sv1ServerData>>,
     shares_per_minute: SharesPerMinute,
     listener_addr: SocketAddr,
     config: TranslatorConfig,

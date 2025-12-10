@@ -13,6 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use std::net::SocketAddr;
 use stratum_apps::{
     key_utils::Secp256k1PublicKey,
     utils::types::{Hashrate, SharesPerMinute},
@@ -49,6 +50,9 @@ pub struct TranslatorConfig {
     pub required_extensions: Vec<u16>,
     /// The path to the log file for the Translator.
     log_file: Option<PathBuf>,
+    /// Optional monitoring server bind address
+    #[serde(default)]
+    monitoring_address: Option<SocketAddr>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -102,7 +106,13 @@ impl TranslatorConfig {
             supported_extensions,
             required_extensions,
             log_file: None,
+            monitoring_address: None,
         }
+    }
+
+    /// Returns the monitoring server bind address (if enabled)
+    pub fn monitoring_address(&self) -> Option<SocketAddr> {
+        self.monitoring_address
     }
 
     pub fn set_log_dir(&mut self, log_dir: Option<PathBuf>) {
