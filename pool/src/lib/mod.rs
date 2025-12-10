@@ -82,6 +82,36 @@ impl PoolSv2 {
         )
         .await?;
 
+        // Start monitoring server if configured
+        if let Some(monitoring_addr) = self.config.monitoring_address() {
+            info!("Initializing monitoring server on {}", monitoring_addr);
+
+            let monitoring_server = stratum_apps::monitoring::MonitoringServer::new(
+                monitoring_addr,
+                None, // Pool doesn't have channels opened with servers
+                Some(Arc::new(channel_manager.clone())), // channels opened with clients
+            )
+            .expect("Failed to initialize monitoring server");
+
+            // Create shutdown signal that waits for ShutdownAll
+            let mut notify_shutdown_monitoring = notify_shutdown.subscribe();
+            let shutdown_signal = async move {
+                loop {
+                    match notify_shutdown_monitoring.recv().await {
+                        Ok(ShutdownMessage::ShutdownAll) => break,
+                        Ok(_) => continue, // Ignore other shutdown messages
+                        Err(_) => break,
+                    }
+                }
+            };
+
+            task_manager.spawn(async move {
+                if let Err(e) = monitoring_server.run(shutdown_signal).await {
+                    error!("Monitoring server error: {}", e);
+                }
+            });
+        }
+
         let channel_manager_clone = channel_manager.clone();
         let mut bitcoin_core_sv2_join_handle: Option<JoinHandle<()>> = None;
 

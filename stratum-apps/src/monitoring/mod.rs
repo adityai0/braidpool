@@ -1,0 +1,34 @@
+//! Monitoring system for SV2 applications.
+//!
+//! Provides HTTP JSON API and Prometheus metrics for monitoring.
+//! Read-only - does not modify any state.
+//!
+//! ## Architecture
+//!
+//! - **Server**: The upstream connection (pool, JDS) - typically one per app
+//! - **Clients**: Downstream connections (miners) - multiple per app
+//! - **SV1 clients**: Legacy SV1 connections (Translator only)
+
+pub mod client;
+pub mod http_server;
+pub mod prometheus_metrics;
+pub mod server;
+pub mod sv1;
+
+pub use client::{
+    ClientInfo, ClientsMonitoring, ClientsSummary, ExtendedChannelInfo, StandardChannelInfo,
+};
+pub use http_server::MonitoringServer;
+pub use server::{
+    ServerExtendedChannelInfo, ServerInfo, ServerMonitoring, ServerStandardChannelInfo,
+    ServerSummary,
+};
+pub use sv1::{Sv1ClientInfo, Sv1ClientsMonitoring, Sv1ClientsSummary};
+
+/// Global statistics from `/api/v1/global` endpoint
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GlobalInfo {
+    pub server: ServerSummary,
+    pub clients: ClientsSummary,
+    pub uptime_secs: u64,
+}

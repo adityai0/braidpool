@@ -144,6 +144,39 @@ impl TranslatorSv2 {
         )
         .await;
 
+        // Start monitoring server if configured
+        if let Some(monitoring_addr) = self.config.monitoring_address() {
+            info!("Initializing monitoring server on {}", monitoring_addr);
+
+            let monitoring_server = stratum_apps::monitoring::MonitoringServer::new(
+                monitoring_addr,
+                Some(channel_manager.clone()), // SV2 channels opened with servers
+                None,                          /* no SV2 channels opened with clients (SV1
+                                                * handled separately) */
+            )
+            .expect("Failed to initialize monitoring server")
+            .with_sv1_monitoring(sv1_server.clone()) // SV1 client connections
+            .expect("Failed to add SV1 monitoring");
+
+            // Create shutdown signal that waits for ShutdownAll
+            let mut notify_shutdown_monitoring = notify_shutdown.subscribe();
+            let shutdown_signal = async move {
+                loop {
+                    match notify_shutdown_monitoring.recv().await {
+                        Ok(ShutdownMessage::ShutdownAll) => break,
+                        Ok(_) => continue, // Ignore other shutdown messages
+                        Err(_) => break,
+                    }
+                }
+            };
+
+            task_manager.spawn(async move {
+                if let Err(e) = monitoring_server.run(shutdown_signal).await {
+                    error!("Monitoring server error: {:?}", e);
+                }
+            });
+        }
+
         loop {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {

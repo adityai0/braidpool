@@ -47,6 +47,10 @@ hyper = { version = "1.1.0", features = ["full"], optional = true }
 hyper-util = { version = "0.1", features = ["full"], optional = true }
 http-body-util = { version = "0.1", optional = true }
 
+# Monitoring optional dependencies
+axum = { version = "0.8.7", optional = true }
+prometheus = { version = "0.13", optional = true }
+
 # Common external dependencies that roles always need
 clap = { version = "4.5.39", features = ["derive"] }
 ext-config = { version = "0.14.0", features = ["toml"], package = "config" }
@@ -58,6 +62,7 @@ default = ["network", "config", "std"]
 network = ["tokio-util", "core"]
 config = []
 rpc = ["serde_json", "hex", "base64", "hyper", "hyper-util", "http-body-util"]
+monitoring = ["serde_json", "axum", "prometheus"]
 std = ["bs58/std", "secp256k1/rand-std", "rand/std", "rand/std_rng"]
 core = ["stratum-core"]
 
@@ -66,11 +71,11 @@ sv1 = ["stratum-core/sv1", "stratum-core/translation", "tokio-util", "serde_json
 with_buffer_pool = ["stratum-core/with_buffer_pool"]
 
 # Convenience feature bundles for different role types
-pool = ["network", "config", "with_buffer_pool", "core"]
-jd_client = ["network", "config", "with_buffer_pool", "core"]
+pool = ["network", "config", "with_buffer_pool", "core", "monitoring"]
+jd_client = ["network", "config", "with_buffer_pool", "core", "monitoring"]
 # Note: jd_server intentionally excludes 'core', 'network', and 'rpc' - it uses crates.io crates directly
 jd_server = ["config"]
-translator = ["network", "config", "sv1", "with_buffer_pool", "core"]
+translator = ["network", "config", "sv1", "with_buffer_pool", "core", "monitoring"]
 # Note: mining_device intentionally excludes 'core', 'network', and 'rpc' - it uses crates.io crates directly
 mining_device = ["config"]
 

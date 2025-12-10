@@ -62,6 +62,10 @@ pub mod key_utils;
 /// Utility methods used in apps.
 pub mod utils;
 
+/// Channel monitoring - expose channel data via HTTP JSON APIs
+#[cfg(feature = "monitoring")]
+pub mod monitoring;
+
 // Task orchestrator used in SRI apps.
 pub mod task_manager;
 /// Template provider type
