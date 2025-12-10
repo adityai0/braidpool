@@ -40,6 +40,8 @@ required_extensions = [
     # 0x0002,
 ]
 
+monitoring_address = "0.0.0.0:9090"
+
 # Bitcoin Core IPC config
 # Supported networks: mainnet, testnet4, signet, regtest
 # Default data_dir: ~/.bitcoin (Linux) or ~/Library/Application Support/Bitcoin (macOS)

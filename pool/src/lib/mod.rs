@@ -27,6 +27,7 @@ pub mod config;
 pub mod downstream;
 pub mod error;
 mod io_task;
+mod monitoring;
 pub mod status;
 pub mod template_receiver;
 pub mod utils;
@@ -84,7 +85,10 @@ impl PoolSv2 {
 
         // Start monitoring server if configured
         if let Some(monitoring_addr) = self.config.monitoring_address() {
-            info!("Initializing monitoring server on {}", monitoring_addr);
+            info!(
+                "Initializing monitoring server on http://{}",
+                monitoring_addr
+            );
 
             let monitoring_server = stratum_apps::monitoring::MonitoringServer::new(
                 monitoring_addr,

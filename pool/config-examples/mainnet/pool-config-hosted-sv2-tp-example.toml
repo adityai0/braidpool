@@ -40,6 +40,9 @@ required_extensions = [
     # 0x0002,
 ]
 
+# Monitoring HTTP server address for exposing channel data (optional)
+monitoring_address = "0.0.0.0:9090"
+
 # Hosted Sv2 Template Provider config
 [template_provider_type.Sv2Tp]
 address = "75.119.150.111:8442"

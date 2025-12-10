@@ -37,6 +37,8 @@ pub struct PoolConfig {
     server_id: u16,
     supported_extensions: Vec<u16>,
     required_extensions: Vec<u16>,
+    #[serde(default)]
+    monitoring_address: Option<SocketAddr>,
 }
 
 impl PoolConfig {
@@ -71,6 +73,7 @@ impl PoolConfig {
             server_id,
             supported_extensions,
             required_extensions,
+            monitoring_address: None,
         }
     }
 
@@ -155,6 +158,11 @@ impl PoolConfig {
             value: Amount::from_sat(0),
             script_pubkey: self.coinbase_reward_script.script_pubkey().to_owned(),
         }
+    }
+
+    /// Returns the monitoring address (optional).
+    pub fn monitoring_address(&self) -> Option<SocketAddr> {
+        self.monitoring_address
     }
 }
 
