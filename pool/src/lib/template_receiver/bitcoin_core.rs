@@ -6,17 +6,7 @@ use crate::{
 use async_channel::{Receiver, Sender};
 use bitcoin_core_sv2::{BitcoinCoreSv2, CancellationToken};
 use std::{path::PathBuf, sync::Arc, thread::JoinHandle};
-use stratum_apps::{
-    stratum_core::{
-        bitcoin::{
-            absolute::LockTime, transaction::Version, OutPoint, ScriptBuf, Sequence, Transaction,
-            TxIn, TxOut, Witness,
-        },
-        parsers_sv2::TemplateDistribution,
-        template_distribution_sv2::CoinbaseOutputConstraints,
-    },
-    task_manager::TaskManager,
-};
+use stratum_apps::{stratum_core::parsers_sv2::TemplateDistribution, task_manager::TaskManager};
 use tokio::sync::broadcast;
 
 #[derive(Clone)]
@@ -32,11 +22,9 @@ pub struct BitcoinCoreSv2Config {
 #[allow(clippy::too_many_arguments)]
 pub async fn connect_to_bitcoin_core(
     bitcoin_core_config: BitcoinCoreSv2Config,
-    incoming_tdp_sender: Sender<TemplateDistribution<'static>>,
     notify_shutdown: broadcast::Sender<ShutdownMessage>,
     task_manager: Arc<TaskManager>,
     status_sender: Sender<Status>,
-    coinbase_outputs: Vec<TxOut>,
 ) -> JoinHandle<()> {
     let mut shutdown_rx = notify_shutdown.subscribe();
     let cancellation_token_clone = bitcoin_core_config.cancellation_token.clone();
@@ -72,7 +60,7 @@ pub async fn connect_to_bitcoin_core(
     // spawn a dedicated thread to run the BitcoinCoreSv2 instance
     // because we're limited to tokio::task::LocalSet due to the use of `capnp` clients on
     // `bitcoin-core-sv2`, which are not `Send`
-    let join_handle = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         // we need a dedicated runtime so we can spawn an async task inside the LocalSet
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
@@ -114,61 +102,5 @@ pub async fn connect_to_bitcoin_core(
             // activated
             sv2_bitcoin_core.run().await;
         });
-    });
-
-    // calculate the max coinbase output size for CoinbaseOutputConstraints
-    let max_size: u32 = coinbase_outputs.iter().map(|o| o.size() as u32).sum();
-    tracing::debug!(
-        max_size,
-        outputs_count = coinbase_outputs.len(),
-        "Calculated max coinbase output size"
-    );
-
-    // this is used to calculate the sigops of the coinbase outputs
-    // for CoinbaseOutputConstraints
-    let dummy_coinbase = Transaction {
-        version: Version::TWO,
-        lock_time: LockTime::ZERO,
-        input: vec![TxIn {
-            previous_output: OutPoint::null(),
-            script_sig: ScriptBuf::new(),
-            sequence: Sequence::MAX,
-            witness: Witness::from(vec![vec![0; 32]]),
-        }],
-        output: coinbase_outputs,
-    };
-
-    let max_sigops = dummy_coinbase.total_sigop_cost(|_| None) as u16;
-    tracing::debug!(max_sigops, "Calculated max sigops for coinbase");
-
-    let coinbase_output_constraints = CoinbaseOutputConstraints {
-        coinbase_output_max_additional_size: max_size,
-        coinbase_output_max_additional_sigops: max_sigops,
-    };
-
-    // turn status_sender into a StatusSender::TemplateReceiver
-    let status_sender = StatusSender::TemplateReceiver(status_sender);
-
-    // send the CoinbaseOutputConstraints message to the spawned BitcoinCoreSv2 instance
-    match incoming_tdp_sender
-        .send(TemplateDistribution::CoinbaseOutputConstraints(
-            coinbase_output_constraints,
-        ))
-        .await
-    {
-        Ok(_) => {}
-        Err(e) => {
-            tracing::error!(
-                "Failed to send CoinbaseOutputConstraints message to channel manager: {:?}",
-                e
-            );
-            handle_error(
-                &status_sender,
-                PoolError::FailedToSendCoinbaseOutputConstraints,
-            )
-            .await;
-        }
-    };
-
-    join_handle
+    })
 }

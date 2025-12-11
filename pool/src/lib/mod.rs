@@ -109,7 +109,6 @@ impl PoolSv2 {
                         notify_shutdown.clone(),
                         status_sender.clone(),
                         task_manager.clone(),
-                        encoded_outputs,
                     )
                     .await?;
 
@@ -122,7 +121,6 @@ impl PoolSv2 {
             } => {
                 // incoming and outgoing TDP channels from the perspective of BitcoinCoreSv2
                 let incoming_tdp_receiver = channel_manager_to_tp_receiver.clone();
-                let incoming_tdp_sender = channel_manager_to_tp_sender.clone();
                 let outgoing_tdp_sender = tp_to_channel_manager_sender.clone();
 
                 let bitcoin_core_config = BitcoinCoreSv2Config {
@@ -137,11 +135,9 @@ impl PoolSv2 {
                 bitcoin_core_sv2_join_handle = Some(
                     connect_to_bitcoin_core(
                         bitcoin_core_config,
-                        incoming_tdp_sender,
                         notify_shutdown.clone(),
                         task_manager.clone(),
                         status_sender.clone(),
-                        coinbase_outputs,
                     )
                     .await,
                 );
@@ -153,6 +149,7 @@ impl PoolSv2 {
                 notify_shutdown.clone(),
                 status_sender.clone(),
                 task_manager.clone(),
+                coinbase_outputs,
             )
             .await?;
 
