@@ -16,7 +16,7 @@ pub struct Args {
         short = 'c',
         long = "config",
         help = "Path to the TOML configuration file",
-        default_value = "proxy-config.toml"
+        default_value = "translator-config.toml"
     )]
     pub config_path: PathBuf,
     #[arg(
