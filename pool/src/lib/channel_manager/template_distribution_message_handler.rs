@@ -44,7 +44,12 @@ impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
 
             for (downstream_id, downstream) in channel_manager_data.downstream.iter_mut() {
 
-                let  messages_ = downstream.downstream_data.super_safe_lock(|data| {
+                // If downstream requires custom work, skip template handling entirely (see https://github.com/stratum-mining/sv2-apps/issues/55)
+                if downstream.requires_custom_work.load(Ordering::SeqCst) {
+                    continue;
+                }
+
+                let messages_ = downstream.downstream_data.super_safe_lock(|data| {
 
                     let mut messages: Vec<RouteMessageTo> = vec![];
 
@@ -92,7 +97,7 @@ impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
                                         continue;
                                     }
                                     _ = standard_channel
-                                    .on_group_channel_job(group_channel_job.clone());
+                                        .on_group_channel_job(group_channel_job.clone());
                                 }
                             }
                             if let Some(group_channel_job) = group_channel_job {
@@ -115,7 +120,7 @@ impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
 
                                 let extended_job_message = extended_job.get_job_message();
 
-                                messages.push((*downstream_id,Mining::NewExtendedMiningJob(extended_job_message.clone())).into());
+                                messages.push((*downstream_id, Mining::NewExtendedMiningJob(extended_job_message.clone())).into());
                             }
                         }
                         false => {
@@ -135,7 +140,7 @@ impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
                                         continue;
                                     }
                                     _ = standard_channel
-                                    .on_group_channel_job(group_channel_job.clone());
+                                        .on_group_channel_job(group_channel_job.clone());
                                 }
                             }
                             if let Some(group_channel_job) = group_channel_job {
@@ -151,17 +156,16 @@ impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
                                 let extended_job = extended_channel
                                     .get_active_job()
                                     .expect("extended job must exist");
-
                                 let extended_job_message = extended_job.get_job_message();
 
-                                messages.push((*downstream_id,Mining::NewExtendedMiningJob(extended_job_message.clone())).into());
+                                messages.push((*downstream_id, Mining::NewExtendedMiningJob(extended_job_message.clone())).into());
                             }
                         }
                     }
 
                     messages
-
                 });
+
                 messages.extend(messages_);
             }
             messages
