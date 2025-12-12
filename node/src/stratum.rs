@@ -11,7 +11,6 @@ use num::ToPrimitive;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::atomic::AtomicBool;
 use std::time::UNIX_EPOCH;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::{
@@ -1830,7 +1829,6 @@ impl Server {
         mining_job_map: Arc<Mutex<HashMap<String, Arc<Mutex<MiningJobMap>>>>>,
         notification_sender: mpsc::Sender<NotifyCmd>,
         swarm_handler: Arc<Mutex<SwarmHandler>>,
-        ibd_or_not: Arc<AtomicBool>,
     ) -> Result<(), Box<std::io::Error>> {
         debug!("Starting stratum server");
         let bind_address = format!(
@@ -1864,12 +1862,6 @@ impl Server {
         loop {
             tokio::select! {
                     event = listener.accept()=>{
-                        //Currently we do not accept connections from downstream during IBD wrt to sync nodes
-                        if ibd_or_not.load(std::sync::atomic::Ordering::SeqCst) == true{
-                        warn!("Braid node not synced and is under IBD thus skipping the connection from downstream.");
-                            continue;
-                        }
-                        else{
                  //shared ownership across all tasks and spawning a seperate downstream for each new connection
                  let self_ = Arc::new(Mutex::new(DownstreamClient::default()));
                         let (connection_id, connection_id_hex) = {
@@ -1947,7 +1939,6 @@ impl Server {
                                 );
                             }
                         }
-                    }
                 }
             }
         }
@@ -2118,8 +2109,6 @@ mod test {
 
     #[tokio::test]
     pub async fn server_start_test() {
-        let ibd_or_not: AtomicBool = AtomicBool::new(false);
-        let test_ibd_spinlock = Arc::new(ibd_or_not);
         let genesis_beads = Vec::from([]);
         let test_braid: Arc<RwLock<braid::Braid>> =
             Arc::new(RwLock::new(braid::Braid::new(genesis_beads)));
@@ -2139,12 +2128,7 @@ mod test {
 
         let server_task = tokio::spawn(async move {
             let _ = server
-                .run_stratum_service(
-                    mining_job_map,
-                    notify_tx,
-                    swarm_handler_arc,
-                    test_ibd_spinlock.clone(),
-                )
+                .run_stratum_service(mining_job_map, notify_tx, swarm_handler_arc)
                 .await;
         });
 
@@ -2182,8 +2166,6 @@ mod test {
 
     #[tokio::test]
     pub async fn server_subscribe_response() {
-        let ibd_or_not: AtomicBool = AtomicBool::new(false);
-        let test_ibd_spinlock = Arc::new(ibd_or_not);
         let connection_mapping = Arc::new(RwLock::new(ConnectionMapping::new()));
         let genesis_beads = Vec::from([]);
         let test_braid: Arc<RwLock<braid::Braid>> =
@@ -2204,12 +2186,7 @@ mod test {
 
         let server_task = tokio::spawn(async move {
             let _ = server
-                .run_stratum_service(
-                    mining_job_map,
-                    notify_tx,
-                    swarm_handler_arc,
-                    test_ibd_spinlock,
-                )
+                .run_stratum_service(mining_job_map, notify_tx, swarm_handler_arc)
                 .await;
         });
 
@@ -2231,8 +2208,6 @@ mod test {
     }
     #[tokio::test]
     async fn test_mining_authorize_response() {
-        let ibd_or_not: AtomicBool = AtomicBool::new(false);
-        let ibd_spinlock = Arc::new(ibd_or_not);
         let connection_mapping = Arc::new(RwLock::new(ConnectionMapping::new()));
         let genesis_beads = Vec::from([]);
         let test_braid: Arc<RwLock<braid::Braid>> =
@@ -2252,12 +2227,7 @@ mod test {
         let mut server = Server::new(config, connection_mapping, None);
         tokio::spawn(async move {
             let _ = server
-                .run_stratum_service(
-                    mining_job_map,
-                    notify_tx,
-                    swarm_handler_arc,
-                    ibd_spinlock.clone(),
-                )
+                .run_stratum_service(mining_job_map, notify_tx, swarm_handler_arc)
                 .await;
         });
 
@@ -2281,8 +2251,6 @@ mod test {
     }
     #[tokio::test]
     async fn test_mining_set_difficulty_response() {
-        let ibd_or_not: AtomicBool = AtomicBool::new(false);
-        let ibd_spinlock = Arc::new(ibd_or_not);
         let connection_mapping = Arc::new(RwLock::new(ConnectionMapping::new()));
         let genesis_beads = Vec::from([]);
         let test_braid: Arc<RwLock<braid::Braid>> =
@@ -2301,12 +2269,7 @@ mod test {
         let mut server = Server::new(config, connection_mapping, None);
         tokio::spawn(async move {
             let _ = server
-                .run_stratum_service(
-                    mining_job_map,
-                    notify_tx,
-                    swarm_handler_arc,
-                    ibd_spinlock.clone(),
-                )
+                .run_stratum_service(mining_job_map, notify_tx, swarm_handler_arc)
                 .await;
         });
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -2323,8 +2286,6 @@ mod test {
     }
     #[tokio::test]
     async fn test_invalid_json() {
-        let ibd_or_not: AtomicBool = AtomicBool::new(false);
-        let ibd_spinlock = Arc::new(ibd_or_not);
         let connection_mapping = Arc::new(RwLock::new(ConnectionMapping::new()));
         let genesis_beads = Vec::from([]);
         let test_braid: Arc<RwLock<braid::Braid>> =
@@ -2346,12 +2307,7 @@ mod test {
         let notify_tx_clone = notify_tx.clone();
         tokio::spawn(async move {
             server
-                .run_stratum_service(
-                    mining_job_map_clone,
-                    notify_tx_clone,
-                    swarm_handler_arc,
-                    ibd_spinlock,
-                )
+                .run_stratum_service(mining_job_map_clone, notify_tx_clone, swarm_handler_arc)
                 .await
                 .unwrap();
         });
