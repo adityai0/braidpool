@@ -18,7 +18,10 @@ tokio = { version = "1.44.1", features = ["full"] }
 tokio-util = { version = "0.7.10", features = ["codec", "compat"] }
 async-channel = "1.5.1"
 
-stratum-core = "0.1.0"
+# fetching from github enables synchronizing development workflows across sv2-apps and stratum repos
+# it MUST be changed before bitcoin-core-sv2 is published to crates.io
+# with the proper version of stratum-core being fetched from crates.io as well
+stratum-core = { git = "https://github.com/stratum-mining/stratum", branch = "main" }
 
 # todo: point to crates.io (whenever it's available there)
 bitcoin-capnp-types = { git = "https://github.com/2140-dev/bitcoin-capnp-types", rev="2ccda4c10554a204188d563eab707a8d07334b52" }
