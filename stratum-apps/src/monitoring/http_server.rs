@@ -45,6 +45,7 @@ use utoipa_swagger_ui::SwaggerUi;
         handle_clients,
         handle_client_by_id,
         handle_sv1_clients,
+        handle_sv1_client_by_id,
     ),
     components(schemas(
         GlobalInfo,
@@ -197,7 +198,8 @@ impl MonitoringServer {
             .route("/server", get(handle_server))
             .route("/clients", get(handle_clients))
             .route("/clients/{client_id}", get(handle_client_by_id))
-            .route("/sv1/clients", get(handle_sv1_clients));
+            .route("/sv1/clients", get(handle_sv1_clients))
+            .route("/sv1/clients/{client_id}", get(handle_sv1_client_by_id));
 
         let app = Router::new()
             .route("/", get(handle_root))
@@ -293,6 +295,7 @@ async fn handle_root() -> Json<serde_json::Value> {
             "/api/v1/clients": "All Sv2 clients with channels (paginated)",
             "/api/v1/clients/{id}": "Single Sv2 client with channels (paginated)",
             "/api/v1/sv1/clients": "Sv1 clients (Translator Proxy only, paginated)",
+            "/api/v1/sv1/clients/{id}": "Single Sv1 client by ID (Translator Proxy only)",
             "/metrics": "Prometheus metrics"
         }
     }))
@@ -527,6 +530,47 @@ async fn handle_sv1_clients(
                 "items": page
             }))
             .into_response()
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "SV1 client monitoring not available"
+            })),
+        )
+            .into_response(),
+    }
+}
+
+/// Get a single Sv1 client by ID
+#[utoipa::path(
+    get,
+    path = "/api/v1/sv1/clients/{client_id}",
+    tag = "sv1",
+    params(
+        ("client_id" = usize, Path, description = "Sv1 client ID")
+    ),
+    responses(
+        (status = 200, description = "Sv1 client details", body = Sv1ClientInfo),
+        (status = 404, description = "Sv1 client not found", body = ErrorResponse)
+    )
+)]
+async fn handle_sv1_client_by_id(
+    Path(client_id): Path<usize>,
+    State(state): State<ServerState>,
+) -> Response {
+    match &state.sv1_monitoring {
+        Some(monitoring) => {
+            let clients = monitoring.get_sv1_clients();
+            match clients.into_iter().find(|c| c.client_id == client_id) {
+                Some(client) => Json(client).into_response(),
+                None => (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({
+                        "error": format!("Sv1 client {} not found", client_id)
+                    })),
+                )
+                    .into_response(),
+            }
         }
         None => (
             StatusCode::NOT_FOUND,

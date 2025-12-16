@@ -16,6 +16,7 @@ All channel-related endpoints support pagination via `?offset=N&limit=M` query p
 | `/api/v1/clients` | All Sv2 clients with channels (paginated) |
 | `/api/v1/clients/{id}` | Single Sv2 client with channels (paginated) |
 | `/api/v1/sv1/clients` | Sv1 clients (Translator Proxy only, paginated) |
+| `/api/v1/sv1/clients/{id}` | Single Sv1 client by ID (Translator Proxy only) |
 | `/metrics` | Prometheus metrics |
 
 ## Traits
