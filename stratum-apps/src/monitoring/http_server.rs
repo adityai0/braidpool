@@ -1,10 +1,14 @@
 //! HTTP server for exposing monitoring data using Axum
 
 use super::{
-    client::{ClientsMonitoring, ClientsSummary},
+    client::{
+        ClientInfo, ClientsMonitoring, ClientsSummary, ExtendedChannelInfo, StandardChannelInfo,
+    },
     prometheus_metrics::PrometheusMetrics,
-    server::{ServerMonitoring, ServerSummary},
-    sv1::Sv1ClientsMonitoring,
+    server::{
+        ServerExtendedChannelInfo, ServerMonitoring, ServerStandardChannelInfo, ServerSummary,
+    },
+    sv1::{Sv1ClientInfo, Sv1ClientsMonitoring, Sv1ClientsSummary},
     GlobalInfo,
 };
 use axum::{
@@ -24,6 +28,51 @@ use std::{
 };
 use tokio::net::TcpListener;
 use tracing::info;
+use utoipa::{IntoParams, OpenApi, ToSchema};
+use utoipa_swagger_ui::SwaggerUi;
+
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "SRI Monitoring API",
+        version = "0.1.0",
+        description = "HTTP JSON API for monitoring SV2 applications"
+    ),
+    paths(
+        handle_health,
+        handle_global,
+        handle_server,
+        handle_clients,
+        handle_client_by_id,
+        handle_sv1_clients,
+    ),
+    components(schemas(
+        GlobalInfo,
+        ServerSummary,
+        ClientsSummary,
+        ServerExtendedChannelInfo,
+        ServerStandardChannelInfo,
+        ClientInfo,
+        ExtendedChannelInfo,
+        StandardChannelInfo,
+        Sv1ClientInfo,
+        Sv1ClientsSummary,
+        HealthResponse,
+        ErrorResponse,
+        ServerResponse,
+        ClientsResponse,
+        ClientResponse,
+        Sv1ClientsResponse,
+    )),
+    tags(
+        (name = "health", description = "Health check endpoints"),
+        (name = "global", description = "Global statistics"),
+        (name = "server", description = "Server (upstream) monitoring"),
+        (name = "clients", description = "Clients (downstream) monitoring"),
+        (name = "sv1", description = "Sv1 clients monitoring (Translator Proxy only)")
+    )
+)]
+struct ApiDoc;
 
 /// Shared state for all HTTP handlers
 #[derive(Clone)]
@@ -38,10 +87,12 @@ struct ServerState {
 const DEFAULT_LIMIT: usize = 25;
 const MAX_LIMIT: usize = 100;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, IntoParams)]
 struct Pagination {
+    /// Offset for pagination (default: 0)
     #[serde(default)]
     offset: usize,
+    /// Limit for pagination (default: 25, max: 100)
     #[serde(default)]
     limit: Option<usize>,
 }
@@ -129,37 +180,38 @@ impl MonitoringServer {
     /// Starts an HTTP server that exposes monitoring data as JSON.
     /// The server shuts down gracefully when `shutdown_signal` completes.
     ///
-    /// Automatically exposes Prometheus metrics at `/metrics` including:
-    /// - SV2 channel metrics (counts, hashrates, shares)
-    /// - SV1 client metrics (for Translator)
-    /// - HTTP request metrics (optional, via custom middleware)
+    /// Automatically exposes:
+    /// - Swagger UI at `/swagger-ui`
+    /// - OpenAPI spec at `/api-docs/openapi.json`
+    /// - Prometheus metrics at `/metrics`
     pub async fn run(
         self,
         shutdown_signal: impl Future<Output = ()> + Send + 'static,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!("Starting monitoring server on {}", self.bind_address);
 
-        // Versioned JSON API under /api/v1 plus a Prometheus /metrics endpoint.
+        // Versioned JSON API under /api/v1
         let api_v1 = Router::new()
-            .route("/", get(handle_root))
             .route("/health", get(handle_health))
             .route("/global", get(handle_global))
-            // Server endpoint (upstream connection)
             .route("/server", get(handle_server))
-            // Clients endpoints (downstream connections)
             .route("/clients", get(handle_clients))
             .route("/clients/{client_id}", get(handle_client_by_id))
-            // SV1 clients (Translator only)
             .route("/sv1/clients", get(handle_sv1_clients));
 
         let app = Router::new()
+            .route("/", get(handle_root))
+            .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
             .nest("/api/v1", api_v1)
-            // Prometheus exporters conventionally expose /metrics at the root.
             .route("/metrics", get(handle_prometheus_metrics))
             .with_state(self.state);
 
         let listener = TcpListener::bind(self.bind_address).await?;
 
+        info!(
+            "Swagger UI available at http://{}/swagger-ui",
+            self.bind_address
+        );
         info!(
             "Prometheus metrics available at http://{}/metrics",
             self.bind_address
@@ -177,23 +229,84 @@ impl MonitoringServer {
     }
 }
 
+// Response types for OpenAPI documentation
+#[derive(serde::Serialize, ToSchema)]
+struct HealthResponse {
+    status: String,
+    timestamp: u64,
+}
+
+#[derive(serde::Serialize, ToSchema)]
+struct ErrorResponse {
+    error: String,
+}
+
+#[derive(serde::Serialize, ToSchema)]
+struct ServerResponse {
+    offset: usize,
+    limit: usize,
+    total_extended: usize,
+    total_standard: usize,
+    extended_channels: Vec<ServerExtendedChannelInfo>,
+    standard_channels: Vec<ServerStandardChannelInfo>,
+}
+
+#[derive(serde::Serialize, ToSchema)]
+struct ClientsResponse {
+    offset: usize,
+    limit: usize,
+    total: usize,
+    items: Vec<ClientInfo>,
+}
+
+#[derive(serde::Serialize, ToSchema)]
+struct ClientResponse {
+    client_id: usize,
+    offset: usize,
+    limit: usize,
+    total_extended: usize,
+    total_standard: usize,
+    extended_channels: Vec<ExtendedChannelInfo>,
+    standard_channels: Vec<StandardChannelInfo>,
+}
+
+#[derive(serde::Serialize, ToSchema)]
+struct Sv1ClientsResponse {
+    offset: usize,
+    limit: usize,
+    total: usize,
+    items: Vec<Sv1ClientInfo>,
+}
+
+/// Root endpoint - lists all available APIs
 async fn handle_root() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "service": "SRI Monitoring API",
         "version": "0.1.0",
         "endpoints": {
-            "/api/v1": "API root",
+            "/": "This endpoint - API listing",
+            "/swagger-ui": "Swagger UI (interactive API documentation)",
+            "/api-docs/openapi.json": "OpenAPI specification",
             "/api/v1/health": "Health check",
             "/api/v1/global": "Global statistics",
-            "/api/v1/server": "Server (upstream) with channels (paginated)",
-            "/api/v1/clients": "All clients (paginated)",
-            "/api/v1/clients/{id}": "Single client with channels (paginated)",
-            "/api/v1/sv1/clients": "SV1 clients (Translator Proxy only, paginated)",
+            "/api/v1/server": "Server with channels (paginated)",
+            "/api/v1/clients": "All Sv2 clients with channels (paginated)",
+            "/api/v1/clients/{id}": "Single Sv2 client with channels (paginated)",
+            "/api/v1/sv1/clients": "Sv1 clients (Translator Proxy only, paginated)",
             "/metrics": "Prometheus metrics"
         }
     }))
 }
 
+/// Health check endpoint
+#[utoipa::path(
+    get,
+    path = "/api/v1/health",
+    tag = "health",
+    responses(
+        (status = 200, description = "Service is healthy", body = HealthResponse)
+    )
+)]
 async fn handle_health() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "status": "ok",
@@ -204,6 +317,15 @@ async fn handle_health() -> Json<serde_json::Value> {
     }))
 }
 
+/// Get global statistics
+#[utoipa::path(
+    get,
+    path = "/api/v1/global",
+    tag = "global",
+    responses(
+        (status = 200, description = "Global statistics", body = GlobalInfo)
+    )
+)]
 async fn handle_global(State(state): State<ServerState>) -> Json<GlobalInfo> {
     let uptime_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -241,6 +363,17 @@ async fn handle_global(State(state): State<ServerState>) -> Json<GlobalInfo> {
     })
 }
 
+/// Get server (upstream) channels
+#[utoipa::path(
+    get,
+    path = "/api/v1/server",
+    tag = "server",
+    params(Pagination),
+    responses(
+        (status = 200, description = "Server channels", body = ServerResponse),
+        (status = 404, description = "Server monitoring not available", body = ErrorResponse)
+    )
+)]
 async fn handle_server(
     Query(params): Query<Pagination>,
     State(state): State<ServerState>,
@@ -272,6 +405,17 @@ async fn handle_server(
     }
 }
 
+/// Get all clients (downstream)
+#[utoipa::path(
+    get,
+    path = "/api/v1/clients",
+    tag = "clients",
+    params(Pagination),
+    responses(
+        (status = 200, description = "List of clients", body = ClientsResponse),
+        (status = 404, description = "Clients monitoring not available", body = ErrorResponse)
+    )
+)]
 async fn handle_clients(
     Query(params): Query<Pagination>,
     State(state): State<ServerState>,
@@ -299,6 +443,20 @@ async fn handle_clients(
     }
 }
 
+/// Get a single client by ID
+#[utoipa::path(
+    get,
+    path = "/api/v1/clients/{client_id}",
+    tag = "clients",
+    params(
+        ("client_id" = usize, Path, description = "Client ID"),
+        Pagination
+    ),
+    responses(
+        (status = 200, description = "Client details", body = ClientResponse),
+        (status = 404, description = "Client not found", body = ErrorResponse)
+    )
+)]
 async fn handle_client_by_id(
     Path(client_id): Path<usize>,
     Query(params): Query<Pagination>,
@@ -342,6 +500,17 @@ async fn handle_client_by_id(
     }
 }
 
+/// Get Sv1 clients (Translator Proxy only)
+#[utoipa::path(
+    get,
+    path = "/api/v1/sv1/clients",
+    tag = "sv1",
+    params(Pagination),
+    responses(
+        (status = 200, description = "List of Sv1 clients", body = Sv1ClientsResponse),
+        (status = 404, description = "Sv1 monitoring not available", body = ErrorResponse)
+    )
+)]
 async fn handle_sv1_clients(
     Query(params): Query<Pagination>,
     State(state): State<ServerState>,
@@ -370,8 +539,6 @@ async fn handle_sv1_clients(
 }
 
 /// Handler for Prometheus metrics endpoint
-///
-/// Collects fresh data from all monitoring sources and exports as Prometheus metrics
 async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response {
     let uptime_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)

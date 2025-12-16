@@ -4,9 +4,10 @@
 //! Used by Translator Proxy (tProxy) that accepts SV1 miner connections.
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Information about a single SV1 client connection
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Sv1ClientInfo {
     pub client_id: usize,
     pub channel_id: Option<u32>,
@@ -21,7 +22,7 @@ pub struct Sv1ClientInfo {
 }
 
 /// Aggregate information about SV1 client connections
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Sv1ClientsSummary {
     pub total_clients: usize,
     pub total_hashrate: f32,

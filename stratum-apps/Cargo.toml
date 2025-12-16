@@ -50,6 +50,8 @@ http-body-util = { version = "0.1", optional = true }
 # Monitoring optional dependencies
 axum = { version = "0.8.7", optional = true }
 prometheus = { version = "0.13", optional = true }
+utoipa = { version = "5.4.0", features = ["axum_extras"], optional = true }
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum"], optional = true }
 
 # Common external dependencies that roles always need
 clap = { version = "4.5.39", features = ["derive"] }
@@ -62,7 +64,7 @@ default = ["network", "config", "std"]
 network = ["tokio-util", "core"]
 config = []
 rpc = ["serde_json", "hex", "base64", "hyper", "hyper-util", "http-body-util"]
-monitoring = ["serde_json", "axum", "prometheus"]
+monitoring = ["serde_json", "axum", "prometheus", "utoipa", "utoipa-swagger-ui"]
 std = ["bs58/std", "secp256k1/rand-std", "rand/std", "rand/std_rng"]
 core = ["stratum-core"]
 

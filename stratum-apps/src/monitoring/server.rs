@@ -4,9 +4,10 @@
 //! An app typically has one server connection with one or more channels.
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Information about an extended channel opened with the server
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ServerExtendedChannelInfo {
     pub channel_id: u32,
     pub user_identity: String,
@@ -23,7 +24,7 @@ pub struct ServerExtendedChannelInfo {
 }
 
 /// Information about a standard channel opened with the server
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ServerStandardChannelInfo {
     pub channel_id: u32,
     pub user_identity: String,
@@ -37,7 +38,7 @@ pub struct ServerStandardChannelInfo {
 }
 
 /// Information about the server (upstream connection)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ServerInfo {
     pub extended_channels: Vec<ServerExtendedChannelInfo>,
     pub standard_channels: Vec<ServerStandardChannelInfo>,
@@ -64,7 +65,7 @@ impl ServerInfo {
 }
 
 /// Aggregate information about the server connection
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ServerSummary {
     pub total_channels: usize,
     pub extended_channels: usize,

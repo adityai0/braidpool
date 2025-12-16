@@ -8,6 +8,8 @@ All channel-related endpoints support pagination via `?offset=N&limit=M` query p
 
 | Endpoint | Description |
 |----------|-------------|
+| `/swagger-ui` | Swagger UI (interactive API docs) |
+| `/api-docs/openapi.json` | OpenAPI specification |
 | `/api/v1/health` | Health check |
 | `/api/v1/global` | Global statistics |
 | `/api/v1/server` | Server with channels (paginated) |

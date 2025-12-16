@@ -4,9 +4,10 @@
 //! Each client can have multiple channels opened with the app.
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Information about an extended channel
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ExtendedChannelInfo {
     pub channel_id: u32,
     pub user_identity: String,
@@ -27,7 +28,7 @@ pub struct ExtendedChannelInfo {
 }
 
 /// Information about a standard channel
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct StandardChannelInfo {
     pub channel_id: u32,
     pub user_identity: String,
@@ -46,7 +47,7 @@ pub struct StandardChannelInfo {
 }
 
 /// Information about a single client (downstream connection)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ClientInfo {
     pub client_id: usize,
     pub extended_channels: Vec<ExtendedChannelInfo>,
@@ -74,7 +75,7 @@ impl ClientInfo {
 }
 
 /// Aggregate information about all clients
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ClientsSummary {
     pub total_clients: usize,
     pub total_channels: usize,

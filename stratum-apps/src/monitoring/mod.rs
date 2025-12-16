@@ -25,8 +25,10 @@ pub use server::{
 };
 pub use sv1::{Sv1ClientInfo, Sv1ClientsMonitoring, Sv1ClientsSummary};
 
+use utoipa::ToSchema;
+
 /// Global statistics from `/api/v1/global` endpoint
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ToSchema)]
 pub struct GlobalInfo {
     pub server: ServerSummary,
     pub clients: ClientsSummary,
