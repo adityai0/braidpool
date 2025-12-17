@@ -189,7 +189,7 @@ impl MonitoringServer {
         self,
         shutdown_signal: impl Future<Output = ()> + Send + 'static,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        info!("Starting monitoring server on {}", self.bind_address);
+        info!("Starting monitoring server on http://{}", self.bind_address);
 
         // Versioned JSON API under /api/v1
         let api_v1 = Router::new()
@@ -231,7 +231,7 @@ impl MonitoringServer {
     }
 }
 
-// Response types for OpenAPI documentation
+// Response types - used for both actual responses and OpenAPI documentation
 #[derive(serde::Serialize, ToSchema)]
 struct HealthResponse {
     status: String,
@@ -310,14 +310,14 @@ async fn handle_root() -> Json<serde_json::Value> {
         (status = 200, description = "Service is healthy", body = HealthResponse)
     )
 )]
-async fn handle_health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "status": "ok",
-        "timestamp": SystemTime::now()
+async fn handle_health() -> Json<HealthResponse> {
+    Json(HealthResponse {
+        status: "ok".to_string(),
+        timestamp: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs()
-    }))
+            .as_secs(),
+    })
 }
 
 /// Get global statistics
@@ -385,24 +385,24 @@ async fn handle_server(
         Some(monitoring) => {
             let server = monitoring.get_server();
 
-            let (total_extended, extended) = paginate(&server.extended_channels, &params);
-            let (total_standard, standard) = paginate(&server.standard_channels, &params);
+            let (total_extended, extended_channels) = paginate(&server.extended_channels, &params);
+            let (total_standard, standard_channels) = paginate(&server.standard_channels, &params);
 
-            Json(serde_json::json!({
-                "offset": params.offset,
-                "limit": params.effective_limit(),
-                "total_extended": total_extended,
-                "total_standard": total_standard,
-                "extended_channels": extended,
-                "standard_channels": standard,
-            }))
+            Json(ServerResponse {
+                offset: params.offset,
+                limit: params.effective_limit(),
+                total_extended,
+                total_standard,
+                extended_channels,
+                standard_channels,
+            })
             .into_response()
         }
         None => (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "Server monitoring not available"
-            })),
+            Json(ErrorResponse {
+                error: "Server monitoring not available".to_string(),
+            }),
         )
             .into_response(),
     }
@@ -426,21 +426,21 @@ async fn handle_clients(
     match &state.clients_monitoring {
         Some(monitoring) => {
             let clients = monitoring.get_clients();
-            let (total, page) = paginate(&clients, &params);
+            let (total, items) = paginate(&clients, &params);
 
-            Json(serde_json::json!({
-                "offset": params.offset,
-                "limit": params.effective_limit(),
-                "total": total,
-                "items": page
-            }))
+            Json(ClientsResponse {
+                offset: params.offset,
+                limit: params.effective_limit(),
+                total,
+                items,
+            })
             .into_response()
         }
         None => (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "Clients monitoring not available"
-            })),
+            Json(ErrorResponse {
+                error: "Clients monitoring not available".to_string(),
+            }),
         )
             .into_response(),
     }
@@ -470,34 +470,36 @@ async fn handle_client_by_id(
             let clients = monitoring.get_clients();
             match clients.into_iter().find(|c| c.client_id == client_id) {
                 Some(client) => {
-                    let (total_extended, extended) = paginate(&client.extended_channels, &params);
-                    let (total_standard, standard) = paginate(&client.standard_channels, &params);
+                    let (total_extended, extended_channels) =
+                        paginate(&client.extended_channels, &params);
+                    let (total_standard, standard_channels) =
+                        paginate(&client.standard_channels, &params);
 
-                    Json(serde_json::json!({
-                        "client_id": client_id,
-                        "offset": params.offset,
-                        "limit": params.effective_limit(),
-                        "total_extended": total_extended,
-                        "total_standard": total_standard,
-                        "extended_channels": extended,
-                        "standard_channels": standard,
-                    }))
+                    Json(ClientResponse {
+                        client_id,
+                        offset: params.offset,
+                        limit: params.effective_limit(),
+                        total_extended,
+                        total_standard,
+                        extended_channels,
+                        standard_channels,
+                    })
                     .into_response()
                 }
                 None => (
                     StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({
-                        "error": format!("Client {} not found", client_id)
-                    })),
+                    Json(ErrorResponse {
+                        error: format!("Client {} not found", client_id),
+                    }),
                 )
                     .into_response(),
             }
         }
         None => (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "Clients monitoring not available"
-            })),
+            Json(ErrorResponse {
+                error: "Clients monitoring not available".to_string(),
+            }),
         )
             .into_response(),
     }
@@ -521,21 +523,21 @@ async fn handle_sv1_clients(
     match &state.sv1_monitoring {
         Some(monitoring) => {
             let clients = monitoring.get_sv1_clients();
-            let (total, page) = paginate(&clients, &params);
+            let (total, items) = paginate(&clients, &params);
 
-            Json(serde_json::json!({
-                "offset": params.offset,
-                "limit": params.effective_limit(),
-                "total": total,
-                "items": page
-            }))
+            Json(Sv1ClientsResponse {
+                offset: params.offset,
+                limit: params.effective_limit(),
+                total,
+                items,
+            })
             .into_response()
         }
         None => (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "SV1 client monitoring not available"
-            })),
+            Json(ErrorResponse {
+                error: "SV1 client monitoring not available".to_string(),
+            }),
         )
             .into_response(),
     }
@@ -565,18 +567,18 @@ async fn handle_sv1_client_by_id(
                 Some(client) => Json(client).into_response(),
                 None => (
                     StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({
-                        "error": format!("Sv1 client {} not found", client_id)
-                    })),
+                    Json(ErrorResponse {
+                        error: format!("Sv1 client {} not found", client_id),
+                    }),
                 )
                     .into_response(),
             }
         }
         None => (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "SV1 client monitoring not available"
-            })),
+            Json(ErrorResponse {
+                error: "SV1 client monitoring not available".to_string(),
+            }),
         )
             .into_response(),
     }
@@ -746,13 +748,17 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
             Ok(metrics_text) => (StatusCode::OK, metrics_text).into_response(),
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("UTF-8 error: {}", e)})),
+                Json(ErrorResponse {
+                    error: format!("UTF-8 error: {}", e),
+                }),
             )
                 .into_response(),
         },
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Encoding error: {}", e)})),
+            Json(ErrorResponse {
+                error: format!("Encoding error: {}", e),
+            }),
         )
             .into_response(),
     }
