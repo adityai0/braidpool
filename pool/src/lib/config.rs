@@ -14,8 +14,7 @@ use std::{
 };
 
 use stratum_apps::{
-    config_helpers::opt_path_from_toml,
-    config_helpers::CoinbaseRewardScript,
+    config_helpers::{opt_path_from_toml, CoinbaseRewardScript},
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
     stratum_core::bitcoin::{Amount, TxOut},
     tp_type::TemplateProviderType,
