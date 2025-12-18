@@ -19,6 +19,7 @@ use std::{
         atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, RwLock,
     },
+    time::{Duration, Instant},
 };
 use stratum_apps::{
     custom_mutex::Mutex,
@@ -37,7 +38,7 @@ use stratum_apps::{
             },
             sv2_to_sv1::{build_sv1_notify_from_sv2, build_sv1_set_difficulty_from_sv2_target},
         },
-        sv1_api::IsServer,
+        sv1_api::{utils::HexU32Be, IsServer},
     },
     task_manager::TaskManager,
     utils::types::{DownstreamId, Hashrate, SharesPerMinute},
@@ -160,6 +161,8 @@ impl Sv1Server {
             self.config.downstream_difficulty_config.enable_vardiff,
         );
 
+        let keepalive_future = Self::spawn_job_keepalive_loop(Arc::clone(&self));
+
         let listener = TcpListener::bind(self.listener_addr).await.map_err(|e| {
             error!("Failed to bind to {}: {}", self.listener_addr, e);
             e
@@ -169,8 +172,14 @@ impl Sv1Server {
 
         let sv1_status_sender = StatusSender::Sv1Server(status_sender.clone());
         let task_manager_clone = task_manager.clone();
+        let keepalive_enabled = self
+            .config
+            .downstream_difficulty_config
+            .job_keepalive_interval_secs
+            > 0;
         task_manager_clone.spawn(async move {
             tokio::pin!(vardiff_future);
+            tokio::pin!(keepalive_future);
             loop {
                 tokio::select! {
                     message = shutdown_rx_main.recv() => {
@@ -294,6 +303,7 @@ impl Sv1Server {
                         }
                     }
                     _ = &mut vardiff_future => {}
+                    _ = &mut keepalive_future, if keepalive_enabled => {}
                 }
             }
             drop(shutdown_complete_tx);
@@ -357,8 +367,27 @@ impl Sv1Server {
             }
         };
 
+        // If this is a keepalive job, extract the original upstream job_id from the job_id string
+        let mut share = message.share;
+        let job_id_str = share.job_id.clone();
+        if Sv1ServerData::is_keepalive_job_id(&job_id_str) {
+            if let Some(original_job_id) = Sv1ServerData::extract_original_job_id(&job_id_str) {
+                debug!(
+                    "Extracting original job_id {} from keepalive job_id {}",
+                    original_job_id, job_id_str
+                );
+                share.job_id = original_job_id;
+            } else {
+                warn!(
+                    "Failed to extract original job_id from keepalive job_id {}, rejecting share",
+                    job_id_str
+                );
+                return Ok(());
+            }
+        }
+
         let submit_share_extended = build_sv2_submit_shares_extended_from_sv1_submit(
-            &message.share,
+            &share,
             message.channel_id,
             self.sequence_counter.load(Ordering::SeqCst),
             job_version,
@@ -817,6 +846,152 @@ impl Sv1Server {
             );
         }
     }
+
+    /// Spawns the job keepalive loop that sends periodic mining.notify messages.
+    ///
+    /// This prevents SV1 miners from timing out when there are no new jobs received from the
+    /// upstream for a while.
+    pub async fn spawn_job_keepalive_loop(self: Arc<Self>) {
+        let keepalive_interval_secs = self
+            .config
+            .downstream_difficulty_config
+            .job_keepalive_interval_secs;
+
+        if keepalive_interval_secs == 0 {
+            debug!("Job keepalive disabled (interval set to 0)");
+            return;
+        }
+
+        let interval = Duration::from_secs(keepalive_interval_secs as u64);
+        let check_interval =
+            Duration::from_secs(keepalive_interval_secs as u64 / 2).max(Duration::from_secs(5));
+        info!(
+            "Starting job keepalive loop with interval of {} seconds",
+            keepalive_interval_secs
+        );
+
+        loop {
+            tokio::time::sleep(check_interval).await;
+
+            let keepalive_targets: Vec<(DownstreamId, Option<u32>)> =
+                self.sv1_server_data.super_safe_lock(|data| {
+                    data.downstreams
+                        .iter()
+                        .filter_map(|(downstream_id, downstream)| {
+                            downstream.downstream_data.super_safe_lock(|d| {
+                                // Only send keepalive if:
+                                // 1. Handshake is complete
+                                // 2. Enough time has passed since last job
+                                let handshake_complete =
+                                    d.sv1_handshake_complete.load(Ordering::SeqCst);
+
+                                if !handshake_complete {
+                                    return None;
+                                }
+
+                                let needs_keepalive = match d.last_job_received_time {
+                                    Some(last_time) => last_time.elapsed() >= interval,
+                                    None => false, // No job received yet, don't send keepalive
+                                };
+
+                                if needs_keepalive {
+                                    Some((*downstream_id, d.channel_id))
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                        .collect()
+                });
+
+            // Send keepalive to each downstream that needs one
+            for (downstream_id, channel_id) in keepalive_targets {
+                // Get the appropriate job for this downstream's channel and create keepalive
+                let keepalive_job = self.sv1_server_data.super_safe_lock(|data| {
+                    if let Some(last_job) = data.get_last_job(channel_id) {
+                        // Extract the original upstream job_id from the last job
+                        // If it's already a keepalive job, extract its original; otherwise use
+                        // as-is
+                        let original_job_id =
+                            Sv1ServerData::extract_original_job_id(&last_job.job_id)
+                                .unwrap_or_else(|| last_job.job_id.clone());
+
+                        // Find the original upstream job to get its base time
+                        let original_job = data.get_original_job(&original_job_id, channel_id);
+                        let base_time = original_job
+                            .as_ref()
+                            .map(|j| j.time.0)
+                            .unwrap_or(last_job.time.0);
+
+                        // Increment the time by the keepalive interval, but cap at
+                        // MAX_FUTURE_BLOCK_TIME from the original job's time to maintain consensus
+                        // validity (see https://github.com/bitcoin/bitcoin/blob/cd6e4c9235f763b8077cece69c2e3b2025cc8d0f/src/chain.h#L29)
+                        const MAX_FUTURE_BLOCK_TIME: u32 = 2 * 60 * 60;
+                        let new_time = last_job
+                            .time
+                            .0
+                            .saturating_add(keepalive_interval_secs as u32)
+                            .min(base_time.saturating_add(MAX_FUTURE_BLOCK_TIME));
+
+                        // If we've hit the cap, don't send another keepalive for this job
+                        if new_time == last_job.time.0 {
+                            return None;
+                        }
+
+                        // Generate new keepalive job_id: {original_job_id}#{counter}
+                        let new_job_id = data.next_keepalive_job_id(&original_job_id);
+
+                        let mut keepalive_notify = last_job;
+                        keepalive_notify.job_id = new_job_id.clone();
+                        keepalive_notify.time = HexU32Be(new_time);
+
+                        // Add the keepalive job to valid jobs so shares can be validated
+                        if let Some(ref mut aggregated_jobs) = data.aggregated_valid_jobs {
+                            aggregated_jobs.push(keepalive_notify.clone());
+                        }
+                        if let Some(ref mut non_aggregated_jobs) = data.non_aggregated_valid_jobs {
+                            if let Some(ch_id) = channel_id {
+                                if let Some(channel_jobs) = non_aggregated_jobs.get_mut(&ch_id) {
+                                    channel_jobs.push(keepalive_notify.clone());
+                                }
+                            }
+                        }
+
+                        Some(keepalive_notify)
+                    } else {
+                        None
+                    }
+                });
+
+                if let Some(notify) = keepalive_job {
+                    debug!(
+                        "Sending keepalive job to downstream {} with job_id: {}, time: {}",
+                        downstream_id, notify.job_id, notify.time.0
+                    );
+
+                    if let Err(e) = self
+                        .sv1_server_channel_state
+                        .sv1_server_to_downstream_sender
+                        .send((channel_id.unwrap_or(0), Some(downstream_id), notify.into()))
+                    {
+                        warn!(
+                            "Failed to send keepalive job to downstream {}: {:?}",
+                            downstream_id, e
+                        );
+                    } else {
+                        // Update the downstream's last job received time
+                        self.sv1_server_data.super_safe_lock(|data| {
+                            if let Some(downstream) = data.downstreams.get(&downstream_id) {
+                                downstream.downstream_data.super_safe_lock(|d| {
+                                    d.last_job_received_time = Some(Instant::now());
+                                });
+                            }
+                        });
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -832,7 +1007,7 @@ mod tests {
         let pubkey = Secp256k1PublicKey::from_str(pubkey_str).unwrap();
 
         let upstream = Upstream::new("127.0.0.1".to_string(), 4444, pubkey);
-        let difficulty_config = DownstreamDifficultyConfig::new(100.0, 5.0, true);
+        let difficulty_config = DownstreamDifficultyConfig::new(100.0, 5.0, true, 60);
 
         TranslatorConfig::new(
             vec![upstream],

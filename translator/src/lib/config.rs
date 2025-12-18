@@ -125,6 +125,12 @@ pub struct DownstreamDifficultyConfig {
     /// Whether to enable variable difficulty adjustment mechanism.
     /// If false, difficulty will be managed by upstream (useful with JDC).
     pub enable_vardiff: bool,
+    /// Interval in seconds for sending keepalive jobs to downstream miners.
+    /// The translator will send periodic mining.notify messages with updated time
+    /// to prevent SV1 miners from timing out when the upstream doesn't send new jobs
+    /// frequently enough (e.g., due to low Bitcoin mempool activity).
+    /// Set to 0 to disable keepalive jobs.
+    pub job_keepalive_interval_secs: u16,
 }
 
 impl DownstreamDifficultyConfig {
@@ -133,11 +139,13 @@ impl DownstreamDifficultyConfig {
         min_individual_miner_hashrate: Hashrate,
         shares_per_minute: SharesPerMinute,
         enable_vardiff: bool,
+        job_keepalive_interval_secs: u16,
     ) -> Self {
         Self {
             min_individual_miner_hashrate,
             shares_per_minute,
             enable_vardiff,
+            job_keepalive_interval_secs,
         }
     }
 }
@@ -155,7 +163,7 @@ mod tests {
     }
 
     fn create_test_difficulty_config() -> DownstreamDifficultyConfig {
-        DownstreamDifficultyConfig::new(100.0, 5.0, true)
+        DownstreamDifficultyConfig::new(100.0, 5.0, true, 60)
     }
 
     #[test]

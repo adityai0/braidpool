@@ -9,7 +9,7 @@ use crate::{
     utils::ShutdownMessage,
 };
 use async_channel::{Receiver, Sender};
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 use stratum_apps::{
     custom_mutex::Mutex,
     stratum_core::{
@@ -252,7 +252,8 @@ impl Downstream {
                                                     d.hashrate = Some(new_hashrate);
                                                 }
                                             }
-
+                                            // Update last job received time for keepalive tracking
+                                            d.last_job_received_time = Some(Instant::now());
                                             (cached_set_difficulty, Some(notify))
                                         } else {
                                             (cached_set_difficulty, None)
@@ -531,6 +532,10 @@ impl Downstream {
                     );
                     TproxyError::ChannelErrorSender
                 })?;
+            // Update last job received time for keepalive tracking
+            self.downstream_data.super_safe_lock(|d| {
+                d.last_job_received_time = Some(Instant::now());
+            });
         }
 
         Ok(())

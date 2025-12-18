@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     sync::{atomic::AtomicBool, Arc},
+    time::Instant,
 };
 use stratum_apps::{
     custom_mutex::Mutex,
@@ -45,6 +46,8 @@ pub struct DownstreamData {
     pub sv1_server_data: Arc<Mutex<Sv1ServerData>>,
     // Tracks the upstream target for this downstream, used for vardiff target comparison
     pub upstream_target: Option<Target>,
+    // Timestamp of when the last job was received by this downstream, used for keepalive check
+    pub last_job_received_time: Option<Instant>,
 }
 
 impl DownstreamData {
@@ -76,6 +79,7 @@ impl DownstreamData {
             pending_share: RefCell::new(None),
             sv1_server_data,
             upstream_target: None,
+            last_job_received_time: None,
         }
     }
 

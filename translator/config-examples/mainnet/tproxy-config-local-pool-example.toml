@@ -46,6 +46,9 @@ shares_per_minute = 6.0
 # enable variable difficulty adjustment (true by default, set to false when using with JDC)
 enable_vardiff = true
 
+# Interval in seconds for sending keepalive jobs to downstream miners.
+job_keepalive_interval_secs = 60
+
 [[upstreams]]
 address = "127.0.0.1"
 port = 3333
