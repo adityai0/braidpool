@@ -2,7 +2,8 @@
 
 use super::{
     client::{
-        ClientInfo, ClientsMonitoring, ClientsSummary, ExtendedChannelInfo, StandardChannelInfo,
+        ClientInfo, ClientMetadata, ClientsMonitoring, ClientsSummary, ExtendedChannelInfo,
+        StandardChannelInfo,
     },
     prometheus_metrics::PrometheusMetrics,
     server::{
@@ -42,8 +43,10 @@ use utoipa_swagger_ui::SwaggerUi;
         handle_health,
         handle_global,
         handle_server,
+        handle_server_channels,
         handle_clients,
         handle_client_by_id,
+        handle_client_channels,
         handle_sv1_clients,
         handle_sv1_client_by_id,
     ),
@@ -54,6 +57,7 @@ use utoipa_swagger_ui::SwaggerUi;
         ServerExtendedChannelInfo,
         ServerStandardChannelInfo,
         ClientInfo,
+        ClientMetadata,
         ExtendedChannelInfo,
         StandardChannelInfo,
         Sv1ClientInfo,
@@ -61,8 +65,10 @@ use utoipa_swagger_ui::SwaggerUi;
         HealthResponse,
         ErrorResponse,
         ServerResponse,
+        ServerChannelsResponse,
         ClientsResponse,
         ClientResponse,
+        ClientChannelsResponse,
         Sv1ClientsResponse,
     )),
     tags(
@@ -196,8 +202,10 @@ impl MonitoringServer {
             .route("/health", get(handle_health))
             .route("/global", get(handle_global))
             .route("/server", get(handle_server))
+            .route("/server/channels", get(handle_server_channels))
             .route("/clients", get(handle_clients))
             .route("/clients/{client_id}", get(handle_client_by_id))
+            .route("/clients/{client_id}/channels", get(handle_client_channels))
             .route("/sv1/clients", get(handle_sv1_clients))
             .route("/sv1/clients/{client_id}", get(handle_sv1_client_by_id));
 
@@ -245,6 +253,13 @@ struct ErrorResponse {
 
 #[derive(serde::Serialize, ToSchema)]
 struct ServerResponse {
+    extended_channels_count: usize,
+    standard_channels_count: usize,
+    total_hashrate: f32,
+}
+
+#[derive(serde::Serialize, ToSchema)]
+struct ServerChannelsResponse {
     offset: usize,
     limit: usize,
     total_extended: usize,
@@ -258,11 +273,19 @@ struct ClientsResponse {
     offset: usize,
     limit: usize,
     total: usize,
-    items: Vec<ClientInfo>,
+    items: Vec<ClientMetadata>,
 }
 
 #[derive(serde::Serialize, ToSchema)]
 struct ClientResponse {
+    client_id: usize,
+    extended_channels_count: usize,
+    standard_channels_count: usize,
+    total_hashrate: f32,
+}
+
+#[derive(serde::Serialize, ToSchema)]
+struct ClientChannelsResponse {
     client_id: usize,
     offset: usize,
     limit: usize,
@@ -291,11 +314,13 @@ async fn handle_root() -> Json<serde_json::Value> {
             "/api-docs/openapi.json": "OpenAPI specification",
             "/api/v1/health": "Health check",
             "/api/v1/global": "Global statistics",
-            "/api/v1/server": "Server with channels (paginated)",
-            "/api/v1/clients": "All Sv2 clients with channels (paginated)",
-            "/api/v1/clients/{id}": "Single Sv2 client with channels (paginated)",
+            "/api/v1/server": "Server metadata",
+            "/api/v1/server/channels": "Server channels (paginated)",
+            "/api/v1/clients": "All Sv2 clients metadata (paginated)",
+            "/api/v1/clients/{id}": "Single Sv2 client metadata",
+            "/api/v1/clients/{id}/channels": "Sv2 client channels (paginated)",
             "/api/v1/sv1/clients": "Sv1 clients (Translator Proxy only, paginated)",
-            "/api/v1/sv1/clients/{id}": "Single Sv1 client by ID (Translator Proxy only)",
+            "/api/v1/sv1/clients/{id}": "Single Sv1 client (Translator Proxy only)",
             "/metrics": "Prometheus metrics"
         }
     }))
@@ -366,18 +391,50 @@ async fn handle_global(State(state): State<ServerState>) -> Json<GlobalInfo> {
     })
 }
 
-/// Get server (upstream) channels
+/// Get server (upstream) metadata - use /server/channels for channel details
 #[utoipa::path(
     get,
     path = "/api/v1/server",
     tag = "server",
-    params(Pagination),
     responses(
-        (status = 200, description = "Server channels", body = ServerResponse),
+        (status = 200, description = "Server metadata", body = ServerResponse),
         (status = 404, description = "Server monitoring not available", body = ErrorResponse)
     )
 )]
-async fn handle_server(
+async fn handle_server(State(state): State<ServerState>) -> Response {
+    match &state.server_monitoring {
+        Some(monitoring) => {
+            let summary = monitoring.get_server_summary();
+
+            Json(ServerResponse {
+                extended_channels_count: summary.extended_channels,
+                standard_channels_count: summary.standard_channels,
+                total_hashrate: summary.total_hashrate,
+            })
+            .into_response()
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Server monitoring not available".to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Get server channels (paginated)
+#[utoipa::path(
+    get,
+    path = "/api/v1/server/channels",
+    tag = "server",
+    params(Pagination),
+    responses(
+        (status = 200, description = "Server channels (paginated)", body = ServerChannelsResponse),
+        (status = 404, description = "Server monitoring not available", body = ErrorResponse)
+    )
+)]
+async fn handle_server_channels(
     Query(params): Query<Pagination>,
     State(state): State<ServerState>,
 ) -> Response {
@@ -388,7 +445,7 @@ async fn handle_server(
             let (total_extended, extended_channels) = paginate(&server.extended_channels, &params);
             let (total_standard, standard_channels) = paginate(&server.standard_channels, &params);
 
-            Json(ServerResponse {
+            Json(ServerChannelsResponse {
                 offset: params.offset,
                 limit: params.effective_limit(),
                 total_extended,
@@ -408,14 +465,14 @@ async fn handle_server(
     }
 }
 
-/// Get all clients (downstream)
+/// Get all clients (downstream) - returns metadata only, use /clients/{id}/channels for channels
 #[utoipa::path(
     get,
     path = "/api/v1/clients",
     tag = "clients",
     params(Pagination),
     responses(
-        (status = 200, description = "List of clients", body = ClientsResponse),
+        (status = 200, description = "List of clients (metadata only)", body = ClientsResponse),
         (status = 404, description = "Clients monitoring not available", body = ErrorResponse)
     )
 )]
@@ -425,7 +482,11 @@ async fn handle_clients(
 ) -> Response {
     match &state.clients_monitoring {
         Some(monitoring) => {
-            let clients = monitoring.get_clients();
+            let clients: Vec<ClientMetadata> = monitoring
+                .get_clients()
+                .iter()
+                .map(|c| c.to_metadata())
+                .collect();
             let (total, items) = paginate(&clients, &params);
 
             Json(ClientsResponse {
@@ -446,55 +507,96 @@ async fn handle_clients(
     }
 }
 
-/// Get a single client by ID
+/// Get a single client by ID - returns metadata only, use /clients/{id}/channels for channels
 #[utoipa::path(
     get,
     path = "/api/v1/clients/{client_id}",
+    tag = "clients",
+    params(
+        ("client_id" = usize, Path, description = "Client ID")
+    ),
+    responses(
+        (status = 200, description = "Client metadata", body = ClientResponse),
+        (status = 404, description = "Client not found", body = ErrorResponse)
+    )
+)]
+async fn handle_client_by_id(
+    Path(client_id): Path<usize>,
+    State(state): State<ServerState>,
+) -> Response {
+    match &state.clients_monitoring {
+        Some(monitoring) => match monitoring.get_client_by_id(client_id) {
+            Some(client) => Json(ClientResponse {
+                client_id,
+                extended_channels_count: client.extended_channels.len(),
+                standard_channels_count: client.standard_channels.len(),
+                total_hashrate: client.total_hashrate(),
+            })
+            .into_response(),
+            None => (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("Client {} not found", client_id),
+                }),
+            )
+                .into_response(),
+        },
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Clients monitoring not available".to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Get channels for a specific client (paginated)
+#[utoipa::path(
+    get,
+    path = "/api/v1/clients/{client_id}/channels",
     tag = "clients",
     params(
         ("client_id" = usize, Path, description = "Client ID"),
         Pagination
     ),
     responses(
-        (status = 200, description = "Client details", body = ClientResponse),
+        (status = 200, description = "Client channels (paginated)", body = ClientChannelsResponse),
         (status = 404, description = "Client not found", body = ErrorResponse)
     )
 )]
-async fn handle_client_by_id(
+async fn handle_client_channels(
     Path(client_id): Path<usize>,
     Query(params): Query<Pagination>,
     State(state): State<ServerState>,
 ) -> Response {
     match &state.clients_monitoring {
-        Some(monitoring) => {
-            let clients = monitoring.get_clients();
-            match clients.into_iter().find(|c| c.client_id == client_id) {
-                Some(client) => {
-                    let (total_extended, extended_channels) =
-                        paginate(&client.extended_channels, &params);
-                    let (total_standard, standard_channels) =
-                        paginate(&client.standard_channels, &params);
+        Some(monitoring) => match monitoring.get_client_by_id(client_id) {
+            Some(client) => {
+                let (total_extended, extended_channels) =
+                    paginate(&client.extended_channels, &params);
+                let (total_standard, standard_channels) =
+                    paginate(&client.standard_channels, &params);
 
-                    Json(ClientResponse {
-                        client_id,
-                        offset: params.offset,
-                        limit: params.effective_limit(),
-                        total_extended,
-                        total_standard,
-                        extended_channels,
-                        standard_channels,
-                    })
-                    .into_response()
-                }
-                None => (
-                    StatusCode::NOT_FOUND,
-                    Json(ErrorResponse {
-                        error: format!("Client {} not found", client_id),
-                    }),
-                )
-                    .into_response(),
+                Json(ClientChannelsResponse {
+                    client_id,
+                    offset: params.offset,
+                    limit: params.effective_limit(),
+                    total_extended,
+                    total_standard,
+                    extended_channels,
+                    standard_channels,
+                })
+                .into_response()
             }
-        }
+            None => (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("Client {} not found", client_id),
+                }),
+            )
+                .into_response(),
+        },
         None => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -561,19 +663,16 @@ async fn handle_sv1_client_by_id(
     State(state): State<ServerState>,
 ) -> Response {
     match &state.sv1_monitoring {
-        Some(monitoring) => {
-            let clients = monitoring.get_sv1_clients();
-            match clients.into_iter().find(|c| c.client_id == client_id) {
-                Some(client) => Json(client).into_response(),
-                None => (
-                    StatusCode::NOT_FOUND,
-                    Json(ErrorResponse {
-                        error: format!("Sv1 client {} not found", client_id),
-                    }),
-                )
-                    .into_response(),
-            }
-        }
+        Some(monitoring) => match monitoring.get_sv1_client_by_id(client_id) {
+            Some(client) => Json(client).into_response(),
+            None => (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("Sv1 client {} not found", client_id),
+                }),
+            )
+                .into_response(),
+        },
         None => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {

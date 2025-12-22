@@ -4,7 +4,7 @@ HTTP JSON API and Prometheus metrics for SV2 applications.
 
 ## API Endpoints
 
-All channel-related endpoints support pagination via `?offset=N&limit=M` query params.
+Endpoints returning lists support pagination via `?offset=N&limit=M` query params.
 
 | Endpoint | Description |
 |----------|-------------|
@@ -12,12 +12,16 @@ All channel-related endpoints support pagination via `?offset=N&limit=M` query p
 | `/api-docs/openapi.json` | OpenAPI specification |
 | `/api/v1/health` | Health check |
 | `/api/v1/global` | Global statistics |
-| `/api/v1/server` | Server with channels (paginated) |
-| `/api/v1/clients` | All Sv2 clients with channels (paginated) |
-| `/api/v1/clients/{id}` | Single Sv2 client with channels (paginated) |
+| `/api/v1/server` | Server metadata |
+| `/api/v1/server/channels` | Server channels (paginated) |
+| `/api/v1/clients` | All Sv2 clients metadata (paginated) |
+| `/api/v1/clients/{id}` | Single Sv2 client metadata |
+| `/api/v1/clients/{id}/channels` | Sv2 client channels (paginated) |
 | `/api/v1/sv1/clients` | Sv1 clients (Translator Proxy only, paginated) |
-| `/api/v1/sv1/clients/{id}` | Single Sv1 client by ID (Translator Proxy only) |
+| `/api/v1/sv1/clients/{id}` | Single Sv1 client (Translator Proxy only) |
 | `/metrics` | Prometheus metrics |
+
+Server and client endpoints return metadata only (counts, hashrate). Use `/channels` sub-resource for channel details.
 
 ## Traits
 

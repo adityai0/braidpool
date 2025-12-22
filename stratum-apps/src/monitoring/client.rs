@@ -46,7 +46,7 @@ pub struct StandardChannelInfo {
     pub share_batch_size: usize,
 }
 
-/// Information about a single client (downstream connection)
+/// Full information about a single client including all channels
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ClientInfo {
     pub client_id: usize,
@@ -72,6 +72,25 @@ impl ClientInfo {
                 .map(|c| c.nominal_hashrate)
                 .sum::<f32>()
     }
+
+    /// Convert to metadata (without channel arrays)
+    pub fn to_metadata(&self) -> ClientMetadata {
+        ClientMetadata {
+            client_id: self.client_id,
+            extended_channels_count: self.extended_channels.len(),
+            standard_channels_count: self.standard_channels.len(),
+            total_hashrate: self.total_hashrate(),
+        }
+    }
+}
+
+/// Client metadata without channel arrays (for listings)
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ClientMetadata {
+    pub client_id: usize,
+    pub extended_channels_count: usize,
+    pub standard_channels_count: usize,
+    pub total_hashrate: f32,
 }
 
 /// Aggregate information about all clients
@@ -88,6 +107,16 @@ pub struct ClientsSummary {
 pub trait ClientsMonitoring: Send + Sync {
     /// Get all clients with their channels
     fn get_clients(&self) -> Vec<ClientInfo>;
+
+    /// Get a single client by client_id
+    ///
+    /// Default implementation does O(n) scan. Override for O(1) lookup
+    /// if your implementation uses a HashMap internally.
+    fn get_client_by_id(&self, client_id: usize) -> Option<ClientInfo> {
+        self.get_clients()
+            .into_iter()
+            .find(|c| c.client_id == client_id)
+    }
 
     /// Get summary of all clients
     fn get_clients_summary(&self) -> ClientsSummary {

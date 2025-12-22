@@ -16,7 +16,8 @@ pub mod server;
 pub mod sv1;
 
 pub use client::{
-    ClientInfo, ClientsMonitoring, ClientsSummary, ExtendedChannelInfo, StandardChannelInfo,
+    ClientInfo, ClientMetadata, ClientsMonitoring, ClientsSummary, ExtendedChannelInfo,
+    StandardChannelInfo,
 };
 pub use http_server::MonitoringServer;
 pub use server::{

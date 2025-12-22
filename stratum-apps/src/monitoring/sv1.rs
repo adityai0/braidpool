@@ -33,6 +33,16 @@ pub trait Sv1ClientsMonitoring: Send + Sync {
     /// Get all SV1 clients
     fn get_sv1_clients(&self) -> Vec<Sv1ClientInfo>;
 
+    /// Get a single SV1 client by client_id
+    ///
+    /// Default implementation does O(n) scan. Override for O(1) lookup
+    /// if your implementation uses a HashMap internally.
+    fn get_sv1_client_by_id(&self, client_id: usize) -> Option<Sv1ClientInfo> {
+        self.get_sv1_clients()
+            .into_iter()
+            .find(|c| c.client_id == client_id)
+    }
+
     /// Get summary of SV1 clients
     fn get_sv1_clients_summary(&self) -> Sv1ClientsSummary {
         let clients = self.get_sv1_clients();
