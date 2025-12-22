@@ -7,15 +7,13 @@ use std::{
 use async_channel::{Receiver, Sender};
 use core::sync::atomic::Ordering;
 use stratum_apps::{
+    coinbase_output_constraints::coinbase_output_constraints_message,
     config_helpers::CoinbaseRewardScript,
     custom_mutex::Mutex,
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
     network_helpers::noise_stream::NoiseTcpStream,
     stratum_core::{
-        bitcoin::{
-            absolute::LockTime, transaction::Version, OutPoint, ScriptBuf, Sequence, Transaction,
-            TxIn, TxOut, Witness,
-        },
+        bitcoin::TxOut,
         channels_sv2::{
             server::{
                 extended::ExtendedChannel,
@@ -31,7 +29,7 @@ use stratum_apps::{
         mining_sv2::{ExtendedExtranonce, SetTarget},
         noise_sv2::Responder,
         parsers_sv2::{Mining, TemplateDistribution, Tlv},
-        template_distribution_sv2::{CoinbaseOutputConstraints, NewTemplate, SetNewPrevHash},
+        template_distribution_sv2::{NewTemplate, SetNewPrevHash},
     },
     task_manager::TaskManager,
     utils::types::{ChannelId, DownstreamId, Message, SharesPerMinute, VardiffKey},
@@ -562,41 +560,11 @@ impl ChannelManager {
         &self,
         coinbase_outputs: Vec<TxOut>,
     ) -> PoolResult<()> {
-        // calculate the max coinbase output size for CoinbaseOutputConstraints
-        let max_size: u32 = coinbase_outputs.iter().map(|o| o.size() as u32).sum();
-        tracing::debug!(
-            max_size,
-            outputs_count = coinbase_outputs.len(),
-            "Calculated max coinbase output size"
-        );
-
-        // this is used to calculate the sigops of the coinbase outputs
-        // for CoinbaseOutputConstraints
-        let dummy_coinbase = Transaction {
-            version: Version::TWO,
-            lock_time: LockTime::ZERO,
-            input: vec![TxIn {
-                previous_output: OutPoint::null(),
-                script_sig: ScriptBuf::new(),
-                sequence: Sequence::MAX,
-                witness: Witness::from(vec![vec![0; 32]]),
-            }],
-            output: coinbase_outputs,
-        };
-
-        let max_sigops = dummy_coinbase.total_sigop_cost(|_| None) as u16;
-        tracing::debug!(max_sigops, "Calculated max sigops for coinbase");
-
-        let coinbase_output_constraints = CoinbaseOutputConstraints {
-            coinbase_output_max_additional_size: max_size,
-            coinbase_output_max_additional_sigops: max_sigops,
-        };
+        let msg = coinbase_output_constraints_message(coinbase_outputs);
 
         self.channel_manager_channel
             .tp_sender
-            .send(TemplateDistribution::CoinbaseOutputConstraints(
-                coinbase_output_constraints,
-            ))
+            .send(TemplateDistribution::CoinbaseOutputConstraints(msg))
             .await
             .map_err(|e| {
                 error!(error = ?e, "Failed to send CoinbaseOutputConstraints message to TP");

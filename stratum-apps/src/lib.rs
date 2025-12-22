@@ -68,3 +68,6 @@ pub mod task_manager;
 ///
 /// Provides the type of template provider that will be used.
 pub mod tp_type;
+
+/// Creates a CoinbaseOutputConstraints message from a list of coinbase outputs
+pub mod coinbase_output_constraints;
