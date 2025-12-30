@@ -60,6 +60,7 @@ pub struct ChannelManager {
     pub required_extensions: Vec<u16>,
 }
 
+#[hotpath::measure_all]
 impl ChannelManager {
     /// Creates a new ChannelManager instance.
     ///

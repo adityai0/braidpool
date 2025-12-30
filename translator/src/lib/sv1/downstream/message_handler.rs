@@ -11,6 +11,7 @@ use crate::{
 };
 
 // Implements `IsServer` for `Downstream` to handle the Sv1 messages.
+#[hotpath::measure_all]
 impl IsServer<'static> for DownstreamData {
     fn handle_configure(
         &mut self,

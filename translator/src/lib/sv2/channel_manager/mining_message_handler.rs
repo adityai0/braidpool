@@ -28,6 +28,7 @@ use stratum_apps::{
 };
 use tracing::{debug, error, info, warn};
 
+#[hotpath::measure_all]
 impl HandleMiningMessagesFromServerAsync for ChannelManager {
     type Error = TproxyError;
 

@@ -16,6 +16,7 @@ pub struct DownstreamChannelState {
         broadcast::Receiver<(ChannelId, Option<DownstreamId>, json_rpc::Message)>, /* channel_id, optional downstream_id, message */
 }
 
+#[hotpath::measure_all]
 impl DownstreamChannelState {
     pub fn new(
         downstream_sv1_sender: Sender<json_rpc::Message>,

@@ -12,6 +12,7 @@ use tracing::{error, trace, warn, Instrument as _};
 
 use crate::utils::ShutdownMessage;
 
+#[hotpath::measure]
 #[track_caller]
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_io_tasks(

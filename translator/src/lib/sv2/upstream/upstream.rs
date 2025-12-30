@@ -50,6 +50,7 @@ pub struct Upstream {
     pub required_extensions: Vec<u16>,
 }
 
+#[hotpath::measure_all]
 impl Upstream {
     /// Creates a new upstream connection by attempting to connect to configured servers.
     ///

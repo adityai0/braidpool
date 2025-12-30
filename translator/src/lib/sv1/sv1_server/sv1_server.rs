@@ -69,6 +69,7 @@ pub struct Sv1Server {
     miner_counter: AtomicU32,
 }
 
+#[hotpath::measure_all]
 impl Sv1Server {
     /// Drops the server's channel state, cleaning up resources.
     pub fn drop(&self) {
