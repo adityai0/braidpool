@@ -5,8 +5,20 @@ use crate::args::process_cli_args;
 
 mod args;
 
+#[cfg(feature = "hotpath-alloc")]
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    _ = inner_main().await;
+}
+
+#[cfg(not(feature = "hotpath-alloc"))]
 #[tokio::main]
 async fn main() {
+    _ = inner_main().await;
+}
+
+#[hotpath::main]
+async fn inner_main() {
     let config = process_cli_args();
     init_logging(config.log_dir());
     if let Err(e) = PoolSv2::new(config).start().await {

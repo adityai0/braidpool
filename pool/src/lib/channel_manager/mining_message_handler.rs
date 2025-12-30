@@ -29,6 +29,7 @@ use crate::{
     error::PoolError,
 };
 
+#[hotpath::measure_all]
 impl HandleMiningMessagesFromClientAsync for ChannelManager {
     type Error = PoolError;
 

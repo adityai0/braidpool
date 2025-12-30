@@ -4,8 +4,7 @@ use async_channel::unbounded;
 
 use bitcoin_core_sv2::CancellationToken;
 use stratum_apps::{
-    stratum_core::{bitcoin::consensus::Encodable, parsers_sv2::TemplateDistribution},
-    task_manager::TaskManager,
+    stratum_core::bitcoin::consensus::Encodable, task_manager::TaskManager,
     tp_type::TemplateProviderType,
 };
 use tokio::sync::broadcast;
@@ -15,7 +14,7 @@ use crate::{
     channel_manager::ChannelManager,
     config::PoolConfig,
     error::PoolResult,
-    status::{State, Status},
+    status::State,
     template_receiver::{
         bitcoin_core::{connect_to_bitcoin_core, BitcoinCoreSv2Config},
         sv2_tp::Sv2Tp,
@@ -38,6 +37,7 @@ pub struct PoolSv2 {
     notify_shutdown: broadcast::Sender<ShutdownMessage>,
 }
 
+#[hotpath::measure_all]
 impl PoolSv2 {
     pub fn new(config: PoolConfig) -> Self {
         let (notify_shutdown, _) = tokio::sync::broadcast::channel::<ShutdownMessage>(100);
@@ -60,17 +60,15 @@ impl PoolSv2 {
 
         let task_manager = Arc::new(TaskManager::new());
 
-        let (status_sender, status_receiver) = async_channel::unbounded::<Status>();
+        let (status_sender, status_receiver) = unbounded();
 
         let (channel_manager_to_downstream_sender, _channel_manager_to_downstream_receiver) =
             broadcast::channel(10);
         let (downstream_to_channel_manager_sender, downstream_to_channel_manager_receiver) =
             unbounded();
 
-        let (channel_manager_to_tp_sender, channel_manager_to_tp_receiver) =
-            unbounded::<TemplateDistribution<'static>>();
-        let (tp_to_channel_manager_sender, tp_to_channel_manager_receiver) =
-            unbounded::<TemplateDistribution<'static>>();
+        let (channel_manager_to_tp_sender, channel_manager_to_tp_receiver) = unbounded();
+        let (tp_to_channel_manager_sender, tp_to_channel_manager_receiver) = unbounded();
 
         debug!("Channels initialized.");
 

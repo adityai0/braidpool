@@ -91,6 +91,7 @@ pub struct Downstream {
     pub required_extensions: Vec<u16>,
 }
 
+#[hotpath::measure_all]
 impl Downstream {
     /// Creates a new [`Downstream`] instance and spawns the necessary I/O tasks.
     #[allow(clippy::too_many_arguments)]

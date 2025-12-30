@@ -9,6 +9,7 @@ use tracing::{error, info};
 
 use crate::{error::PoolError, template_receiver::sv2_tp::Sv2Tp};
 
+#[hotpath::measure_all]
 impl HandleCommonMessagesFromServerAsync for Sv2Tp {
     type Error = PoolError;
 

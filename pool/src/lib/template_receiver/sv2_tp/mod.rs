@@ -40,6 +40,7 @@ pub struct Sv2Tp {
     sv2_tp_channel: Sv2TpChannel,
 }
 
+#[hotpath::measure_all]
 impl Sv2Tp {
     /// Establish a new connection to a Sv2 Template Provider.
     ///

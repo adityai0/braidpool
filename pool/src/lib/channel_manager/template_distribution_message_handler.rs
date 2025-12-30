@@ -15,6 +15,7 @@ use crate::{
     error::PoolError,
 };
 
+#[hotpath::measure_all]
 impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
     type Error = PoolError;
 

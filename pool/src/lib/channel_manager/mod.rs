@@ -100,6 +100,7 @@ pub struct ChannelManager {
     required_extensions: Vec<u16>,
 }
 
+#[hotpath::measure_all]
 impl ChannelManager {
     /// Constructor method used to instantiate the ChannelManager
     #[allow(clippy::too_many_arguments)]
