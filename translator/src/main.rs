@@ -4,7 +4,6 @@ pub use translator_sv2::{config, error, status, sv1, sv2, TranslatorSv2};
 
 use crate::args::process_cli_args;
 
-
 #[cfg(feature = "hotpath-alloc")]
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
