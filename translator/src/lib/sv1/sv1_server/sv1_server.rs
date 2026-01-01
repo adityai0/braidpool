@@ -498,7 +498,7 @@ impl Sv1Server {
                             for message in queued_messages {
                                 if let Ok(Some(response_msg)) = downstream
                                     .downstream_data
-                                    .super_safe_lock(|data| data.handle_message(message))
+                                    .super_safe_lock(|data| data.handle_message(None, message))
                                 {
                                     self.sv1_server_channel_state
                                         .sv1_server_to_downstream_sender

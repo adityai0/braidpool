@@ -14,6 +14,7 @@ use crate::{
 impl IsServer<'static> for DownstreamData {
     fn handle_configure(
         &mut self,
+        _client_id: Option<usize>,
         request: &client_to_server::Configure,
     ) -> (Option<server_to_client::VersionRollingParams>, Option<bool>) {
         info!("Received mining.configure from Sv1 downstream");
@@ -36,7 +37,11 @@ impl IsServer<'static> for DownstreamData {
         )
     }
 
-    fn handle_subscribe(&self, request: &client_to_server::Subscribe) -> Vec<(String, String)> {
+    fn handle_subscribe(
+        &self,
+        _client_id: Option<usize>,
+        request: &client_to_server::Subscribe,
+    ) -> Vec<(String, String)> {
         info!("Received mining.subscribe from Sv1 downstream");
         debug!("Down: Handling mining.subscribe: {:?}", request);
 
@@ -53,13 +58,21 @@ impl IsServer<'static> for DownstreamData {
         vec![set_difficulty_sub, notify_sub]
     }
 
-    fn handle_authorize(&self, request: &client_to_server::Authorize) -> bool {
+    fn handle_authorize(
+        &self,
+        _client_id: Option<usize>,
+        request: &client_to_server::Authorize,
+    ) -> bool {
         info!("Received mining.authorize from Sv1 downstream");
         debug!("Down: Handling mining.authorize: {:?}", request);
         true
     }
 
-    fn handle_submit(&self, request: &client_to_server::Submit<'static>) -> bool {
+    fn handle_submit(
+        &self,
+        _client_id: Option<usize>,
+        request: &client_to_server::Submit<'static>,
+    ) -> bool {
         if let Some(channel_id) = self.channel_id {
             info!(
                 "Received mining.submit from SV1 downstream for channel id: {}",
@@ -100,14 +113,14 @@ impl IsServer<'static> for DownstreamData {
     fn handle_extranonce_subscribe(&self) {}
 
     /// Checks if a Downstream role is authorized.
-    fn is_authorized(&self, name: &str) -> bool {
+    fn is_authorized(&self, _client_id: Option<usize>, name: &str) -> bool {
         self.authorized_worker_name == *name
     }
 
     /// Authorizes a Downstream role.
-    fn authorize(&mut self, name: &str) {
+    fn authorize(&mut self, _client_id: Option<usize>, name: &str) {
         let name: String = name.into();
-        if !self.is_authorized(&name) {
+        if !self.is_authorized(None, &name) {
             self.authorized_worker_name = name.to_string();
         }
         // Set user_identity from the authorize request
@@ -122,44 +135,50 @@ impl IsServer<'static> for DownstreamData {
     /// by the SV2 `OpenExtendedMiningChannelSuccess` message sent from the Upstream role.
     fn set_extranonce1(
         &mut self,
+        _client_id: Option<usize>,
         _extranonce1: Option<Extranonce<'static>>,
     ) -> Extranonce<'static> {
         self.extranonce1.clone().try_into().unwrap()
     }
 
     /// Returns the `Downstream`'s `extranonce1` value.
-    fn extranonce1(&self) -> Extranonce<'static> {
+    fn extranonce1(&self, _client_id: Option<usize>) -> Extranonce<'static> {
         self.extranonce1.clone().try_into().unwrap()
     }
 
     /// Sets the `extranonce2_size` field sent in the SV1 `mining.notify` message to the value
     /// specified by the SV2 `OpenExtendedMiningChannelSuccess` message sent from the Upstream role.
-    fn set_extranonce2_size(&mut self, _extra_nonce2_size: Option<usize>) -> usize {
+    fn set_extranonce2_size(
+        &mut self,
+        __client_id: Option<usize>,
+        _extra_nonce2_size: Option<usize>,
+    ) -> usize {
         self.extranonce2_len
     }
 
     /// Returns the `Downstream`'s `extranonce2_size` value.
-    fn extranonce2_size(&self) -> usize {
+    fn extranonce2_size(&self, _client_id: Option<usize>) -> usize {
         self.extranonce2_len
     }
 
     /// Returns the version rolling mask.
-    fn version_rolling_mask(&self) -> Option<HexU32Be> {
+    fn version_rolling_mask(&self, _client_id: Option<usize>) -> Option<HexU32Be> {
         self.version_rolling_mask.clone()
     }
 
     /// Sets the version rolling mask.
-    fn set_version_rolling_mask(&mut self, mask: Option<HexU32Be>) {
+    fn set_version_rolling_mask(&mut self, _client_id: Option<usize>, mask: Option<HexU32Be>) {
         self.version_rolling_mask = mask;
     }
 
     /// Sets the minimum version rolling bit.
-    fn set_version_rolling_min_bit(&mut self, mask: Option<HexU32Be>) {
+    fn set_version_rolling_min_bit(&mut self, _client_id: Option<usize>, mask: Option<HexU32Be>) {
         self.version_rolling_min_bit = mask
     }
 
     fn notify(
         &'_ mut self,
+        _client_id: Option<usize>,
     ) -> Result<json_rpc::Message, stratum_apps::stratum_core::sv1_api::error::Error<'_>> {
         warn!("notify() called on DownstreamData - this method is not implemented for the translator proxy");
         Err(

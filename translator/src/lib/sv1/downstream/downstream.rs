@@ -420,7 +420,7 @@ impl Downstream {
         // Channel is established, process message normally
         let response = self
             .downstream_data
-            .super_safe_lock(|data| data.handle_message(message.clone()));
+            .super_safe_lock(|data| data.handle_message(None, message.clone()));
 
         match response {
             Ok(Some(response_msg)) => {
