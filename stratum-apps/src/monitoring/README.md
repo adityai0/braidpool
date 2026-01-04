@@ -37,7 +37,7 @@ Applications implement these traits on their data structures:
 use stratum_apps::monitoring::MonitoringServer;
 
 let server = MonitoringServer::new(
-    "0.0.0.0:9090".parse()?,
+    "127.0.0.1:9090".parse()?,
     Some(Arc::new(channel_manager.clone())), // server monitoring
     Some(Arc::new(channel_manager.clone())), // clients monitoring
 )?;
