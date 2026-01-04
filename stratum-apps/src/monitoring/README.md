@@ -35,6 +35,7 @@ Applications implement these traits on their data structures:
 
 ```rust
 use stratum_apps::monitoring::MonitoringServer;
+use std::sync::Arc;
 
 let server = MonitoringServer::new(
     "127.0.0.1:9090".parse()?,
@@ -45,8 +46,21 @@ let server = MonitoringServer::new(
 // For Translator, add SV1 monitoring
 let server = server.with_sv1_monitoring(Arc::new(sv1_server.clone()))?;
 
-// Run with shutdown signal
-server.run(shutdown_signal).await?;
+// Create a shutdown signal (any Future that completes when shutdown is needed)
+let (shutdown_tx, mut shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+let shutdown_signal = async move {
+    shutdown_rx.recv().await.ok();
+};
+
+// Spawn monitoring server
+tokio::spawn(async move {
+    if let Err(e) = server.run(shutdown_signal).await {
+        eprintln!("Monitoring server error: {}", e);
+    }
+});
+
+// Later, trigger shutdown:
+// shutdown_tx.send(()).ok();
 ```
 
 ## Prometheus Metrics
