@@ -1,7 +1,6 @@
 pub(super) mod channel;
 pub(super) mod data;
 pub mod downstream;
-mod message_handler;
 
 use stratum_apps::{
     stratum_core::sv1_api::{client_to_server::Submit, utils::HexU32Be},

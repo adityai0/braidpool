@@ -3,7 +3,7 @@ use crate::{
     error::{self, TproxyError, TproxyErrorKind, TproxyResult},
     status::{handle_error, Status, StatusSender},
     sv1::{
-        downstream::{downstream::Downstream, DownstreamMessages},
+        downstream::downstream::Downstream,
         sv1_server::{
             channel::Sv1ServerChannelState, data::Sv1ServerData,
             difficulty_manager::DifficultyManager,
@@ -38,7 +38,7 @@ use stratum_apps::{
             },
             sv2_to_sv1::{build_sv1_notify_from_sv2, build_sv1_set_difficulty_from_sv2_target},
         },
-        sv1_api::{utils::HexU32Be, IsServer},
+        sv1_api::{json_rpc, {utils::HexU32Be, IsServer}},
     },
     task_manager::TaskManager,
     utils::types::{DownstreamId, Hashrate, SharesPerMinute},
@@ -251,7 +251,6 @@ impl Sv1Server {
                                     self.sv1_server_channel_state.sv1_server_to_downstream_sender.clone().subscribe(),
                                     first_target,
                                     Some(self.config.downstream_difficulty_config.min_individual_miner_hashrate),
-                                    self.sv1_server_data.clone(),
                                 ));
                                 // vardiff initialization (only if enabled)
                                 _ = self.sv1_server_data
@@ -326,21 +325,89 @@ impl Sv1Server {
     /// * `Ok(())` - Message processed successfully
     /// * `Err(TproxyError)` - Error processing the message
     pub async fn handle_downstream_message(self: Arc<Self>) -> TproxyResult<(), error::Sv1Server> {
-        let downstream_message = self
+        let (downstream_id, downstream_message) = self
             .sv1_server_channel_state
             .downstream_to_sv1_server_receiver
             .recv()
             .await
             .map_err(TproxyError::shutdown)?;
 
-        match downstream_message {
-            DownstreamMessages::SubmitShares(message) => {
-                return self.handle_submit_shares(message).await;
+        let downstream = self
+            .sv1_server_data
+            .super_safe_lock(|data| data.downstreams.get(&downstream_id).cloned());
+
+        if let Some(downstream) = downstream {
+            let channel_id = downstream
+                .downstream_data
+                .super_safe_lock(|data| data.channel_id);
+            if channel_id.is_none() {
+                let is_first_message = downstream
+                    .downstream_data
+                    .super_safe_lock(|d| d.queued_sv1_handshake_messages.is_empty());
+                if is_first_message {
+                    self.handle_open_channel_request(downstream_id).await?;
+                    debug!(
+                        "Down: Sent OpenChannel request for downstream {}",
+                        downstream_id
+                    );
+                }
+                debug!("Down: Queuing Sv1 message until channel is established");
+                downstream.downstream_data.super_safe_lock(|data| {
+                    data.queued_sv1_handshake_messages
+                        .push(downstream_message.clone())
+                });
+                return Ok(());
             }
-            DownstreamMessages::OpenChannel(downstream_id) => {
-                return self.handle_open_channel_request(downstream_id).await;
+
+            let response = self.sv1_server_data.super_safe_lock(|data| {
+                data.handle_message(Some(downstream_id), downstream_message.clone())
+            });
+            match response {
+                Ok(Some(response_msg)) => {
+                    debug!(
+                        "Down: Sending Sv1 message to downstream: {:?}",
+                        response_msg
+                    );
+                    downstream
+                        .downstream_channel_state
+                        .downstream_sv1_sender
+                        .send(response_msg.into())
+                        .await
+                        .map_err(|error| {
+                            error!("Down: Failed to send message to downstream: {error:?}");
+                            TproxyError::ChannelErrorSender
+                        })?;
+
+                    // Check if this was an authorize message and handle sv1 handshake completion
+                    if let json_rpc::Message::StandardRequest(request) = &downstream_message {
+                        if request.method == "mining.authorize" {
+                            info!("Down: Handling mining.authorize after handshake completion");
+                            if let Err(e) = downstream.handle_sv1_handshake_completion().await {
+                                error!("Down: Failed to handle handshake completion: {:?}", e);
+                                return Err(e);
+                            }
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // Message was handled but no response needed
+                }
+                Err(e) => {
+                    error!("Down: Error handling downstream message: {:?}", e);
+                    return Err(e.into());
+                }
+            }
+
+            // Check if there's a pending share to send to the Sv1Server
+            let pending_share = downstream
+                .downstream_data
+                .super_safe_lock(|d| d.pending_share.take());
+            if let Some(share) = pending_share {
+                self.handle_submit_shares(share).await?;
             }
         }
+
+        Ok(())
     }
 
     /// Handles share submission messages from downstream.
@@ -534,9 +601,10 @@ impl Sv1Server {
                             });
 
                             for message in queued_messages {
-                                if let Ok(Some(response_msg)) = downstream
-                                    .downstream_data
-                                    .super_safe_lock(|data| data.handle_message(None, message))
+                                if let Ok(Some(response_msg)) =
+                                    self.sv1_server_data.super_safe_lock(|data| {
+                                        data.handle_message(Some(downstream_id), message)
+                                    })
                                 {
                                     self.sv1_server_channel_state
                                         .sv1_server_to_downstream_sender

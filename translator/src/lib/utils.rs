@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 
 use stratum_apps::{
-    custom_mutex::Mutex,
     key_utils::Secp256k1PublicKey,
     stratum_core::{
         binary_sv2::{Sv2DataType, U256},
@@ -14,9 +13,9 @@ use stratum_apps::{
             merkle_root::merkle_root_from_path,
             target::{bytes_to_hex, u256_to_block_hash},
         },
-        sv1_api::{client_to_server, utils::HexU32Be},
+        sv1_api::{client_to_server, server_to_client::Notify, utils::HexU32Be},
     },
-    utils::types::{ChannelId, DownstreamId},
+    utils::types::DownstreamId,
 };
 
 use tokio::sync::mpsc;
@@ -54,32 +53,8 @@ pub fn validate_sv1_share(
     target: Target,
     extranonce1: Vec<u8>,
     version_rolling_mask: Option<HexU32Be>,
-    sv1_server_data: std::sync::Arc<Mutex<crate::sv1::sv1_server::data::Sv1ServerData>>,
-    channel_id: ChannelId,
-) -> Result<bool, TproxyErrorKind> {
-    let job_id = share.job_id.clone();
-
-    // Access valid jobs based on the configured mode
-    let job = sv1_server_data
-        .super_safe_lock(|server_data| {
-            if let Some(ref aggregated_jobs) = server_data.aggregated_valid_jobs {
-                // Aggregated mode: search in shared jobs
-                aggregated_jobs
-                    .iter()
-                    .find(|job| job.job_id == job_id)
-                    .cloned()
-            } else if let Some(ref non_aggregated_jobs) = server_data.non_aggregated_valid_jobs {
-                // Non-aggregated mode: search in channel-specific jobs
-                non_aggregated_jobs
-                    .get(&channel_id)
-                    .and_then(|channel_jobs| channel_jobs.iter().find(|job| job.job_id == job_id))
-                    .cloned()
-            } else {
-                None
-            }
-        })
-        .ok_or(TproxyErrorKind::JobNotFound)?;
-
+    job: Notify<'static>,
+) -> Result<bool, TproxyError> {
     let mut full_extranonce = vec![];
     full_extranonce.extend_from_slice(extranonce1.as_slice());
     full_extranonce.extend_from_slice(share.extra_nonce2.0.as_ref());

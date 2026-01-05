@@ -1,11 +1,7 @@
-use super::DownstreamMessages;
 use crate::{
     error::{self, TproxyError, TproxyErrorKind, TproxyResult},
     status::{handle_error, StatusSender},
-    sv1::{
-        downstream::{channel::DownstreamChannelState, data::DownstreamData},
-        sv1_server::data::Sv1ServerData,
-    },
+    sv1::downstream::{channel::DownstreamChannelState, data::DownstreamData},
     utils::{ShutdownMessage, AGGREGATED_CHANNEL_ID},
 };
 use async_channel::{Receiver, Sender};
@@ -16,7 +12,7 @@ use stratum_apps::{
         bitcoin::Target,
         sv1_api::{
             json_rpc::{self, Message},
-            server_to_client, IsServer,
+            server_to_client,
         },
     },
     task_manager::TaskManager,
@@ -41,7 +37,7 @@ use tracing::{debug, error, info, warn};
 #[derive(Debug)]
 pub struct Downstream {
     pub downstream_data: Arc<Mutex<DownstreamData>>,
-    downstream_channel_state: DownstreamChannelState,
+    pub downstream_channel_state: DownstreamChannelState,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -52,7 +48,7 @@ impl Downstream {
         downstream_id: DownstreamId,
         downstream_sv1_sender: Sender<json_rpc::Message>,
         downstream_sv1_receiver: Receiver<json_rpc::Message>,
-        sv1_server_sender: Sender<DownstreamMessages>,
+        sv1_server_sender: Sender<(DownstreamId, json_rpc::Message)>,
         sv1_server_receiver: broadcast::Receiver<(
             ChannelId,
             Option<DownstreamId>,
@@ -60,13 +56,11 @@ impl Downstream {
         )>,
         target: Target,
         hashrate: Option<Hashrate>,
-        sv1_server_data: Arc<Mutex<Sv1ServerData>>,
     ) -> Self {
         let downstream_data = Arc::new(Mutex::new(DownstreamData::new(
             downstream_id,
             target,
             hashrate,
-            sv1_server_data,
         )));
         let downstream_channel_state = DownstreamChannelState::new(
             downstream_sv1_sender,
@@ -396,100 +390,15 @@ impl Downstream {
             }
         };
 
-        // Check if channel is established
-        let channel_established = self
+        let downstream_id = self
             .downstream_data
-            .super_safe_lock(|d| d.channel_id.is_some());
+            .super_safe_lock(|data| data.downstream_id);
 
-        if !channel_established {
-            // Check if this is the first message (queue is empty) and send OpenChannel request
-            let is_first_message = self
-                .downstream_data
-                .super_safe_lock(|d| d.queued_sv1_handshake_messages.is_empty());
-
-            if is_first_message {
-                let downstream_id = self.downstream_data.super_safe_lock(|d| d.downstream_id);
-                self.downstream_channel_state
-                    .sv1_server_sender
-                    .send(DownstreamMessages::OpenChannel(downstream_id))
-                    .await
-                    .map_err(|e| {
-                        error!("Down: Failed to send OpenChannel request: {:?}", e);
-                        TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender)
-                    })?;
-                debug!(
-                    "Down: Sent OpenChannel request for downstream {}",
-                    downstream_id
-                );
-            }
-
-            // Queue all messages until channel is established
-            debug!("Down: Queuing Sv1 message until channel is established");
-            self.downstream_data
-                .safe_lock(|d| {
-                    d.queued_sv1_handshake_messages.push(message.clone());
-                })
-                .map_err(|error| TproxyError::disconnect(error, downstream_id))?;
-            return Ok(());
-        }
-
-        // Channel is established, process message normally
-        let response = self
-            .downstream_data
-            .super_safe_lock(|data| data.handle_message(None, message.clone()));
-
-        match response {
-            Ok(Some(response_msg)) => {
-                debug!(
-                    "Down: Sending Sv1 message to downstream: {:?}",
-                    response_msg
-                );
-                self.downstream_channel_state
-                    .downstream_sv1_sender
-                    .send(response_msg.into())
-                    .await
-                    .map_err(|e| {
-                        error!("Down: Failed to send message to downstream: {:?}", e);
-                        TproxyError::disconnect(TproxyErrorKind::ChannelErrorSender, downstream_id)
-                    })?;
-
-                // Check if this was an authorize message and handle sv1 handshake completion
-                if let stratum_apps::stratum_core::sv1_api::json_rpc::Message::StandardRequest(
-                    request,
-                ) = &message
-                {
-                    if request.method == "mining.authorize" {
-                        info!("Down: Handling mining.authorize after handshake completion");
-                        if let Err(e) = self.handle_sv1_handshake_completion().await {
-                            error!("Down: Failed to handle handshake completion: {:?}", e);
-                            return Err(e);
-                        }
-                    }
-                }
-            }
-            Ok(None) => {
-                // Message was handled but no response needed
-            }
-            Err(e) => {
-                error!("Down: Error handling downstream message: {:?}", e);
-                return Err(TproxyError::disconnect(e, downstream_id));
-            }
-        }
-
-        // Check if there's a pending share to send to the Sv1Server
-        let pending_share = self
-            .downstream_data
-            .super_safe_lock(|d| d.pending_share.take());
-        if let Some(share) = pending_share {
-            self.downstream_channel_state
-                .sv1_server_sender
-                .send(DownstreamMessages::SubmitShares(share))
-                .await
-                .map_err(|e| {
-                    error!("Down: Failed to send share to SV1 server: {:?}", e);
-                    TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender)
-                })?;
-        }
+        self.downstream_channel_state
+            .sv1_server_sender
+            .send((downstream_id, message))
+            .await
+            .map_err(|_| TproxyError::ChannelErrorSender)?;
 
         Ok(())
     }
@@ -512,6 +421,12 @@ impl Downstream {
                     d.downstream_id,
                 )
             });
+    pub async fn handle_sv1_handshake_completion(self: &Arc<Self>) -> Result<(), TproxyError> {
+        let (cached_set_difficulty, cached_notify) = self.downstream_data.super_safe_lock(|d| {
+            d.sv1_handshake_complete
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            (d.cached_set_difficulty.take(), d.cached_notify.take())
+        });
         debug!("Down: SV1 handshake completed for downstream");
 
         // Send cached messages in correct order: set_difficulty first, then notify
