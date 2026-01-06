@@ -196,8 +196,9 @@ impl IsServer<'static> for Sv1ServerData {
             Some(d) => d,
             None => return,
         };
+        let is_authorized = self.is_authorized(client_id, name);
         downstream.downstream_data.super_safe_lock(|data| {
-            if self.is_authorized(client_id, name) {
+            if !is_authorized {
                 data.authorized_worker_name = name.to_string();
             }
             data.user_identity = name.to_string();
