@@ -6,13 +6,13 @@ use stratum_apps::{
 use tokio::sync::broadcast;
 use tracing::debug;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct DownstreamChannelState {
     pub downstream_sv1_sender: Sender<json_rpc::Message>,
     pub downstream_sv1_receiver: Receiver<json_rpc::Message>,
     pub sv1_server_sender: Sender<(DownstreamId, json_rpc::Message)>,
     pub sv1_server_receiver:
-        broadcast::Receiver<(ChannelId, Option<DownstreamId>, json_rpc::Message)>, /* channel_id, optional downstream_id, message */
+        broadcast::Sender<(ChannelId, Option<DownstreamId>, json_rpc::Message)>, /* channel_id, optional downstream_id, message */
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -21,7 +21,7 @@ impl DownstreamChannelState {
         downstream_sv1_sender: Sender<json_rpc::Message>,
         downstream_sv1_receiver: Receiver<json_rpc::Message>,
         sv1_server_sender: Sender<(DownstreamId, json_rpc::Message)>,
-        sv1_server_receiver: broadcast::Receiver<(
+        sv1_server_receiver: broadcast::Sender<(
             ChannelId,
             Option<DownstreamId>,
             json_rpc::Message,

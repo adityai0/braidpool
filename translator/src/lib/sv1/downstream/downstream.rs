@@ -34,7 +34,7 @@ use tracing::{debug, error, info, warn};
 /// Each downstream connection runs in its own async task that processes messages
 /// from both the miner and the server, ensuring proper message ordering and
 /// handling connection-specific state.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Downstream {
     pub downstream_data: Arc<Mutex<DownstreamData>>,
     pub downstream_channel_state: DownstreamChannelState,
@@ -49,7 +49,7 @@ impl Downstream {
         downstream_sv1_sender: Sender<json_rpc::Message>,
         downstream_sv1_receiver: Receiver<json_rpc::Message>,
         sv1_server_sender: Sender<(DownstreamId, json_rpc::Message)>,
-        sv1_server_receiver: broadcast::Receiver<(
+        sv1_server_receiver: broadcast::Sender<(
             ChannelId,
             Option<DownstreamId>,
             json_rpc::Message,
@@ -86,7 +86,7 @@ impl Downstream {
     /// an unrecoverable error occurs. It ensures graceful cleanup of resources
     /// and proper error reporting.
     pub fn run_downstream_tasks(
-        self: Arc<Self>,
+        self,
         notify_shutdown: broadcast::Sender<ShutdownMessage>,
         shutdown_complete_tx: mpsc::Sender<()>,
         status_sender: StatusSender,
@@ -95,7 +95,7 @@ impl Downstream {
         let mut sv1_server_receiver = self
             .downstream_channel_state
             .sv1_server_receiver
-            .resubscribe();
+            .subscribe();
         let mut shutdown_rx = notify_shutdown.subscribe();
         let downstream_id = self.downstream_data.super_safe_lock(|d| d.downstream_id);
         task_manager.spawn(async move {
@@ -127,7 +127,7 @@ impl Downstream {
                     }
 
                     // Handle downstream -> server message
-                    res = Self::handle_downstream_message(self.clone()) => {
+                    res = self.handle_downstream_message() => {
                         if let Err(e) = res {
                             error!("Downstream {downstream_id}: error in downstream message handler: {e:?}");
                             if handle_error(&status_sender, e).await {
@@ -137,7 +137,7 @@ impl Downstream {
                     }
 
                     // Handle server -> downstream message
-                    res = Self::handle_sv1_server_message(self.clone(),&mut sv1_server_receiver) => {
+                    res = self.handle_sv1_server_message(&mut sv1_server_receiver) => {
                         if let Err(e) = res {
                             error!("Downstream {downstream_id}: error in server message handler: {e:?}");
                             if handle_error(&status_sender, e).await {
@@ -176,7 +176,7 @@ impl Downstream {
     /// - On handshake completion: sends cached messages in correct order (set_difficulty first,
     ///   then notify)
     pub async fn handle_sv1_server_message(
-        self: Arc<Self>,
+        &self,
         sv1_server_receiver: &mut broadcast::Receiver<(
             ChannelId,
             Option<DownstreamId>,
@@ -373,7 +373,7 @@ impl Downstream {
     /// which implements the SV1 protocol logic and generates appropriate responses.
     /// Responses are sent back to the miner, while share submissions are forwarded
     /// to the SV1 server for upstream processing.
-    pub async fn handle_downstream_message(self: Arc<Self>) -> TproxyResult<(), error::Downstream> {
+    pub async fn handle_downstream_message(&self) -> TproxyResult<(), error::Downstream> {
         let downstream_id = self
             .downstream_data
             .super_safe_lock(|data| data.downstream_id);
@@ -408,20 +408,7 @@ impl Downstream {
     /// This method is called when the downstream completes the SV1 handshake
     /// (subscribe + authorize). It sends any cached messages in the correct order:
     /// set_difficulty first, then notify.
-    async fn handle_sv1_handshake_completion(
-        self: &Arc<Self>,
-    ) -> TproxyResult<(), error::Downstream> {
-        let (cached_set_difficulty, cached_notify, downstream_id) =
-            self.downstream_data.super_safe_lock(|d| {
-                d.sv1_handshake_complete
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-                (
-                    d.cached_set_difficulty.take(),
-                    d.cached_notify.take(),
-                    d.downstream_id,
-                )
-            });
-    pub async fn handle_sv1_handshake_completion(self: &Arc<Self>) -> Result<(), TproxyError> {
+    pub async fn handle_sv1_handshake_completion(&self) -> Result<(), TproxyError> {
         let (cached_set_difficulty, cached_notify) = self.downstream_data.super_safe_lock(|d| {
             d.sv1_handshake_complete
                 .store(true, std::sync::atomic::Ordering::SeqCst);

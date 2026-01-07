@@ -243,15 +243,15 @@ impl Sv1Server {
                                 info!("New SV1 downstream connection from {}", addr);
                                 let connection = ConnectionSV1::new(stream).await;
                                 let downstream_id = self.sv1_server_data.super_safe_lock(|v| v.downstream_id_factory.fetch_add(1, Ordering::Relaxed));
-                                let downstream = Arc::new(Downstream::new(
+                                let downstream = Downstream::new(
                                     downstream_id,
                                     connection.sender().clone(),
                                     connection.receiver().clone(),
                                     self.sv1_server_channel_state.downstream_to_sv1_server_sender.clone(),
-                                    self.sv1_server_channel_state.sv1_server_to_downstream_sender.clone().subscribe(),
+                                    self.sv1_server_channel_state.sv1_server_to_downstream_sender.clone(),
                                     first_target,
                                     Some(self.config.downstream_difficulty_config.min_individual_miner_hashrate),
-                                ));
+                                );
                                 // vardiff initialization (only if enabled)
                                 _ = self.sv1_server_data
                                     .safe_lock(|d| {
@@ -734,7 +734,7 @@ impl Sv1Server {
     pub async fn open_extended_mining_channel(
         &self,
         request_id: u32,
-        downstream: Arc<Downstream>,
+        downstream: Downstream,
     ) -> TproxyResult<(), error::Sv1Server> {
         let config = &self.config.downstream_difficulty_config;
 
@@ -796,8 +796,8 @@ impl Sv1Server {
     /// * `None` - If no downstream with the given ID is found
     pub fn get_downstream(
         downstream_id: DownstreamId,
-        downstream: HashMap<DownstreamId, Arc<Downstream>>,
-    ) -> Option<Arc<Downstream>> {
+        downstream: HashMap<DownstreamId, Downstream>,
+    ) -> Option<Downstream> {
         downstream.get(&downstream_id).cloned()
     }
 

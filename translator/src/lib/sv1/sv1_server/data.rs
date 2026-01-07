@@ -23,7 +23,7 @@ pub struct PendingTargetUpdate {
 
 #[derive(Debug)]
 pub struct Sv1ServerData {
-    pub downstreams: HashMap<DownstreamId, Arc<Downstream>>,
+    pub downstreams: HashMap<DownstreamId, Downstream>,
     pub request_id_to_downstream_id: HashMap<RequestId, DownstreamId>,
     pub vardiff: HashMap<DownstreamId, Arc<RwLock<VardiffState>>>,
     /// HashMap to store the SetNewPrevHash for each channel
