@@ -1,10 +1,7 @@
 use crate::sv1::downstream::downstream::Downstream;
 use std::{
     collections::HashMap,
-    sync::{
-        atomic::{AtomicU32, AtomicUsize, Ordering},
-        Arc, RwLock,
-    },
+    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
 };
 use stratum_apps::{
     stratum_core::{
@@ -25,7 +22,7 @@ pub struct PendingTargetUpdate {
 pub struct Sv1ServerData {
     pub downstreams: HashMap<DownstreamId, Downstream>,
     pub request_id_to_downstream_id: HashMap<RequestId, DownstreamId>,
-    pub vardiff: HashMap<DownstreamId, Arc<RwLock<VardiffState>>>,
+    pub vardiff: HashMap<DownstreamId, VardiffState>,
     /// HashMap to store the SetNewPrevHash for each channel
     /// Used in both aggregated and non-aggregated mode
     pub prevhashes: HashMap<ChannelId, SetNewPrevHash<'static>>,

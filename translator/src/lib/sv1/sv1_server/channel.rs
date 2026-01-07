@@ -7,6 +7,7 @@ use stratum_apps::{
 };
 use tokio::sync::broadcast;
 
+#[derive(Clone)]
 pub struct Sv1ServerChannelState {
     pub sv1_server_to_downstream_sender:
         broadcast::Sender<(ChannelId, Option<DownstreamId>, json_rpc::Message)>,
