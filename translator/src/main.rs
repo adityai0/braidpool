@@ -7,13 +7,13 @@ use crate::args::process_cli_args;
 #[cfg(feature = "hotpath-alloc")]
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    _ = inner_main().await;
+    inner_main().await;
 }
 
 #[cfg(not(feature = "hotpath-alloc"))]
 #[tokio::main]
 async fn main() {
-    _ = inner_main().await;
+    inner_main().await;
 }
 
 /// Entrypoint for the Translator binary.
