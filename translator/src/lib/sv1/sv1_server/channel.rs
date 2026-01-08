@@ -23,7 +23,7 @@ impl Sv1ServerChannelState {
         channel_manager_receiver: Receiver<(Mining<'static>, Option<Vec<Tlv>>)>,
         channel_manager_sender: Sender<(Mining<'static>, Option<Vec<Tlv>>)>,
     ) -> Self {
-        let (sv1_server_to_downstream_sender, _) = broadcast::channel(100);
+        let (sv1_server_to_downstream_sender, _) = broadcast::channel(1000);
         let (downstream_to_sv1_server_sender, downstream_to_sv1_server_receiver) = unbounded();
 
         Self {
