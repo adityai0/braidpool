@@ -16,7 +16,7 @@ pub struct ChannelState {
     pub status_sender: Sender<Status>,
 }
 
-#[hotpath::measure_all]
+#[cfg_attr(not(test), hotpath::measure_all)]
 impl ChannelState {
     pub fn new(
         upstream_sender: Sender<Sv2Frame>,

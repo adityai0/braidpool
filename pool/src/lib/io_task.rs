@@ -18,7 +18,7 @@ use crate::{
 /// Spawns async reader and writer tasks for handling framed I/O with shutdown support.
 #[track_caller]
 #[allow(clippy::too_many_arguments)]
-#[hotpath::measure]
+#[cfg_attr(not(test), hotpath::measure)]
 pub fn spawn_io_tasks(
     task_manager: Arc<TaskManager>,
     mut reader: NoiseTcpReadHalf<Message>,

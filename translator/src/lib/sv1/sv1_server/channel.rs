@@ -17,7 +17,7 @@ pub struct Sv1ServerChannelState {
     pub channel_manager_sender: Sender<(Mining<'static>, Option<Vec<Tlv>>)>,
 }
 
-#[hotpath::measure_all]
+#[cfg_attr(not(test), hotpath::measure_all)]
 impl Sv1ServerChannelState {
     pub fn new(
         channel_manager_receiver: Receiver<(Mining<'static>, Option<Vec<Tlv>>)>,

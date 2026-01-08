@@ -26,7 +26,7 @@ pub struct Args {
     pub log_file: Option<PathBuf>,
 }
 
-#[hotpath::measure]
+#[cfg_attr(not(test), hotpath::measure)]
 /// Parses CLI arguments and loads the PoolConfig from the specified file.
 pub fn process_cli_args() -> PoolConfig {
     let args = Args::parse();

@@ -5,19 +5,19 @@ use crate::args::process_cli_args;
 
 mod args;
 
-#[cfg(feature = "hotpath-alloc")]
+#[cfg(all(feature = "hotpath-alloc", not(test)))]
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     inner_main().await;
 }
 
-#[cfg(not(feature = "hotpath-alloc"))]
+#[cfg(not(all(feature = "hotpath-alloc", not(test))))]
 #[tokio::main]
 async fn main() {
     inner_main().await;
 }
 
-#[hotpath::main]
+#[cfg_attr(not(test), hotpath::main)]
 async fn inner_main() {
     let config = process_cli_args();
     init_logging(config.log_dir());

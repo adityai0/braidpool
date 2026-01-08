@@ -11,7 +11,7 @@ use stratum_apps::{
 };
 use tracing::{error, info};
 
-#[hotpath::measure_all]
+#[cfg_attr(not(test), hotpath::measure_all)]
 impl HandleExtensionsFromClientAsync for Downstream {
     type Error = PoolError;
 

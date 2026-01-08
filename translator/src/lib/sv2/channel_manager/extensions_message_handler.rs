@@ -10,7 +10,7 @@ use stratum_apps::{
 };
 use tracing::{error, info};
 
-#[hotpath::measure_all]
+#[cfg_attr(not(test), hotpath::measure_all)]
 impl HandleExtensionsFromServerAsync for ChannelManager {
     type Error = TproxyError;
 

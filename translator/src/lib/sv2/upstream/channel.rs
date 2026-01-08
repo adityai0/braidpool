@@ -14,7 +14,7 @@ pub struct UpstreamChannelState {
     pub channel_manager_receiver: Receiver<Sv2Frame>,
 }
 
-#[hotpath::measure_all]
+#[cfg_attr(not(test), hotpath::measure_all)]
 impl UpstreamChannelState {
     pub fn new(
         upstream_receiver: Receiver<Sv2Frame>,

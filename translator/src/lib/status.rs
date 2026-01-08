@@ -32,7 +32,7 @@ pub enum StatusSender {
 
 impl StatusSender {
     /// Sends a [`Status`] update.
-    #[hotpath::measure]
+    #[cfg_attr(not(test), hotpath::measure)]
     pub async fn send(&self, status: Status) -> Result<(), async_channel::SendError<Status>> {
         match self {
             Self::Downstream { downstream_id, tx } => {
@@ -81,7 +81,7 @@ pub struct Status {
 }
 
 /// Constructs and sends a [`Status`] update based on the [`Sender`] and error context.
-#[hotpath::measure]
+#[cfg_attr(not(test), hotpath::measure)]
 async fn send_status(sender: &StatusSender, error: TproxyError) {
     let state = match sender {
         StatusSender::Downstream { downstream_id, .. } => {
@@ -114,7 +114,7 @@ async fn send_status(sender: &StatusSender, error: TproxyError) {
 ///
 /// Used by the `handle_result!` macro across the codebase.
 /// Decides whether the task should `Continue` or `Break` based on the error type and source.
-#[hotpath::measure]
+#[cfg_attr(not(test), hotpath::measure)]
 pub async fn handle_error(sender: &StatusSender, e: TproxyError) {
     error!("Error in {:?}: {:?}", sender, e);
     send_status(sender, e).await;

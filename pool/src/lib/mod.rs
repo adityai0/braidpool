@@ -37,7 +37,7 @@ pub struct PoolSv2 {
     notify_shutdown: broadcast::Sender<ShutdownMessage>,
 }
 
-#[hotpath::measure_all]
+#[cfg_attr(not(test), hotpath::measure_all)]
 impl PoolSv2 {
     pub fn new(config: PoolConfig) -> Self {
         let (notify_shutdown, _) = tokio::sync::broadcast::channel::<ShutdownMessage>(100);

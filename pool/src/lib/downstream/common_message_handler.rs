@@ -12,7 +12,7 @@ use stratum_apps::{
 };
 use tracing::info;
 
-#[hotpath::measure_all]
+#[cfg_attr(not(test), hotpath::measure_all)]
 impl HandleCommonMessagesFromClientAsync for Downstream {
     type Error = PoolError;
 

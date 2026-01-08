@@ -57,7 +57,7 @@ pub struct ChannelManagerData {
     pub negotiated_extensions: Vec<u16>,
 }
 
-#[hotpath::measure_all]
+#[cfg_attr(not(test), hotpath::measure_all)]
 impl ChannelManagerData {
     /// Creates a new ChannelManagerData instance.
     ///

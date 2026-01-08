@@ -19,7 +19,7 @@ pub struct BitcoinCoreSv2Config {
     pub cancellation_token: CancellationToken,
 }
 
-#[hotpath::measure]
+#[cfg_attr(not(test), hotpath::measure)]
 pub async fn connect_to_bitcoin_core(
     bitcoin_core_config: BitcoinCoreSv2Config,
     notify_shutdown: broadcast::Sender<ShutdownMessage>,

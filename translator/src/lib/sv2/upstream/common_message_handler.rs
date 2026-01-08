@@ -8,7 +8,7 @@ use stratum_apps::stratum_core::{
 };
 use tracing::{error, info};
 
-#[hotpath::measure_all]
+#[cfg_attr(not(test), hotpath::measure_all)]
 impl HandleCommonMessagesFromServerAsync for Upstream {
     type Error = TproxyError;
 

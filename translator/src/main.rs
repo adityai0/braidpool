@@ -4,13 +4,13 @@ pub use translator_sv2::{config, error, status, sv1, sv2, TranslatorSv2};
 
 use crate::args::process_cli_args;
 
-#[cfg(feature = "hotpath-alloc")]
+#[cfg(all(feature = "hotpath-alloc", not(test)))]
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     inner_main().await;
 }
 
-#[cfg(not(feature = "hotpath-alloc"))]
+#[cfg(not(all(feature = "hotpath-alloc", not(test))))]
 #[tokio::main]
 async fn main() {
     inner_main().await;
@@ -20,7 +20,7 @@ async fn main() {
 ///
 /// Loads the configuration from TOML and initializes the main runtime
 /// defined in `translator_sv2::TranslatorSv2`. Errors during startup are logged.
-#[hotpath::main]
+#[cfg_attr(not(test), hotpath::main)]
 async fn inner_main() {
     let proxy_config = process_cli_args().unwrap_or_else(|e| {
         eprintln!("Translator proxy config error: {e}");

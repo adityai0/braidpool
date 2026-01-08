@@ -44,7 +44,7 @@ pub struct Downstream {
     downstream_channel_state: DownstreamChannelState,
 }
 
-#[hotpath::measure_all]
+#[cfg_attr(not(test), hotpath::measure_all)]
 impl Downstream {
     /// Creates a new downstream connection instance.
     #[allow(clippy::too_many_arguments)]

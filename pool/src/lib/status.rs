@@ -49,7 +49,7 @@ impl From<&StatusSender> for StatusType {
     }
 }
 
-#[hotpath::measure_all]
+#[cfg_attr(not(test), hotpath::measure_all)]
 impl StatusSender {
     /// Sends a status update for the associated component.
     pub async fn send(&self, status: Status) -> Result<(), async_channel::SendError<Status>> {
@@ -94,7 +94,7 @@ pub struct Status {
     pub state: State,
 }
 
-#[hotpath::measure]
+#[cfg_attr(not(test), hotpath::measure)]
 /// Sends a shutdown status for the given component, logging the error cause.
 async fn send_status(sender: &StatusSender, error: PoolError) {
     let state = match sender {

@@ -43,7 +43,7 @@ pub struct TranslatorSv2 {
     config: TranslatorConfig,
 }
 
-#[hotpath::measure_all]
+#[cfg_attr(not(test), hotpath::measure_all)]
 impl TranslatorSv2 {
     /// Creates a new `TranslatorSv2`.
     ///
@@ -316,7 +316,7 @@ impl TranslatorSv2 {
 
 // Attempts to initialize a single upstream.
 #[allow(clippy::too_many_arguments)]
-#[hotpath::measure]
+#[cfg_attr(not(test), hotpath::measure)]
 async fn try_initialize_upstream(
     upstream_addr: &UpstreamEntry,
     upstream_to_channel_manager_sender: Sender<Sv2Frame>,

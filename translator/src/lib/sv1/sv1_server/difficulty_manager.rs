@@ -28,7 +28,7 @@ pub struct DifficultyManager {
     is_aggregated: bool,
 }
 
-#[hotpath::measure_all]
+#[cfg_attr(not(test), hotpath::measure_all)]
 impl DifficultyManager {
     /// Creates a new difficulty manager instance.
     ///
