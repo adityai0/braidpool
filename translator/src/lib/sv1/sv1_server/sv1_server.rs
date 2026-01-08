@@ -172,6 +172,7 @@ impl Sv1Server {
 
         let sv1_status_sender = StatusSender::Sv1Server(status_sender.clone());
         let task_manager_clone = task_manager.clone();
+        let vardiff_enabled = self.config.downstream_difficulty_config.enable_vardiff;
         let keepalive_enabled = self
             .config
             .downstream_difficulty_config
@@ -302,7 +303,7 @@ impl Sv1Server {
                             break;
                         }
                     }
-                    _ = &mut vardiff_future => {}
+                    _ = &mut vardiff_future, if vardiff_enabled => {}
                     _ = &mut keepalive_future, if keepalive_enabled => {}
                 }
             }

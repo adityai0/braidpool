@@ -60,10 +60,6 @@ impl DifficultyManager {
     ) {
         if !enable_vardiff {
             info!("Variable difficulty adjustment disabled - upstream will manage difficulty, SV1 server will forward SetTarget messages to downstreams");
-            // In the vardiff disabled case, this branch intentionally awaits forever to remain
-            // pending. Without it, the future would resolve immediately, leading the
-            // tokio::select! block to finish execution and terminate the task.
-            tokio::time::sleep(tokio::time::Duration::MAX).await;
             return;
         }
 
