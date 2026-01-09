@@ -48,7 +48,7 @@ pub struct Upstream {
     pub upstream_channel_state: UpstreamChannelState,
     /// Extensions that the translator requires (must be supported by server)
     pub required_extensions: Vec<u16>,
-    address: SocketAddr
+    address: SocketAddr,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -131,7 +131,7 @@ impl Upstream {
                         return Ok(Self {
                             upstream_channel_state,
                             required_extensions: required_extensions.clone(),
-                            address: upstream.addr.clone()
+                            address: upstream.addr.clone(),
                         });
                     }
                     Err(e) => {
