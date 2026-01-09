@@ -106,7 +106,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     rc::Rc,
-    sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
     time::Instant,
 };
 use stratum_core::{
@@ -166,12 +166,6 @@ pub struct BitcoinCoreSv2 {
     mining_ipc_client: MiningIpcClient,
     current_template_ipc_client: Rc<RefCell<Option<BlockTemplateIpcClient>>>,
     current_prev_hash: Rc<RefCell<Option<U256<'static>>>>,
-    // todo: remove this once https://github.com/bitcoin/bitcoin/pull/33676 lands in a release
-    // see https://github.com/stratum-mining/sv2-apps/issues/81 for more details
-    wait_next_request_counter: Rc<AtomicU8>,
-    // todo: remove this once https://github.com/bitcoin/bitcoin/pull/33676 lands in a release
-    // see https://github.com/stratum-mining/sv2-apps/issues/81 for more details
-    coinbase_output_constraints_counter: Rc<AtomicU32>,
     template_data: Rc<RwLock<HashMap<u64, TemplateData>>>,
     stale_template_ids: Rc<RwLock<HashSet<u64>>>,
     template_id_factory: Rc<AtomicU64>,
@@ -256,8 +250,6 @@ impl BitcoinCoreSv2 {
             thread_map,
             thread_ipc_client,
             mining_ipc_client,
-            wait_next_request_counter: Rc::new(AtomicU8::new(0)),
-            coinbase_output_constraints_counter: Rc::new(AtomicU32::new(0)),
             template_id_factory: Rc::new(AtomicU64::new(0)),
             current_template_ipc_client: Rc::new(RefCell::new(None)),
             current_prev_hash: Rc::new(RefCell::new(None)),
@@ -319,10 +311,6 @@ impl BitcoinCoreSv2 {
                             let mut current_template_ipc_client_guard = self.current_template_ipc_client.borrow_mut();
                             *current_template_ipc_client_guard = Some(template_ipc_client);
                             tracing::debug!("Set current_template_ipc_client to initial template");
-
-                            self.coinbase_output_constraints_counter.fetch_add(1, Ordering::Relaxed);
-                            tracing::debug!("coinbase_output_constraints_counter incremented to: {}",
-                                self.coinbase_output_constraints_counter.load(Ordering::Relaxed));
 
                             break;
                         }
@@ -455,46 +443,6 @@ impl BitcoinCoreSv2 {
         self.global_cancellation_token.cancelled().await;
         tracing::debug!("global_cancellation_token cancelled - beginning shutdown sequence");
 
-        // todo: remove this once https://github.com/bitcoin/bitcoin/pull/33676 lands in a release
-        // see https://github.com/stratum-mining/sv2-apps/issues/81 for more details
-        // wait until all waitNext requests are completed
-        let start_time = std::time::Instant::now();
-        tracing::debug!(
-            "Shutdown: Starting waitNext completion loop - initial counter: {}",
-            self.wait_next_request_counter.load(Ordering::SeqCst)
-        );
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            tracing::info!("Waiting for waitNext requests to complete...");
-
-            let now = std::time::Instant::now();
-            let counter_value = self.wait_next_request_counter.load(Ordering::SeqCst);
-            let elapsed = now.duration_since(start_time).as_secs();
-
-            tracing::debug!(
-                "wait_next_request_counter: {}",
-                self.wait_next_request_counter.load(Ordering::SeqCst)
-            );
-            tracing::debug!(
-                "Shutdown: wait_next_request_counter={}, elapsed={}s",
-                counter_value,
-                elapsed
-            );
-
-            if counter_value == 0 || elapsed > 50 {
-                if counter_value == 0 {
-                    tracing::info!("All waitNext requests completed... finally ready to exit!");
-                    tracing::debug!("Shutdown: Clean exit - all waitNext requests completed");
-                } else {
-                    tracing::info!("Timed out after 50 seconds... finally ready to exit!");
-                    tracing::debug!(
-                        "Shutdown: Timeout exit - counter still at {} after 50s",
-                        counter_value
-                    );
-                }
-                break;
-            }
-        }
         tracing::debug!("run() exiting");
     }
 
@@ -657,6 +605,24 @@ impl BitcoinCoreSv2 {
         Ok(template_ipc_client)
     }
 
+    async fn interrupt_wait_request(&self) -> Result<(), BitcoinCoreSv2Error> {
+        let template_ipc_client = match self.current_template_ipc_client.borrow().clone() {
+            Some(template_ipc_client) => template_ipc_client,
+            None => {
+                tracing::error!("Template IPC client not found");
+                return Err(BitcoinCoreSv2Error::TemplateIpcClientNotFound);
+            }
+        };
+
+        let interrupt_wait_request = template_ipc_client.interrupt_wait_request();
+        if let Err(e) = interrupt_wait_request.send().promise.await {
+            tracing::error!("Failed to send interrupt wait request: {}", e);
+            return Err(BitcoinCoreSv2Error::FailedToSendInterruptWaitRequest);
+        }
+
+        Ok(())
+    }
+
     async fn new_wait_next_request(
         &self,
         thread_ipc_client: ThreadIpcClient,
@@ -693,15 +659,6 @@ impl BitcoinCoreSv2 {
         // please note that this is NOT how often we expect to get new templates
         // it's just the max time we'll wait for the current waitNext request to complete
         wait_next_request_options.set_timeout(10_000.0);
-
-        // todo: remove this once https://github.com/bitcoin/bitcoin/pull/33676 lands in a release
-        // see https://github.com/stratum-mining/sv2-apps/issues/81 for more details
-        self.wait_next_request_counter
-            .fetch_add(1, Ordering::SeqCst);
-        tracing::debug!(
-            "waitNext request starting - counter incremented to: {}",
-            self.wait_next_request_counter.load(Ordering::SeqCst)
-        );
 
         Ok(wait_next_request)
     }
