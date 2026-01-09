@@ -26,8 +26,9 @@ pub enum ShutdownMessage {
 pub fn get_setup_connection_message(
     min_version: u16,
     max_version: u16,
+    address: &SocketAddr
 ) -> Result<SetupConnection<'static>, PoolErrorKind> {
-    let endpoint_host = "0.0.0.0".to_string().into_bytes().try_into()?;
+    let endpoint_host = address.ip().to_string().into_bytes().try_into()?;
     let vendor = String::new().try_into()?;
     let hardware_version = String::new().try_into()?;
     let firmware = String::new().try_into()?;
@@ -39,7 +40,7 @@ pub fn get_setup_connection_message(
         max_version,
         flags,
         endpoint_host,
-        endpoint_port: 50,
+        endpoint_port: address.port(),
         vendor,
         hardware_version,
         firmware,
