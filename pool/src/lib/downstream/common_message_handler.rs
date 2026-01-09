@@ -50,7 +50,10 @@ impl HandleCommonMessagesFromClientAsync for Downstream {
                     .expect("error code must be valid string"),
             };
             let frame: Sv2Frame = AnyMessage::Common(response.into_static().into()).try_into()?;
-            _ = self.downstream_channel.downstream_sender.send(frame).await;
+            self.downstream_channel
+                .downstream_sender
+                .send(frame)
+                .await?;
 
             return Err(PoolError::Shutdown);
         }
