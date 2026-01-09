@@ -172,6 +172,11 @@ impl Downstream {
         // Setup initial connection
         if let Err(e) = self.setup_connection_with_downstream().await {
             error!(?e, "Failed to set up downstream connection");
+
+            // sleep to make sure SetupConnectionError is sent
+            // before we break the TCP connection
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
             handle_error(&status_sender, e).await;
             return;
         }
