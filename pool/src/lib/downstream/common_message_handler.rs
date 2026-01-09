@@ -55,7 +55,7 @@ impl HandleCommonMessagesFromClientAsync for Downstream {
                 .send(frame)
                 .await?;
 
-            return Err(PoolError::Shutdown);
+            return Err(PoolError::UnsupportedProtocol);
         }
 
         self.requires_custom_work
