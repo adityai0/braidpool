@@ -131,7 +131,7 @@ impl Upstream {
                         return Ok(Self {
                             upstream_channel_state,
                             required_extensions: required_extensions.clone(),
-                            address: upstream.addr.clone(),
+                            address: upstream.addr,
                         });
                     }
                     Err(e) => {
