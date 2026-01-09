@@ -6,7 +6,7 @@ use std::{convert::TryInto, sync::atomic::Ordering};
 use stratum_apps::{
     stratum_core::{
         common_messages_sv2::{
-            has_requires_std_job, has_work_selection, SetupConnection, SetupConnectionSuccess,
+            has_requires_std_job, has_work_selection, Protocol, SetupConnection, SetupConnectionError, SetupConnectionSuccess
         },
         handlers_sv2::HandleCommonMessagesFromClientAsync,
         parsers_sv2::{AnyMessage, Tlv},
@@ -38,6 +38,21 @@ impl HandleCommonMessagesFromClientAsync for Downstream {
             "Received `SetupConnection`: version={}, flags={:b}",
             msg.min_version, msg.flags
         );
+
+        if msg.protocol != Protocol::MiningProtocol {
+            info!("Rejecting connection: SetupConnection asking for other protocols than mining protocol.");
+            let response = SetupConnectionError {
+                flags: 0,
+                error_code: "unsupported-protocol"
+                    .to_string()
+                    .try_into()
+                    .expect("error code must be valid string"),
+            };
+            let frame: Sv2Frame = AnyMessage::Common(response.into_static().into()).try_into()?;
+            _ = self.downstream_channel.downstream_sender.send(frame).await;
+
+            return Err(PoolError::Shutdown);
+        }
 
         self.requires_custom_work
             .store(has_work_selection(msg.flags), Ordering::SeqCst);
