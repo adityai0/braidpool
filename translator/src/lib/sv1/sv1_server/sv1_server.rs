@@ -38,7 +38,7 @@ use stratum_apps::{
             },
             sv2_to_sv1::{build_sv1_notify_from_sv2, build_sv1_set_difficulty_from_sv2_target},
         },
-        sv1_api::{json_rpc, {utils::HexU32Be, IsServer}},
+        sv1_api::{json_rpc, utils::HexU32Be, IsServer},
     },
     task_manager::TaskManager,
     utils::types::{ChannelId, DownstreamId, Hashrate, SharesPerMinute},
@@ -153,7 +153,7 @@ impl Sv1Server {
 
         let vardiff_future = self.clone().spawn_vardiff_loop();
 
-        let keepalive_future = Self::spawn_job_keepalive_loop(Arc::clone(&self));
+        let keepalive_future = self.clone().spawn_job_keepalive_loop();
 
         let listener = TcpListener::bind(self.listener_addr).await.map_err(|e| {
             error!("Failed to bind to {}: {}", self.listener_addr, e);
@@ -919,7 +919,7 @@ impl Sv1Server {
     ///
     /// This prevents SV1 miners from timing out when there are no new jobs received from the
     /// upstream for a while.
-    pub async fn spawn_job_keepalive_loop(self: Arc<Self>) {
+    pub async fn spawn_job_keepalive_loop(self) {
         let keepalive_interval_secs = self
             .config
             .downstream_difficulty_config

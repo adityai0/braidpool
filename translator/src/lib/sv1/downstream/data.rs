@@ -1,5 +1,4 @@
-use std::{cell::RefCell, sync::atomic::AtomicBool    time::Instant,
-};
+use std::{cell::RefCell, sync::atomic::AtomicBool, time::Instant};
 use stratum_apps::{
     stratum_core::{
         bitcoin::Target,
