@@ -445,6 +445,23 @@ impl BitcoinCoreSv2 {
         self.global_cancellation_token.cancelled().await;
         tracing::debug!("global_cancellation_token cancelled - beginning shutdown sequence");
 
+        // Wait for the monitor_ipc_templates task to finish gracefully
+        tracing::debug!("Waiting for monitor_ipc_templates() task to finish");
+        let handle = self.monitor_ipc_templates_handle.borrow_mut().take();
+        if let Some(handle) = handle {
+            match handle.await {
+                Ok(()) => {
+                    tracing::debug!("monitor_ipc_templates() task finished successfully");
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "error waiting for monitor_ipc_templates task to finish: {:?}",
+                        e
+                    );
+                }
+            }
+        }
+
         tracing::debug!("run() exiting");
     }
 
