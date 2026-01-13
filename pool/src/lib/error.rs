@@ -185,6 +185,8 @@ pub enum PoolErrorKind {
     ChangeEndpoint,
     /// Could not initiate subsystem
     CouldNotInitiateSystem,
+    /// Configuration error
+    Configuration(String),
 }
 
 impl std::fmt::Display for PoolErrorKind {
@@ -269,11 +271,12 @@ impl std::fmt::Display for PoolErrorKind {
             }
             SetupConnectionError => {
                 write!(f, "Failed to Setup connection")
-            },
+            }
             ChangeEndpoint => {
                 write!(f, "Change endpoint")
-            },
+            }
             CouldNotInitiateSystem => write!(f, "Could not initiate subsystem"),
+            Configuration(e) => write!(f, "Configuration error: {e}"),
         }
     }
 }

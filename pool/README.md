@@ -59,7 +59,8 @@ The configuration file contains the following information:
      - `address` - The Template Provider's network address
      - `public_key` - (Optional) The TP's authority public key for connection verification
    - `[template_provider_type.BitcoinCoreIpc]` - Connects directly to Bitcoin Core via IPC, with the following parameters:
-     - `unix_socket_path` - Path to the Bitcoin Core IPC UNIX socket
+     - `network` - Bitcoin network (mainnet, testnet4, signet, regtest) for determining socket path
+     - `data_dir` - (Optional) Custom Bitcoin data directory. Uses OS default if not set
      - `fee_threshold` - Minimum fee threshold to trigger new templates
 
 For connections with a Sv2 Template Provider, you may want to verify that your TP connection is authentic. You can get the `public_key` from the logs of your TP, for example:
