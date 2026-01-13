@@ -22,7 +22,7 @@ pub use stratum_apps::stratum_core::sv1_api::server_to_client;
 use config::TranslatorConfig;
 
 use crate::{
-    error::TproxyError,
+    error::TproxyErrorKind,
     status::{State, Status},
     sv1::sv1_server::sv1_server::Sv1Server,
     sv2::{channel_manager::ChannelMode, ChannelManager, Upstream},
@@ -239,7 +239,7 @@ impl TranslatorSv2 {
         task_manager: Arc<TaskManager>,
         sv1_server_instance: Arc<Sv1Server>,
         required_extensions: Vec<u16>,
-    ) -> Result<(), TproxyError> {
+    ) -> Result<(), TproxyErrorKind> {
         const MAX_RETRIES: usize = 3;
         let upstream_len = upstreams.len();
         for (i, upstream_entry) in upstreams.iter_mut().enumerate() {
@@ -286,7 +286,7 @@ impl TranslatorSv2 {
                         .await
                         {
                             error!("SV1 server startup failed: {e:?}");
-                            return Err(e);
+                            return Err(e.kind);
                         }
 
                         upstream_entry.tried_or_flagged = true;
@@ -310,7 +310,7 @@ impl TranslatorSv2 {
         }
 
         tracing::error!("All upstreams failed after {} retries each", MAX_RETRIES);
-        Err(TproxyError::Shutdown)
+        Err(TproxyErrorKind::CouldNotInitiateSystem)
     }
 }
 
@@ -326,7 +326,7 @@ async fn try_initialize_upstream(
     shutdown_complete_tx: mpsc::Sender<()>,
     task_manager: Arc<TaskManager>,
     required_extensions: Vec<u16>,
-) -> Result<(), TproxyError> {
+) -> Result<(), TproxyErrorKind> {
     let upstream = Upstream::new(
         upstream_addr,
         upstream_to_channel_manager_sender,

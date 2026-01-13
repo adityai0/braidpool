@@ -6,7 +6,7 @@ use clap::Parser;
 use ext_config::{Config, File, FileFormat};
 use std::path::PathBuf;
 use tracing::error;
-use translator_sv2::{config::TranslatorConfig, error::TproxyError};
+use translator_sv2::{config::TranslatorConfig, error::TproxyErrorKind};
 
 /// Holds the parsed CLI arguments.
 #[derive(Parser, Debug)]
@@ -29,14 +29,14 @@ pub struct Args {
 
 /// Process CLI args, if any.
 #[allow(clippy::result_large_err)]
-pub fn process_cli_args() -> Result<TranslatorConfig, TproxyError> {
+pub fn process_cli_args() -> Result<TranslatorConfig, TproxyErrorKind> {
     // Parse CLI arguments
     let args = Args::parse();
 
     // Build configuration from the provided file path
     let config_path = args.config_path.to_str().ok_or_else(|| {
         error!("Invalid configuration path.");
-        TproxyError::BadCliArgs
+        TproxyErrorKind::BadCliArgs
     })?;
 
     let settings = Config::builder()

@@ -1,5 +1,5 @@
 use crate::{
-    error::TproxyError,
+    error::{self, TproxyError, TproxyErrorKind, TproxyResult},
     status::{handle_error, Status, StatusSender},
     sv2::channel_manager::{
         channel::ChannelState,
@@ -161,14 +161,16 @@ impl ChannelManager {
                     }
                     res = Self::handle_upstream_frame(self.clone()) => {
                         if let Err(e) = res {
-                            handle_error(&status_sender, e).await;
-                            break;
+                            if handle_error(&status_sender, e).await {
+                                break;
+                            }
                         }
                     },
                     res = Self::handle_downstream_message(self.clone()) => {
                         if let Err(e) = res {
-                            handle_error(&status_sender, e).await;
-                            break;
+                            if handle_error(&status_sender, e).await {
+                                break;
+                            }
                         }
                     },
                     else => {
@@ -198,17 +200,17 @@ impl ChannelManager {
     /// # Returns
     /// * `Ok(())` - Message processed successfully
     /// * `Err(TproxyError)` - Error processing the message
-    pub async fn handle_upstream_frame(self: Arc<Self>) -> Result<(), TproxyError> {
+    pub async fn handle_upstream_frame(self: Arc<Self>) -> TproxyResult<(), error::ChannelManager> {
         let mut channel_manager = self.get_channel_manager();
         let mut sv2_frame = self
             .channel_state
             .upstream_receiver
             .recv()
             .await
-            .map_err(TproxyError::ChannelErrorReceiver)?;
+            .map_err(TproxyError::fallback)?;
         let header = sv2_frame.get_header().ok_or_else(|| {
             error!("SV2 frame missing header");
-            TproxyError::FramingSv2(framing_sv2::Error::MissingHeader)
+            TproxyError::fallback(framing_sv2::Error::MissingHeader)
         })?;
         match protocol_message_type(header.ext_type(), header.msg_type()) {
             MessageType::Mining => {
@@ -227,10 +229,10 @@ impl ChannelManager {
                     message_type = header.msg_type(),
                     "Received unexpected message type from upstream"
                 );
-                return Err(TproxyError::UnexpectedMessage(
+                return Err(TproxyError::fallback(TproxyErrorKind::UnexpectedMessage(
                     header.ext_type(),
                     header.msg_type(),
-                ));
+                )));
             }
         }
 
@@ -253,13 +255,15 @@ impl ChannelManager {
     /// # Returns
     /// * `Ok(())` - Message processed successfully
     /// * `Err(TproxyError)` - Error processing the message
-    pub async fn handle_downstream_message(self: Arc<Self>) -> Result<(), TproxyError> {
+    pub async fn handle_downstream_message(
+        self: Arc<Self>,
+    ) -> TproxyResult<(), error::ChannelManager> {
         let (message, tlv_fields) = self
             .channel_state
             .sv1_server_receiver
             .recv()
             .await
-            .map_err(TproxyError::ChannelErrorReceiver)?;
+            .map_err(TproxyError::shutdown)?;
         match message {
             Mining::OpenExtendedMiningChannel(m) => {
                 let mut open_channel_msg = m.clone();
@@ -349,10 +353,10 @@ impl ChannelManager {
                                     .await
                                     .map_err(|e| {
                                         error!(
-                                            "Failed to send open channel message to upstream: {:?}",
+                                            "Failed to send open channel message to SV1Server: {:?}",
                                             e
                                         );
-                                        TproxyError::ChannelErrorSender
+                                        TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender)
                                     })?;
                                 // get the last active job from the upstream extended channel
                                 let last_active_job =
@@ -403,8 +407,8 @@ impl ChannelManager {
                                         .send((Mining::NewExtendedMiningJob(job.clone()), None))
                                         .await
                                         .map_err(|e| {
-                                            error!("Failed to send last new extended mining job to upstream: {:?}", e);
-                                            TproxyError::ChannelErrorSender
+                                            error!("Failed to send last new extended mining job to SV1Server: {:?}", e);
+                                            TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender)
                                         })?;
                                 }
                             }
@@ -452,14 +456,16 @@ impl ChannelManager {
                 );
 
                 let message = Mining::OpenExtendedMiningChannel(open_channel_msg);
-                let sv2_frame: Sv2Frame = AnyMessage::Mining(message).try_into()?;
+                let sv2_frame: Sv2Frame = AnyMessage::Mining(message)
+                    .try_into()
+                    .map_err(TproxyError::shutdown)?;
                 self.channel_state
                     .upstream_sender
                     .send(sv2_frame)
                     .await
                     .map_err(|e| {
                         error!("Failed to send open channel message to upstream: {:?}", e);
-                        TproxyError::ChannelErrorSender
+                        TproxyError::fallback(TproxyErrorKind::ChannelErrorSender)
                     })?;
             }
             Mining::SubmitSharesExtended(mut m) => {
@@ -531,7 +537,8 @@ impl ChannelManager {
                             new_extranonce.extend_from_slice(m.extranonce.as_ref());
                             // Replace the original extranonce with the modified one for
                             // upstream submission
-                            m.extranonce = new_extranonce.try_into()?;
+                            m.extranonce =
+                                new_extranonce.try_into().map_err(TproxyError::shutdown)?;
                         }
                         // We need to set the channel id to the upstream extended
                         // channel id
@@ -572,7 +579,8 @@ impl ChannelManager {
                                 new_extranonce.extend_from_slice(m.extranonce.as_ref());
                                 // Replace the original extranonce with the modified one for
                                 // upstream submission
-                                m.extranonce = new_extranonce.try_into()?;
+                                m.extranonce =
+                                    new_extranonce.try_into().map_err(TproxyError::shutdown)?;
                             }
                         }
                     }
@@ -607,7 +615,7 @@ impl ChannelManager {
                         if let Some(tlv) = user_identity_tlv {
                             let tlv_list = TlvList::from_slice(&[tlv]).map_err(|e| {
                                 error!("Failed to create TLV list: {:?}", e);
-                                TproxyError::TlvError(e)
+                                TproxyError::shutdown(e)
                             })?;
                             let frame_bytes = tlv_list
                                 .build_frame_bytes_with_tlvs(Mining::SubmitSharesExtended(
@@ -615,7 +623,7 @@ impl ChannelManager {
                                 ))
                                 .map_err(|e| {
                                     error!("Failed to build frame bytes with TLVs: {:?}", e);
-                                    TproxyError::TlvError(e)
+                                    TproxyError::shutdown(e)
                                 })?;
                             // Convert to StandardSv2Frame with proper buffer type
                             let sv2_frame = StandardSv2Frame::from_bytes(frame_bytes.into())
@@ -624,11 +632,11 @@ impl ChannelManager {
                                         "Failed to convert frame bytes to StandardSv2Frame: {:?}",
                                         missing
                                     );
-                                    TproxyError::FramingSv2(framing_sv2::Error::ExpectedSv2Frame)
+                                    TproxyError::shutdown(framing_sv2::Error::ExpectedSv2Frame)
                                 })?;
                             self.channel_state.upstream_sender.send(sv2_frame).await.map_err(|e| {
                                 error!("Failed to send submit shares extended message to upstream: {:?}", e);
-                                TproxyError::ChannelErrorSender
+                                TproxyError::fallback(TproxyErrorKind::ChannelErrorSender)
                             })?;
                             sent = true;
                         }
@@ -636,10 +644,12 @@ impl ChannelManager {
 
                     if !sent {
                         let message = Mining::SubmitSharesExtended(m);
-                        let sv2_frame: Sv2Frame = AnyMessage::Mining(message).try_into()?;
+                        let sv2_frame: Sv2Frame = AnyMessage::Mining(message)
+                            .try_into()
+                            .map_err(TproxyError::shutdown)?;
                         self.channel_state.upstream_sender.send(sv2_frame).await.map_err(|e| {
                             error!("Failed to send submit shares extended message to upstream: {:?}", e);
-                            TproxyError::ChannelErrorSender
+                            TproxyError::fallback(TproxyErrorKind::ChannelErrorSender)
                         })?;
                     }
                 }
@@ -670,7 +680,9 @@ impl ChannelManager {
                 );
                 // Forward UpdateChannel message to upstream
                 let message = Mining::UpdateChannel(m);
-                let sv2_frame: Sv2Frame = AnyMessage::Mining(message).try_into()?;
+                let sv2_frame: Sv2Frame = AnyMessage::Mining(message)
+                    .try_into()
+                    .map_err(TproxyError::shutdown)?;
 
                 self.channel_state
                     .upstream_sender
@@ -678,13 +690,15 @@ impl ChannelManager {
                     .await
                     .map_err(|e| {
                         error!("Failed to send UpdateChannel message to upstream: {:?}", e);
-                        TproxyError::ChannelErrorSender
+                        TproxyError::fallback(TproxyErrorKind::ChannelErrorSender)
                     })?;
             }
             Mining::CloseChannel(m) => {
                 debug!("Received CloseChannel from SV1Server: {m}");
                 let message = Mining::CloseChannel(m);
-                let sv2_frame: Sv2Frame = AnyMessage::Mining(message).try_into()?;
+                let sv2_frame: Sv2Frame = AnyMessage::Mining(message)
+                    .try_into()
+                    .map_err(TproxyError::shutdown)?;
 
                 self.channel_state
                     .upstream_sender
@@ -692,7 +706,7 @@ impl ChannelManager {
                     .await
                     .map_err(|e| {
                         error!("Failed to send UpdateChannel message to upstream: {:?}", e);
-                        TproxyError::ChannelErrorSender
+                        TproxyError::fallback(TproxyErrorKind::ChannelErrorSender)
                     })?;
             }
             _ => {

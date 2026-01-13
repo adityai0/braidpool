@@ -1,6 +1,6 @@
 use super::DownstreamMessages;
 use crate::{
-    error::TproxyError,
+    error::{self, TproxyError, TproxyErrorKind, TproxyResult},
     status::{handle_error, StatusSender},
     sv1::{
         downstream::{channel::DownstreamChannelState, data::DownstreamData},
@@ -136,8 +136,9 @@ impl Downstream {
                     res = Self::handle_downstream_message(self.clone()) => {
                         if let Err(e) = res {
                             error!("Downstream {downstream_id}: error in downstream message handler: {e:?}");
-                            handle_error(&status_sender, e).await;
-                            break;
+                            if handle_error(&status_sender, e).await {
+                                break;
+                            }
                         }
                     }
 
@@ -145,8 +146,9 @@ impl Downstream {
                     res = Self::handle_sv1_server_message(self.clone(),&mut sv1_server_receiver) => {
                         if let Err(e) = res {
                             error!("Downstream {downstream_id}: error in server message handler: {e:?}");
-                            handle_error(&status_sender, e).await;
-                            break;
+                            if handle_error(&status_sender, e).await {
+                                break;
+                            }
                         }
                     }
 
@@ -186,7 +188,7 @@ impl Downstream {
             Option<DownstreamId>,
             json_rpc::Message,
         )>,
-    ) -> Result<(), TproxyError> {
+    ) -> TproxyResult<(), error::Downstream> {
         match sv1_server_receiver.recv().await {
             Ok((channel_id, downstream_id, message)) => {
                 let (my_channel_id, my_downstream_id, handshake_complete) =
@@ -271,7 +273,7 @@ impl Downstream {
                                                 "Down: Failed to send mining.set_difficulty to downstream: {:?}",
                                                 e
                                             );
-                                            TproxyError::ChannelErrorSender
+                                            TproxyError::disconnect(TproxyErrorKind::ChannelErrorSender, downstream_id.unwrap_or(0))
                                         })?;
                                 }
 
@@ -283,7 +285,7 @@ impl Downstream {
                                         .await
                                         .map_err(|e| {
                                             error!("Down: Failed to send mining.notify to downstream: {:?}", e);
-                                            TproxyError::ChannelErrorSender
+                                            TproxyError::disconnect(TproxyErrorKind::ChannelErrorSender, downstream_id.unwrap_or(0))
                                         })?;
                                 }
                                 return Ok(());
@@ -299,7 +301,10 @@ impl Downstream {
                                             "Down: Failed to send notification to downstream: {:?}",
                                             e
                                         );
-                                        TproxyError::ChannelErrorSender
+                                        TproxyError::disconnect(
+                                            TproxyErrorKind::ChannelErrorSender,
+                                            downstream_id.unwrap_or(0),
+                                        )
                                     })?;
                             }
                         }
@@ -337,7 +342,10 @@ impl Downstream {
                         .await
                         .map_err(|e| {
                             error!("Down: Failed to send queued message to downstream: {:?}", e);
-                            TproxyError::ChannelErrorSender
+                            TproxyError::disconnect(
+                                TproxyErrorKind::ChannelErrorSender,
+                                downstream_id.unwrap_or(0),
+                            )
                         })?;
                 } else {
                     // Neither handshake complete nor queued response - skip non-notification
@@ -351,7 +359,7 @@ impl Downstream {
                     "Sv1 message handler error for downstream {}: {:?}",
                     downstream_id, e
                 );
-                return Err(TproxyError::BroadcastChannelErrorReceiver(e));
+                return Err(TproxyError::disconnect(e, downstream_id));
             }
         }
 
@@ -370,7 +378,10 @@ impl Downstream {
     /// which implements the SV1 protocol logic and generates appropriate responses.
     /// Responses are sent back to the miner, while share submissions are forwarded
     /// to the SV1 server for upstream processing.
-    pub async fn handle_downstream_message(self: Arc<Self>) -> Result<(), TproxyError> {
+    pub async fn handle_downstream_message(self: Arc<Self>) -> TproxyResult<(), error::Downstream> {
+        let downstream_id = self
+            .downstream_data
+            .super_safe_lock(|data| data.downstream_id);
         let message = match self
             .downstream_channel_state
             .downstream_sv1_receiver
@@ -380,7 +391,7 @@ impl Downstream {
             Ok(msg) => msg,
             Err(e) => {
                 error!("Error receiving downstream message: {:?}", e);
-                return Err(TproxyError::ChannelErrorReceiver(e));
+                return Err(TproxyError::disconnect(e, downstream_id));
             }
         };
 
@@ -403,7 +414,7 @@ impl Downstream {
                     .await
                     .map_err(|e| {
                         error!("Down: Failed to send OpenChannel request: {:?}", e);
-                        TproxyError::ChannelErrorSender
+                        TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender)
                     })?;
                 debug!(
                     "Down: Sent OpenChannel request for downstream {}",
@@ -413,9 +424,11 @@ impl Downstream {
 
             // Queue all messages until channel is established
             debug!("Down: Queuing Sv1 message until channel is established");
-            self.downstream_data.safe_lock(|d| {
-                d.queued_sv1_handshake_messages.push(message.clone());
-            })?;
+            self.downstream_data
+                .safe_lock(|d| {
+                    d.queued_sv1_handshake_messages.push(message.clone());
+                })
+                .map_err(|error| TproxyError::disconnect(error, downstream_id))?;
             return Ok(());
         }
 
@@ -436,7 +449,7 @@ impl Downstream {
                     .await
                     .map_err(|e| {
                         error!("Down: Failed to send message to downstream: {:?}", e);
-                        TproxyError::ChannelErrorSender
+                        TproxyError::disconnect(TproxyErrorKind::ChannelErrorSender, downstream_id)
                     })?;
 
                 // Check if this was an authorize message and handle sv1 handshake completion
@@ -458,7 +471,7 @@ impl Downstream {
             }
             Err(e) => {
                 error!("Down: Error handling downstream message: {:?}", e);
-                return Err(e.into());
+                return Err(TproxyError::disconnect(e, downstream_id));
             }
         }
 
@@ -473,7 +486,7 @@ impl Downstream {
                 .await
                 .map_err(|e| {
                     error!("Down: Failed to send share to SV1 server: {:?}", e);
-                    TproxyError::ChannelErrorSender
+                    TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender)
                 })?;
         }
 
@@ -485,12 +498,19 @@ impl Downstream {
     /// This method is called when the downstream completes the SV1 handshake
     /// (subscribe + authorize). It sends any cached messages in the correct order:
     /// set_difficulty first, then notify.
-    async fn handle_sv1_handshake_completion(self: &Arc<Self>) -> Result<(), TproxyError> {
-        let (cached_set_difficulty, cached_notify) = self.downstream_data.super_safe_lock(|d| {
-            d.sv1_handshake_complete
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            (d.cached_set_difficulty.take(), d.cached_notify.take())
-        });
+    async fn handle_sv1_handshake_completion(
+        self: &Arc<Self>,
+    ) -> TproxyResult<(), error::Downstream> {
+        let (cached_set_difficulty, cached_notify, downstream_id) =
+            self.downstream_data.super_safe_lock(|d| {
+                d.sv1_handshake_complete
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                (
+                    d.cached_set_difficulty.take(),
+                    d.cached_notify.take(),
+                    d.downstream_id,
+                )
+            });
         debug!("Down: SV1 handshake completed for downstream");
 
         // Send cached messages in correct order: set_difficulty first, then notify
@@ -505,7 +525,7 @@ impl Downstream {
                         "Down: Failed to send cached mining.set_difficulty to downstream: {:?}",
                         e
                     );
-                    TproxyError::ChannelErrorSender
+                    TproxyError::disconnect(TproxyErrorKind::ChannelErrorSender, downstream_id)
                 })?;
 
             // Update target and hashrate after sending set_difficulty
@@ -530,7 +550,7 @@ impl Downstream {
                         "Down: Failed to send cached mining.notify to downstream: {:?}",
                         e
                     );
-                    TproxyError::ChannelErrorSender
+                    TproxyError::disconnect(TproxyErrorKind::ChannelErrorSender, downstream_id)
                 })?;
             // Update last job received time for keepalive tracking
             self.downstream_data.super_safe_lock(|d| {

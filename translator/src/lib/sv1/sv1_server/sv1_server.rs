@@ -1,6 +1,6 @@
 use crate::{
     config::TranslatorConfig,
-    error::TproxyError,
+    error::{self, TproxyError, TproxyErrorKind, TproxyResult},
     status::{handle_error, Status, StatusSender},
     sv1::{
         downstream::{downstream::Downstream, DownstreamMessages},
@@ -137,7 +137,7 @@ impl Sv1Server {
         shutdown_complete_tx: mpsc::Sender<()>,
         status_sender: Sender<Status>,
         task_manager: Arc<TaskManager>,
-    ) -> Result<(), TproxyError> {
+    ) -> TproxyResult<(), error::Sv1Server> {
         info!("Starting SV1 server on {}", self.listener_addr);
         let mut shutdown_rx_main = notify_shutdown.subscribe();
 
@@ -165,7 +165,7 @@ impl Sv1Server {
 
         let listener = TcpListener::bind(self.listener_addr).await.map_err(|e| {
             error!("Failed to bind to {}: {}", self.listener_addr, e);
-            e
+            TproxyError::shutdown(e)
         })?;
 
         info!("Translator Proxy: listening on {}", self.listener_addr);
@@ -288,9 +288,10 @@ impl Sv1Server {
                         Arc::clone(&self)
                     ) => {
                         if let Err(e) = res {
-                            handle_error(&sv1_status_sender, e).await;
-                            self.sv1_server_channel_state.drop();
-                            break;
+                            if handle_error(&sv1_status_sender, e).await {
+                                self.sv1_server_channel_state.drop();
+                                break;
+                            }
                         }
                     }
                     res = Self::handle_upstream_message(
@@ -298,9 +299,10 @@ impl Sv1Server {
                         first_target,
                     ) => {
                         if let Err(e) = res {
-                            handle_error(&sv1_status_sender, e).await;
-                            self.sv1_server_channel_state.drop();
-                            break;
+                            if handle_error(&sv1_status_sender, e).await {
+                                self.sv1_server_channel_state.drop();
+                                break;
+                            }
                         }
                     }
                     _ = &mut vardiff_future, if vardiff_enabled => {}
@@ -325,13 +327,13 @@ impl Sv1Server {
     /// # Returns
     /// * `Ok(())` - Message processed successfully
     /// * `Err(TproxyError)` - Error processing the message
-    pub async fn handle_downstream_message(self: Arc<Self>) -> Result<(), TproxyError> {
+    pub async fn handle_downstream_message(self: Arc<Self>) -> TproxyResult<(), error::Sv1Server> {
         let downstream_message = self
             .sv1_server_channel_state
             .downstream_to_sv1_server_receiver
             .recv()
             .await
-            .map_err(TproxyError::ChannelErrorReceiver)?;
+            .map_err(TproxyError::shutdown)?;
 
         match downstream_message {
             DownstreamMessages::SubmitShares(message) => {
@@ -347,17 +349,19 @@ impl Sv1Server {
     async fn handle_submit_shares(
         self: &Arc<Self>,
         message: crate::sv1::downstream::SubmitShareWithChannelId,
-    ) -> Result<(), TproxyError> {
+    ) -> TproxyResult<(), error::Sv1Server> {
         // Increment vardiff counter for this downstream (only if vardiff is enabled)
         if self.config.downstream_difficulty_config.enable_vardiff {
-            self.sv1_server_data.safe_lock(|v| {
-                if let Some(vardiff_state) = v.vardiff.get(&message.downstream_id) {
-                    vardiff_state
-                        .write()
-                        .unwrap()
-                        .increment_shares_since_last_update();
-                }
-            })?;
+            self.sv1_server_data
+                .safe_lock(|v| {
+                    if let Some(vardiff_state) = v.vardiff.get(&message.downstream_id) {
+                        vardiff_state
+                            .write()
+                            .unwrap()
+                            .increment_shares_since_last_update();
+                    }
+                })
+                .map_err(TproxyError::shutdown)?;
         }
 
         let job_version = match message.job_version {
@@ -394,7 +398,7 @@ impl Sv1Server {
             job_version,
             message.version_rolling_mask,
         )
-        .map_err(|_| TproxyError::SV1Error)?;
+        .map_err(|_| TproxyError::shutdown(TproxyErrorKind::SV1Error))?;
 
         // Only add TLV fields with user identity in non-aggregated mode
         let tlv_fields = if !self.config.aggregate_channels {
@@ -421,7 +425,7 @@ impl Sv1Server {
                 tlv_fields,
             ))
             .await
-            .map_err(|_| TproxyError::ChannelErrorSender)?;
+            .map_err(|_| TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender))?;
 
         self.sequence_counter.fetch_add(1, Ordering::SeqCst);
 
@@ -432,7 +436,7 @@ impl Sv1Server {
     async fn handle_open_channel_request(
         self: &Arc<Self>,
         downstream_id: DownstreamId,
-    ) -> Result<(), TproxyError> {
+    ) -> TproxyResult<(), error::Sv1Server> {
         info!("SV1 Server: Opening extended mining channel for downstream {} after receiving first message", downstream_id);
 
         let (request_id, downstreams) = self.sv1_server_data.super_safe_lock(|v| {
@@ -475,13 +479,13 @@ impl Sv1Server {
     pub async fn handle_upstream_message(
         self: Arc<Self>,
         first_target: Target,
-    ) -> Result<(), TproxyError> {
+    ) -> TproxyResult<(), error::Sv1Server> {
         let (message, _tlv_fields) = self
             .sv1_server_channel_state
             .channel_manager_receiver
             .recv()
             .await
-            .map_err(TproxyError::ChannelErrorReceiver)?;
+            .map_err(TproxyError::shutdown)?;
 
         match message {
             Mining::OpenExtendedMiningChannelSuccess(m) => {
@@ -494,18 +498,23 @@ impl Sv1Server {
                     (downstream_id, v.downstreams.clone())
                 });
                 let Some(downstream_id) = downstream_id else {
-                    return Err(TproxyError::DownstreamNotFound(m.request_id));
+                    return Err(TproxyError::log(TproxyErrorKind::DownstreamNotFound(
+                        m.request_id,
+                    )));
                 };
                 if let Some(downstream) = Self::get_downstream(downstream_id, downstreams) {
                     let initial_target =
                         Target::from_le_bytes(m.target.inner_as_ref().try_into().unwrap());
-                    downstream.downstream_data.safe_lock(|d| {
-                        d.extranonce1 = m.extranonce_prefix.to_vec();
-                        d.extranonce2_len = m.extranonce_size.into();
-                        d.channel_id = Some(m.channel_id);
-                        // Set the initial upstream target from OpenExtendedMiningChannelSuccess
-                        d.set_upstream_target(initial_target);
-                    })?;
+                    downstream
+                        .downstream_data
+                        .safe_lock(|d| {
+                            d.extranonce1 = m.extranonce_prefix.to_vec();
+                            d.extranonce2_len = m.extranonce_size.into();
+                            d.channel_id = Some(m.channel_id);
+                            // Set the initial upstream target from OpenExtendedMiningChannelSuccess
+                            d.set_upstream_target(initial_target);
+                        })
+                        .map_err(TproxyError::shutdown)?;
 
                     // Process all queued messages now that channel is established
                     if let Ok(queued_messages) = downstream.downstream_data.safe_lock(|d| {
@@ -538,7 +547,11 @@ impl Sv1Server {
                                             Some(downstream_id),
                                             response_msg.into(),
                                         ))
-                                        .map_err(|_| TproxyError::ChannelErrorSender)?;
+                                        .map_err(|_| {
+                                            TproxyError::shutdown(
+                                                TproxyErrorKind::ChannelErrorSender,
+                                            )
+                                        })?;
                                 }
                             }
                         }
@@ -546,13 +559,15 @@ impl Sv1Server {
 
                     let set_difficulty = build_sv1_set_difficulty_from_sv2_target(first_target)
                         .map_err(|_| {
-                            TproxyError::General("Failed to generate set_difficulty".into())
+                            TproxyError::shutdown(TproxyErrorKind::General(
+                                "Failed to generate set_difficulty".into(),
+                            ))
                         })?;
                     // send the set_difficulty message to the downstream
                     self.sv1_server_channel_state
                         .sv1_server_to_downstream_sender
                         .send((m.channel_id, None, set_difficulty))
-                        .map_err(|_| TproxyError::ChannelErrorSender)?;
+                        .map_err(|_| TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender))?;
                 } else {
                     error!("Downstream not found for downstream_id: {}", downstream_id);
                 }
@@ -569,7 +584,8 @@ impl Sv1Server {
                         prevhash,
                         m.clone().into_static(),
                         self.clean_job.load(Ordering::SeqCst),
-                    )?;
+                    )
+                    .map_err(TproxyError::shutdown)?;
                     let clean_jobs = self.clean_job.load(Ordering::SeqCst);
                     self.clean_job.store(false, Ordering::SeqCst);
 
@@ -656,7 +672,7 @@ impl Sv1Server {
         &self,
         request_id: u32,
         downstream: Arc<Downstream>,
-    ) -> Result<(), TproxyError> {
+    ) -> TproxyResult<(), error::Sv1Server> {
         let config = &self.config.downstream_difficulty_config;
 
         let hashrate = config.min_individual_miner_hashrate as f64;
@@ -684,7 +700,8 @@ impl Sv1Server {
 
         downstream
             .downstream_data
-            .safe_lock(|d| d.user_identity = user_identity.clone())?;
+            .safe_lock(|d| d.user_identity = user_identity.clone())
+            .map_err(TproxyError::shutdown)?;
 
         if let Ok(open_channel_msg) = build_sv2_open_extended_mining_channel(
             request_id,
@@ -697,7 +714,7 @@ impl Sv1Server {
                 .channel_manager_sender
                 .send((Mining::OpenExtendedMiningChannel(open_channel_msg), None))
                 .await
-                .map_err(|_| TproxyError::ChannelErrorSender)?;
+                .map_err(|_| TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender))?;
         } else {
             error!("Failed to build OpenExtendedMiningChannel message");
         }

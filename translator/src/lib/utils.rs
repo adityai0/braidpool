@@ -22,7 +22,7 @@ use stratum_apps::{
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use crate::error::TproxyError;
+use crate::error::TproxyErrorKind;
 
 /// Validates an SV1 share against the target difficulty and job parameters.
 ///
@@ -52,7 +52,7 @@ pub fn validate_sv1_share(
     version_rolling_mask: Option<HexU32Be>,
     sv1_server_data: std::sync::Arc<Mutex<crate::sv1::sv1_server::data::Sv1ServerData>>,
     channel_id: ChannelId,
-) -> Result<bool, TproxyError> {
+) -> Result<bool, TproxyErrorKind> {
     let job_id = share.job_id.clone();
 
     // Access valid jobs based on the configured mode
@@ -74,7 +74,7 @@ pub fn validate_sv1_share(
                 None
             }
         })
-        .ok_or(TproxyError::JobNotFound)?;
+        .ok_or(TproxyErrorKind::JobNotFound)?;
 
     let mut full_extranonce = vec![];
     full_extranonce.extend_from_slice(extranonce1.as_slice());
@@ -89,7 +89,7 @@ pub fn validate_sv1_share(
     let version = (job.version.0 & !mask) | (share_version & mask);
 
     let prev_hash_vec: Vec<u8> = job.prev_hash.clone().into();
-    let prev_hash = U256::from_vec_(prev_hash_vec).map_err(TproxyError::BinarySv2)?;
+    let prev_hash = U256::from_vec_(prev_hash_vec).map_err(TproxyErrorKind::BinarySv2)?;
 
     // calculate the merkle root from:
     // - job coinbase_tx_prefix
@@ -102,9 +102,9 @@ pub fn validate_sv1_share(
         full_extranonce.as_ref(),
         job.merkle_branch.as_ref(),
     )
-    .ok_or(TproxyError::InvalidMerkleRoot)?
+    .ok_or(TproxyErrorKind::InvalidMerkleRoot)?
     .try_into()
-    .map_err(|_| TproxyError::InvalidMerkleRoot)?;
+    .map_err(|_| TproxyErrorKind::InvalidMerkleRoot)?;
 
     // create the header for validation
     let header = Header {

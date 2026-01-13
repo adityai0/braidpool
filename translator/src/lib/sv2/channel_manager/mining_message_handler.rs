@@ -1,8 +1,7 @@
 use std::sync::{Arc, RwLock};
 
 use crate::{
-    error::TproxyError,
-    status::{State, Status},
+    error::{self, TproxyError, TproxyErrorKind},
     sv2::{channel_manager::ChannelMode, ChannelManager},
     utils::proxy_extranonce_prefix_len,
 };
@@ -30,7 +29,7 @@ use tracing::{debug, error, info, warn};
 
 #[cfg_attr(not(test), hotpath::measure_all)]
 impl HandleMiningMessagesFromServerAsync for ChannelManager {
-    type Error = TproxyError;
+    type Error = TproxyError<error::ChannelManager>;
 
     fn get_channel_type_for_server(&self, _server_id: Option<usize>) -> SupportedChannelTypes {
         SupportedChannelTypes::Extended
@@ -56,10 +55,10 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
         _tlv_fields: Option<&[Tlv]>,
     ) -> Result<(), Self::Error> {
         warn!("Received: {}", m);
-        Err(Self::Error::UnexpectedMessage(
+        Err(TproxyError::log(TproxyErrorKind::UnexpectedMessage(
             0,
             MESSAGE_TYPE_OPEN_STANDARD_MINING_CHANNEL_SUCCESS,
-        ))
+        )))
     }
 
     async fn handle_open_extended_mining_channel_success(
@@ -78,11 +77,11 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
             })
             .map_err(|e| {
                 error!("Failed to lock channel manager data: {:?}", e);
-                TproxyError::PoisonLock
+                TproxyError::shutdown(TproxyErrorKind::PoisonLock)
             })?
             .ok_or_else(|| {
                 error!("No pending channel found for request_id: {}", m.request_id);
-                TproxyError::PendingChannelNotFound(m.request_id)
+                TproxyError::log(TproxyErrorKind::PendingChannelNotFound(m.request_id))
             })?;
 
         let success = self
@@ -242,7 +241,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
             })
             .map_err(|e| {
                 error!("Failed to lock channel manager data: {:?}", e);
-                TproxyError::PoisonLock
+                TproxyError::shutdown(TproxyErrorKind::PoisonLock)
             })?;
 
         self.channel_state
@@ -254,7 +253,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
             .await
             .map_err(|e| {
                 error!("Failed to send OpenExtendedMiningChannelSuccess: {:?}", e);
-                TproxyError::ChannelErrorSender
+                TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender)
             })?;
 
         Ok(())
@@ -267,14 +266,9 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
         _tlv_fields: Option<&[Tlv]>,
     ) -> Result<(), Self::Error> {
         warn!("Received: {}", m);
-        _ = self
-            .channel_state
-            .status_sender
-            .send(Status {
-                state: State::UpstreamShutdown(TproxyError::Shutdown),
-            })
-            .await;
-        Ok(())
+        Err(TproxyError::fallback(
+            TproxyErrorKind::OpenMiningChannelError,
+        ))
     }
 
     async fn handle_update_channel_error(
@@ -392,7 +386,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                 .await
                 .map_err(|e| {
                     error!("Failed to send immediate NewExtendedMiningJob: {:?}", e);
-                    TproxyError::ChannelErrorSender
+                    TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender)
                 })?;
         }
         Ok(())
@@ -437,7 +431,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
             .await
             .map_err(|e| {
                 error!("Failed to send SetNewPrevHash: {:?}", e);
-                TproxyError::ChannelErrorSender
+                TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender)
             })?;
 
         let mode = self
@@ -470,7 +464,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                 .await
                 .map_err(|e| {
                     error!("Failed to send NewExtendedMiningJob: {:?}", e);
-                    TproxyError::ChannelErrorSender
+                    TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender)
                 })?;
         }
         Ok(())
@@ -484,10 +478,10 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
     ) -> Result<(), Self::Error> {
         warn!("Received: {}", m);
         warn!("⚠️ Cannot process SetCustomMiningJobSuccess since Translator Proxy does not support custom mining jobs. Ignoring.");
-        Err(Self::Error::UnexpectedMessage(
+        Err(TproxyError::log(TproxyErrorKind::UnexpectedMessage(
             0,
             MESSAGE_TYPE_SET_CUSTOM_MINING_JOB_SUCCESS,
-        ))
+        )))
     }
 
     async fn handle_set_custom_mining_job_error(
@@ -498,10 +492,10 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
     ) -> Result<(), Self::Error> {
         warn!("Received: {}", m);
         warn!("⚠️ Cannot process SetCustomMiningJobError since Translator Proxy does not support custom mining jobs. Ignoring.");
-        Err(Self::Error::UnexpectedMessage(
+        Err(TproxyError::log(TproxyErrorKind::UnexpectedMessage(
             0,
             MESSAGE_TYPE_SET_CUSTOM_MINING_JOB_ERROR,
-        ))
+        )))
     }
 
     async fn handle_set_target(
@@ -549,7 +543,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
             .await
             .map_err(|e| {
                 error!("Failed to forward SetTarget message to SV1Server: {:?}", e);
-                TproxyError::ChannelErrorSender
+                TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender)
             })?;
 
         Ok(())
@@ -563,9 +557,9 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
     ) -> Result<(), Self::Error> {
         warn!("Received: {}", m);
         warn!("⚠️ Cannot process SetGroupChannel since Translator Proxy does not support group channels. Ignoring.");
-        Err(Self::Error::UnexpectedMessage(
+        Err(TproxyError::log(TproxyErrorKind::UnexpectedMessage(
             0,
             MESSAGE_TYPE_SET_GROUP_CHANNEL,
-        ))
+        )))
     }
 }

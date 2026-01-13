@@ -1,5 +1,5 @@
 use crate::{
-    error::TproxyError,
+    error::{self, TproxyError, TproxyErrorKind, TproxyResult},
     io_task::spawn_io_tasks,
     status::{handle_error, Status, StatusSender},
     sv2::upstream::channel::UpstreamChannelState,
@@ -81,7 +81,7 @@ impl Upstream {
         shutdown_complete_tx: mpsc::Sender<()>,
         task_manager: Arc<TaskManager>,
         required_extensions: Vec<u16>,
-    ) -> Result<Self, TproxyError> {
+    ) -> TproxyResult<Self, error::Upstream> {
         let mut shutdown_rx = notify_shutdown.subscribe();
 
         info!("Trying to connect to upstream at {}", upstream.addr);
@@ -89,14 +89,17 @@ impl Upstream {
         if shutdown_rx.try_recv().is_ok() {
             info!("Shutdown signal received during upstream connection attempt. Aborting.");
             drop(shutdown_complete_tx);
-            return Err(TproxyError::Shutdown);
+            return Err(TproxyError::shutdown(
+                TproxyErrorKind::CouldNotInitiateSystem,
+            ));
         }
 
         match TcpStream::connect(upstream.addr).await {
             Ok(socket) => {
                 info!("Connected to upstream at {}", upstream.addr);
 
-                let initiator = Initiator::from_raw_k(upstream.authority_pubkey.into_bytes())?;
+                let initiator = Initiator::from_raw_k(upstream.authority_pubkey.into_bytes())
+                    .map_err(TproxyError::fallback)?;
                 match NoiseTcpStream::new(socket, HandshakeRole::Initiator(initiator)).await {
                     Ok(stream) => {
                         let (reader, writer) = stream.into_split();
@@ -144,7 +147,9 @@ impl Upstream {
 
         error!("Failed to connect to any configured upstream.");
         drop(shutdown_complete_tx);
-        Err(TproxyError::Shutdown)
+        Err(TproxyError::shutdown(
+            TproxyErrorKind::CouldNotInitiateSystem,
+        ))
     }
 
     /// Starts the upstream connection and begins message processing.
@@ -163,7 +168,7 @@ impl Upstream {
         shutdown_complete_tx: mpsc::Sender<()>,
         status_sender: Sender<Status>,
         task_manager: Arc<TaskManager>,
-    ) -> Result<(), TproxyError> {
+    ) -> TproxyResult<(), error::Upstream> {
         let mut shutdown_rx = notify_shutdown.subscribe();
         // Wait for connection setup or shutdown signal
         tokio::select! {
@@ -220,16 +225,17 @@ impl Upstream {
     ///
     /// The handshake establishes the protocol version, capabilities, and
     /// other connection parameters needed for SV2 communication.
-    pub async fn setup_connection(&mut self) -> Result<(), TproxyError> {
+    pub async fn setup_connection(&mut self) -> TproxyResult<(), error::Upstream> {
         debug!("Upstream: initiating SV2 handshake...");
         // Build SetupConnection message
-        let setup_conn_msg = Self::get_setup_connection_message(2, 2, false)?;
+        let setup_conn_msg =
+            Self::get_setup_connection_message(2, 2, false).map_err(TproxyError::shutdown)?;
         let sv2_frame: Sv2Frame =
             Message::Common(setup_conn_msg.into())
                 .try_into()
-                .map_err(|e| {
-                    error!("Failed to serialize SetupConnection message: {:?}", e);
-                    TproxyError::ParserError(e)
+                .map_err(|error| {
+                    error!("Failed to serialize SetupConnection message: {error:?}");
+                    TproxyError::shutdown(error)
                 })?;
 
         // Send SetupConnection message to upstream
@@ -239,7 +245,7 @@ impl Upstream {
             .await
             .map_err(|e| {
                 error!("Failed to send SetupConnection to upstream: {:?}", e);
-                TproxyError::ChannelErrorSender
+                TproxyError::fallback(TproxyErrorKind::ChannelErrorSender)
             })?;
 
         let mut incoming: Sv2Frame =
@@ -250,15 +256,13 @@ impl Upstream {
                 }
                 Err(e) => {
                     error!("Failed to receive handshake response from upstream: {}", e);
-                    return Err(TproxyError::CodecNoise(
-                    stratum_apps::stratum_core::noise_sv2::Error::ExpectedIncomingHandshakeMessage,
-                ));
+                    return Err(TproxyError::fallback(e));
                 }
             };
 
         let header = incoming.get_header().ok_or_else(|| {
             error!("Expected handshake frame but no header found.");
-            TproxyError::UnexpectedMessage(0, 0)
+            TproxyError::fallback(TproxyErrorKind::UnexpectedMessage(0, 0))
         })?;
 
         let payload = incoming.payload();
@@ -275,7 +279,9 @@ impl Upstream {
             };
 
             let sv2_frame: Sv2Frame =
-                AnyMessage::Extensions(require_extensions.into_static().into()).try_into()?;
+                AnyMessage::Extensions(require_extensions.into_static().into())
+                    .try_into()
+                    .map_err(TproxyError::shutdown)?;
 
             info!(
                 "Sending RequestExtensions message to upstream: {:?}",
@@ -288,7 +294,7 @@ impl Upstream {
                 .await
                 .map_err(|e| {
                     error!("Failed to send message to upstream: {:?}", e);
-                    TproxyError::ChannelErrorSender
+                    TproxyError::fallback(TproxyErrorKind::ChannelErrorSender)
                 })?;
         }
         Ok(())
@@ -305,10 +311,12 @@ impl Upstream {
     pub async fn on_upstream_message(
         &mut self,
         mut sv2_frame: Sv2Frame,
-    ) -> Result<(), TproxyError> {
+    ) -> TproxyResult<(), error::Upstream> {
         debug!("Received SV2 frame from upstream.");
         let Some(header) = sv2_frame.get_header() else {
-            return Err(TproxyError::UnexpectedMessage(0, 0));
+            return Err(TproxyError::fallback(TproxyErrorKind::UnexpectedMessage(
+                0, 0,
+            )));
         };
 
         match protocol_message_type(header.ext_type(), header.msg_type()) {
@@ -328,7 +336,7 @@ impl Upstream {
                     .await
                     .map_err(|e| {
                         error!("Failed to send mining message to channel manager: {:?}", e);
-                        TproxyError::ChannelErrorSender
+                        TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender)
                     })?;
             }
             _ => {
@@ -337,23 +345,24 @@ impl Upstream {
                     message_type = header.msg_type(),
                     "Received unsupported message type from upstream."
                 );
-                return Err(TproxyError::UnexpectedMessage(
+                return Err(TproxyError::fallback(TproxyErrorKind::UnexpectedMessage(
                     header.ext_type(),
                     header.msg_type(),
-                ));
+                )));
             }
         }
         Ok(())
     }
 
     /// Spawns a unified task to handle upstream message I/O and shutdown logic.
+    #[allow(clippy::result_large_err)]
     fn run_upstream_task(
         mut self,
         notify_shutdown: broadcast::Sender<ShutdownMessage>,
         shutdown_complete_tx: mpsc::Sender<()>,
         status_sender: StatusSender,
         task_manager: Arc<TaskManager>,
-    ) -> Result<(), TproxyError> {
+    ) -> TproxyResult<(), error::Upstream> {
         let mut shutdown_rx = notify_shutdown.subscribe();
         let shutdown_complete_tx = shutdown_complete_tx.clone();
 
@@ -394,7 +403,7 @@ impl Upstream {
                             }
                             Err(e) => {
                                 error!("Upstream: receiver channel closed unexpectedly: {e}");
-                                handle_error(&status_sender, TproxyError::ChannelErrorReceiver(e)).await;
+                                handle_error(&status_sender, TproxyError::<error::Upstream>::fallback(e)).await;
                                 break;
                             }
                         }
@@ -412,7 +421,7 @@ impl Upstream {
                                     .await
                                     .map_err(|e| {
                                         error!("Upstream: failed to send sv2 frame: {e:?}");
-                                        TproxyError::ChannelErrorSender
+                                        TproxyError::<error::Upstream>::fallback(TproxyErrorKind::ChannelErrorSender)
                                     })
                                 {
                                     handle_error(&status_sender, e).await;
@@ -420,7 +429,7 @@ impl Upstream {
                             }
                             Err(e) => {
                                 error!("Upstream: channel manager receiver closed: {e}");
-                                handle_error(&status_sender, TproxyError::ChannelErrorReceiver(e)).await;
+                                handle_error(&status_sender, TproxyError::<error::Upstream>::shutdown(e)).await;
                                 break;
                             }
                         }
@@ -448,10 +457,13 @@ impl Upstream {
     /// # Returns
     /// * `Ok(())` - Message sent successfully
     /// * `Err(TproxyError)` - Error sending the message
-    pub async fn send_upstream(&self, message: Mining<'static>) -> Result<(), TproxyError> {
+    pub async fn send_upstream(
+        &self,
+        message: Mining<'static>,
+    ) -> TproxyResult<(), error::Upstream> {
         debug!("Sending message to upstream.");
         let message = AnyMessage::Mining(message);
-        let sv2_frame: Sv2Frame = message.try_into()?;
+        let sv2_frame: Sv2Frame = message.try_into().map_err(TproxyError::shutdown)?;
 
         self.upstream_channel_state
             .upstream_sender
@@ -459,7 +471,7 @@ impl Upstream {
             .await
             .map_err(|e| {
                 error!("Failed to send message to upstream: {:?}", e);
-                TproxyError::ChannelErrorSender
+                TproxyError::fallback(TproxyErrorKind::ChannelErrorSender)
             })?;
 
         Ok(())
@@ -471,7 +483,7 @@ impl Upstream {
         min_version: u16,
         max_version: u16,
         is_work_selection_enabled: bool,
-    ) -> Result<SetupConnection<'static>, TproxyError> {
+    ) -> Result<SetupConnection<'static>, TproxyErrorKind> {
         let endpoint_host = "0.0.0.0".to_string().into_bytes().try_into()?;
         let vendor = "SRI".to_string().try_into()?;
         let hardware_version = "Translator Proxy".to_string().try_into()?;

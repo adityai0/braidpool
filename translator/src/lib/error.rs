@@ -9,21 +9,123 @@
 //!   asynchronous channels.
 
 use ext_config::ConfigError;
-use std::{fmt, sync::PoisonError};
+use std::{
+    fmt::{self, Formatter},
+    marker::PhantomData,
+    sync::PoisonError,
+};
 use stratum_apps::{
     stratum_core::{
         binary_sv2, framing_sv2,
         handlers_sv2::HandlerErrorType,
         noise_sv2,
-        parsers_sv2::{self, ParserError},
+        parsers_sv2::{self, ParserError, TlvError},
         sv1_api::server_to_client::SetDifficulty,
     },
-    utils::types::{ExtensionType, MessageType},
+    utils::types::{
+        CanDisconnect, CanFallback, CanShutdown, DownstreamId, ExtensionType, MessageType,
+    },
 };
 use tokio::sync::broadcast;
 
+pub type TproxyResult<T, Owner> = Result<T, TproxyError<Owner>>;
+
 #[derive(Debug)]
-pub enum TproxyError {
+pub struct ChannelManager;
+
+#[derive(Debug)]
+pub struct Sv1Server;
+
+#[derive(Debug)]
+pub struct Upstream;
+
+#[derive(Debug)]
+pub struct Downstream;
+
+#[derive(Debug)]
+pub struct TproxyError<Owner> {
+    pub kind: TproxyErrorKind,
+    pub action: Action,
+    _owner: PhantomData<Owner>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Action {
+    Log,
+    Disconnect(DownstreamId),
+    Fallback,
+    Shutdown,
+}
+
+impl CanDisconnect for Downstream {}
+impl CanDisconnect for Sv1Server {}
+impl CanDisconnect for ChannelManager {}
+
+impl CanFallback for Upstream {}
+impl CanFallback for ChannelManager {}
+
+impl CanShutdown for ChannelManager {}
+impl CanShutdown for Sv1Server {}
+impl CanShutdown for Downstream {}
+impl CanShutdown for Upstream {}
+
+impl<O> TproxyError<O> {
+    pub fn log<E: Into<TproxyErrorKind>>(kind: E) -> Self {
+        Self {
+            kind: kind.into(),
+            action: Action::Log,
+            _owner: PhantomData,
+        }
+    }
+}
+
+impl<O> TproxyError<O>
+where
+    O: CanDisconnect,
+{
+    pub fn disconnect<E: Into<TproxyErrorKind>>(kind: E, downstream_id: DownstreamId) -> Self {
+        Self {
+            kind: kind.into(),
+            action: Action::Disconnect(downstream_id),
+            _owner: PhantomData,
+        }
+    }
+}
+
+impl<O> TproxyError<O>
+where
+    O: CanFallback,
+{
+    pub fn fallback<E: Into<TproxyErrorKind>>(kind: E) -> Self {
+        Self {
+            kind: kind.into(),
+            action: Action::Fallback,
+            _owner: PhantomData,
+        }
+    }
+}
+
+impl<O> TproxyError<O>
+where
+    O: CanShutdown,
+{
+    pub fn shutdown<E: Into<TproxyErrorKind>>(kind: E) -> Self {
+        Self {
+            kind: kind.into(),
+            action: Action::Shutdown,
+            _owner: PhantomData,
+        }
+    }
+}
+
+impl<Owner> From<TproxyError<Owner>> for TproxyErrorKind {
+    fn from(value: TproxyError<Owner>) -> Self {
+        value.kind
+    }
+}
+
+#[derive(Debug)]
+pub enum TproxyErrorKind {
     /// Generic SV1 protocol error
     SV1Error,
     /// Error from the network helpers library
@@ -64,10 +166,6 @@ pub enum TproxyError {
     JobNotFound,
     /// Invalid merkle root during share validation
     InvalidMerkleRoot,
-    /// Shutdown signal received
-    Shutdown,
-    /// Fallback
-    Fallback,
     /// Pending channel not found for the given request ID
     PendingChannelNotFound(u32),
     /// Server does not support required extensions
@@ -82,13 +180,19 @@ pub enum TproxyError {
     DownstreamNotFound(u32),
     /// Error about TLV encoding/decoding
     TlvError(parsers_sv2::TlvError),
+    /// Setup connection error
+    SetupConnectionError,
+    /// Open mining channel error
+    OpenMiningChannelError,
+    /// Could not initiate subsystem
+    CouldNotInitiateSystem,
 }
 
-impl std::error::Error for TproxyError {}
+impl std::error::Error for TproxyErrorKind {}
 
-impl fmt::Display for TproxyError {
+impl fmt::Display for TproxyErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use TproxyError::*;
+        use TproxyErrorKind::*;
         match self {
             General(e) => write!(f, "{e}"),
             BadCliArgs => write!(f, "Bad CLI arg input"),
@@ -117,8 +221,6 @@ impl fmt::Display for TproxyError {
             }
             JobNotFound => write!(f, "Job not found during share validation"),
             InvalidMerkleRoot => write!(f, "Invalid merkle root during share validation"),
-            Shutdown => write!(f, "Shutdown signal"),
-            Fallback => write!(f, "Fallback signal"),
             PendingChannelNotFound(request_id) => {
                 write!(f, "No pending channel found for request_id: {}", request_id)
             }
@@ -145,111 +247,144 @@ impl fmt::Display for TproxyError {
                 "Downstream id associated to request id: {request_id} not found"
             ),
             TlvError(ref e) => write!(f, "TLV error: {e:?}"),
+            OpenMiningChannelError => write!(f, "failed to open mining channel"),
+            SetupConnectionError => write!(f, "failed to setup connection with upstream"),
+            CouldNotInitiateSystem => write!(f, "Could not initiate subsystem"),
         }
     }
 }
 
-impl From<binary_sv2::Error> for TproxyError {
+impl From<binary_sv2::Error> for TproxyErrorKind {
     fn from(e: binary_sv2::Error) -> Self {
-        TproxyError::BinarySv2(e)
+        TproxyErrorKind::BinarySv2(e)
     }
 }
 
-impl From<noise_sv2::Error> for TproxyError {
+impl From<noise_sv2::Error> for TproxyErrorKind {
     fn from(e: noise_sv2::Error) -> Self {
-        TproxyError::CodecNoise(e)
+        TproxyErrorKind::CodecNoise(e)
     }
 }
 
-impl From<framing_sv2::Error> for TproxyError {
+impl From<framing_sv2::Error> for TproxyErrorKind {
     fn from(e: framing_sv2::Error) -> Self {
-        TproxyError::FramingSv2(e)
+        TproxyErrorKind::FramingSv2(e)
     }
 }
 
-impl From<std::io::Error> for TproxyError {
+impl From<std::io::Error> for TproxyErrorKind {
     fn from(e: std::io::Error) -> Self {
-        TproxyError::Io(e)
+        TproxyErrorKind::Io(e)
     }
 }
 
-impl From<std::num::ParseIntError> for TproxyError {
+impl From<std::num::ParseIntError> for TproxyErrorKind {
     fn from(e: std::num::ParseIntError) -> Self {
-        TproxyError::ParseInt(e)
+        TproxyErrorKind::ParseInt(e)
     }
 }
 
-impl From<serde_json::Error> for TproxyError {
+impl From<serde_json::Error> for TproxyErrorKind {
     fn from(e: serde_json::Error) -> Self {
-        TproxyError::BadSerdeJson(e)
+        TproxyErrorKind::BadSerdeJson(e)
     }
 }
 
-impl From<ConfigError> for TproxyError {
+impl From<ConfigError> for TproxyErrorKind {
     fn from(e: ConfigError) -> Self {
-        TproxyError::BadConfigDeserialize(e)
+        TproxyErrorKind::BadConfigDeserialize(e)
     }
 }
 
-impl From<async_channel::RecvError> for TproxyError {
+impl From<async_channel::RecvError> for TproxyErrorKind {
     fn from(e: async_channel::RecvError) -> Self {
-        TproxyError::ChannelErrorReceiver(e)
+        TproxyErrorKind::ChannelErrorReceiver(e)
     }
 }
 
-impl From<tokio::sync::broadcast::error::RecvError> for TproxyError {
+impl From<tokio::sync::broadcast::error::RecvError> for TproxyErrorKind {
     fn from(e: tokio::sync::broadcast::error::RecvError) -> Self {
-        TproxyError::TokioChannelErrorRecv(e)
+        TproxyErrorKind::TokioChannelErrorRecv(e)
     }
 }
 
 //*** LOCK ERRORS ***
-impl<T> From<PoisonError<T>> for TproxyError {
+impl<T> From<PoisonError<T>> for TproxyErrorKind {
     fn from(_e: PoisonError<T>) -> Self {
-        TproxyError::PoisonLock
+        TproxyErrorKind::PoisonLock
     }
 }
 
-impl From<SetDifficulty> for TproxyError {
+impl From<SetDifficulty> for TproxyErrorKind {
     fn from(e: SetDifficulty) -> Self {
-        TproxyError::SetDifficultyToMessage(e)
+        TproxyErrorKind::SetDifficultyToMessage(e)
     }
 }
 
-impl<'a> From<stratum_apps::stratum_core::sv1_api::error::Error<'a>> for TproxyError {
+impl<'a> From<stratum_apps::stratum_core::sv1_api::error::Error<'a>> for TproxyErrorKind {
     fn from(_: stratum_apps::stratum_core::sv1_api::error::Error<'a>) -> Self {
-        TproxyError::SV1Error
+        TproxyErrorKind::SV1Error
     }
 }
 
-impl From<stratum_apps::network_helpers::Error> for TproxyError {
+impl From<stratum_apps::network_helpers::Error> for TproxyErrorKind {
     fn from(value: stratum_apps::network_helpers::Error) -> Self {
-        TproxyError::NetworkHelpersError(value)
+        TproxyErrorKind::NetworkHelpersError(value)
     }
 }
 
 impl From<stratum_apps::stratum_core::stratum_translation::error::StratumTranslationError>
-    for TproxyError
+    for TproxyErrorKind
 {
     fn from(
         e: stratum_apps::stratum_core::stratum_translation::error::StratumTranslationError,
     ) -> Self {
-        TproxyError::TranslatorCore(e)
+        TproxyErrorKind::TranslatorCore(e)
     }
 }
 
-impl From<ParserError> for TproxyError {
+impl From<ParserError> for TproxyErrorKind {
     fn from(value: ParserError) -> Self {
-        TproxyError::ParserError(value)
+        TproxyErrorKind::ParserError(value)
     }
 }
 
-impl HandlerErrorType for TproxyError {
+impl From<TlvError> for TproxyErrorKind {
+    fn from(value: TlvError) -> Self {
+        TproxyErrorKind::TlvError(value)
+    }
+}
+
+impl HandlerErrorType for TproxyErrorKind {
     fn parse_error(error: ParserError) -> Self {
-        TproxyError::ParserError(error)
+        TproxyErrorKind::ParserError(error)
     }
 
     fn unexpected_message(extension_type: ExtensionType, message_type: MessageType) -> Self {
-        TproxyError::UnexpectedMessage(extension_type, message_type)
+        TproxyErrorKind::UnexpectedMessage(extension_type, message_type)
+    }
+}
+
+impl<Owner> HandlerErrorType for TproxyError<Owner> {
+    fn parse_error(error: ParserError) -> Self {
+        Self {
+            kind: TproxyErrorKind::ParserError(error),
+            action: Action::Log,
+            _owner: PhantomData,
+        }
+    }
+
+    fn unexpected_message(extension_type: ExtensionType, message_type: MessageType) -> Self {
+        Self {
+            kind: TproxyErrorKind::UnexpectedMessage(extension_type, message_type),
+            action: Action::Log,
+            _owner: PhantomData,
+        }
+    }
+}
+
+impl<Owner> std::fmt::Display for TproxyError<Owner> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "[{:?}/{:?}]", self.kind, self.action)
     }
 }

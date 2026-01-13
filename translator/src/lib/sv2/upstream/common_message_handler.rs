@@ -1,4 +1,7 @@
-use crate::{error::TproxyError, sv2::Upstream};
+use crate::{
+    error::{self, TproxyError, TproxyErrorKind},
+    sv2::Upstream,
+};
 use stratum_apps::stratum_core::{
     common_messages_sv2::{
         ChannelEndpointChanged, Reconnect, SetupConnectionError, SetupConnectionSuccess,
@@ -10,7 +13,7 @@ use tracing::{error, info};
 
 #[cfg_attr(not(test), hotpath::measure_all)]
 impl HandleCommonMessagesFromServerAsync for Upstream {
-    type Error = TproxyError;
+    type Error = TproxyError<error::Upstream>;
 
     fn get_negotiated_extensions_with_server(
         &self,
@@ -26,7 +29,7 @@ impl HandleCommonMessagesFromServerAsync for Upstream {
         _tlv_fields: Option<&[Tlv]>,
     ) -> Result<(), Self::Error> {
         error!("Received: {}", msg);
-        Err(TproxyError::Fallback)
+        Err(TproxyError::fallback(TproxyErrorKind::SetupConnectionError))
     }
 
     async fn handle_setup_connection_success(
