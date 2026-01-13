@@ -7,11 +7,14 @@ use stratum_apps::stratum_core::{
 };
 use tracing::{error, info};
 
-use crate::{error::PoolError, template_receiver::sv2_tp::Sv2Tp};
+use crate::{
+    error::{self, PoolError, PoolErrorKind},
+    template_receiver::sv2_tp::Sv2Tp,
+};
 
 #[cfg_attr(not(test), hotpath::measure_all)]
 impl HandleCommonMessagesFromServerAsync for Sv2Tp {
-    type Error = PoolError;
+    type Error = PoolError<error::TemplateProvider>;
 
     fn get_negotiated_extensions_with_server(
         &self,
@@ -43,7 +46,7 @@ impl HandleCommonMessagesFromServerAsync for Sv2Tp {
             "Received ChannelEndpointChanged with channel id: {}",
             msg.channel_id
         );
-        Err(PoolError::Shutdown)
+        Err(PoolError::shutdown(PoolErrorKind::ChangeEndpoint))
     }
 
     async fn handle_reconnect(
@@ -66,6 +69,6 @@ impl HandleCommonMessagesFromServerAsync for Sv2Tp {
             "Received `SetupConnectionError` from TP with error code {}",
             std::str::from_utf8(msg.error_code.as_ref()).unwrap_or("unknown error code")
         );
-        Err(PoolError::Shutdown)
+        Err(PoolError::shutdown(PoolErrorKind::SetupConnectionError))
     }
 }

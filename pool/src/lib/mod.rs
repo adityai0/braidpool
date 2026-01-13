@@ -13,7 +13,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     channel_manager::ChannelManager,
     config::PoolConfig,
-    error::PoolResult,
+    error::PoolErrorKind,
     status::State,
     template_receiver::{
         bitcoin_core::{connect_to_bitcoin_core, BitcoinCoreSv2Config},
@@ -48,7 +48,7 @@ impl PoolSv2 {
     }
 
     /// Starts the Pool main loop.
-    pub async fn start(&self) -> PoolResult<()> {
+    pub async fn start(&self) -> Result<(), PoolErrorKind> {
         let coinbase_outputs = vec![self.config.get_txout()];
         let mut encoded_outputs = vec![];
 

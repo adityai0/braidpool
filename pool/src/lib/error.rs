@@ -1,6 +1,7 @@
 use std::{
     convert::From,
-    fmt::Debug,
+    fmt::{self, Debug, Formatter},
+    marker::PhantomData,
     sync::{MutexGuard, PoisonError},
 };
 
@@ -20,10 +21,84 @@ use stratum_apps::{
         noise_sv2,
         parsers_sv2::{Mining, ParserError},
     },
-    utils::types::{ChannelId, ExtensionType, MessageType},
+    utils::types::{
+        CanDisconnect, CanShutdown, ChannelId, DownstreamId, ExtensionType, MessageType,
+    },
 };
 
-pub type PoolResult<T> = Result<T, PoolError>;
+pub type PoolResult<T, Owner> = Result<T, PoolError<Owner>>;
+
+#[derive(Debug)]
+pub struct ChannelManager;
+
+#[derive(Debug)]
+pub struct TemplateProvider;
+
+#[derive(Debug)]
+pub struct Downstream;
+
+#[derive(Debug)]
+pub struct PoolError<Owner> {
+    pub kind: PoolErrorKind,
+    pub action: Action,
+    _owner: PhantomData<Owner>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Action {
+    Log,
+    Disconnect(DownstreamId),
+    Shutdown,
+}
+
+impl CanDisconnect for Downstream {}
+impl CanDisconnect for ChannelManager {}
+
+impl CanShutdown for ChannelManager {}
+impl CanShutdown for TemplateProvider {}
+impl CanShutdown for Downstream {}
+
+impl<O> PoolError<O> {
+    pub fn log<E: Into<PoolErrorKind>>(kind: E) -> Self {
+        Self {
+            kind: kind.into(),
+            action: Action::Log,
+            _owner: PhantomData,
+        }
+    }
+}
+
+impl<O> PoolError<O>
+where
+    O: CanDisconnect,
+{
+    pub fn disconnect<E: Into<PoolErrorKind>>(kind: E, downstream_id: DownstreamId) -> Self {
+        Self {
+            kind: kind.into(),
+            action: Action::Disconnect(downstream_id),
+            _owner: PhantomData,
+        }
+    }
+}
+
+impl<O> PoolError<O>
+where
+    O: CanShutdown,
+{
+    pub fn shutdown<E: Into<PoolErrorKind>>(kind: E) -> Self {
+        Self {
+            kind: kind.into(),
+            action: Action::Shutdown,
+            _owner: PhantomData,
+        }
+    }
+}
+
+impl<Owner> From<PoolError<Owner>> for PoolErrorKind {
+    fn from(value: PoolError<Owner>) -> Self {
+        value.kind
+    }
+}
 
 #[derive(Debug)]
 pub enum ChannelSv2Error {
@@ -36,7 +111,7 @@ pub enum ChannelSv2Error {
 
 /// Represents various errors that can occur in the pool implementation.
 #[derive(std::fmt::Debug)]
-pub enum PoolError {
+pub enum PoolErrorKind {
     /// I/O-related error.
     Io(std::io::Error),
     ChannelSv2(ChannelSv2Error),
@@ -66,8 +141,6 @@ pub enum PoolError {
     Vardiff(VardiffError),
     /// Parser Error
     Parser(ParserError),
-    /// Shutdown
-    Shutdown,
     /// Unexpected message
     UnexpectedMessage(ExtensionType, MessageType),
     /// Channel error sender
@@ -106,11 +179,17 @@ pub enum PoolError {
     FailedToSendCoinbaseOutputConstraints,
     /// BitcoinCoreSv2 cancellation token activated
     BitcoinCoreSv2CancellationTokenActivated,
+    /// Setup connection error
+    SetupConnectionError,
+    /// endpoint change error
+    ChangeEndpoint,
+    /// Could not initiate subsystem
+    CouldNotInitiateSystem,
 }
 
-impl std::fmt::Display for PoolError {
+impl std::fmt::Display for PoolErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use PoolError::*;
+        use PoolErrorKind::*;
         match self {
             Io(e) => write!(f, "I/O error: `{e:?}"),
             ChannelSend(e) => write!(f, "Channel send failed: `{e:?}`"),
@@ -126,11 +205,10 @@ impl std::fmt::Display for PoolError {
             Sv2ProtocolError(e) => {
                 write!(f, "Received Sv2 Protocol Error from upstream: `{e:?}`")
             }
-            PoolError::Vardiff(e) => {
+            PoolErrorKind::Vardiff(e) => {
                 write!(f, "Received Vardiff Error : {e:?}")
             }
             Parser(e) => write!(f, "Parser error: `{e:?}`"),
-            Shutdown => write!(f, "Shutdown"),
             UnexpectedMessage(extension_type, message_type) => write!(f, "Unexpected message: extension type: {extension_type:?}, message type: {message_type:?}"),
             ChannelErrorSender => write!(f, "Channel sender error"),
             InvalidSocketAddress(address) => write!(f, "Invalid socket address: {address:?}"),
@@ -189,129 +267,150 @@ impl std::fmt::Display for PoolError {
             BitcoinCoreSv2CancellationTokenActivated => {
                 write!(f, "BitcoinCoreSv2 cancellation token activated")
             }
+            SetupConnectionError => {
+                write!(f, "Failed to Setup connection")
+            },
+            ChangeEndpoint => {
+                write!(f, "Change endpoint")
+            },
+            CouldNotInitiateSystem => write!(f, "Could not initiate subsystem"),
         }
     }
 }
 
-impl From<std::io::Error> for PoolError {
-    fn from(e: std::io::Error) -> PoolError {
-        PoolError::Io(e)
+impl From<std::io::Error> for PoolErrorKind {
+    fn from(e: std::io::Error) -> PoolErrorKind {
+        PoolErrorKind::Io(e)
     }
 }
 
-impl From<async_channel::RecvError> for PoolError {
-    fn from(e: async_channel::RecvError) -> PoolError {
-        PoolError::ChannelRecv(e)
+impl From<async_channel::RecvError> for PoolErrorKind {
+    fn from(e: async_channel::RecvError) -> PoolErrorKind {
+        PoolErrorKind::ChannelRecv(e)
     }
 }
 
-impl From<binary_sv2::Error> for PoolError {
-    fn from(e: binary_sv2::Error) -> PoolError {
-        PoolError::BinarySv2(e)
+impl From<binary_sv2::Error> for PoolErrorKind {
+    fn from(e: binary_sv2::Error) -> PoolErrorKind {
+        PoolErrorKind::BinarySv2(e)
     }
 }
 
-impl From<codec_sv2::Error> for PoolError {
-    fn from(e: codec_sv2::Error) -> PoolError {
-        PoolError::Codec(e)
+impl From<codec_sv2::Error> for PoolErrorKind {
+    fn from(e: codec_sv2::Error) -> PoolErrorKind {
+        PoolErrorKind::Codec(e)
     }
 }
 
-impl From<stratum_apps::config_helpers::CoinbaseOutputError> for PoolError {
-    fn from(e: stratum_apps::config_helpers::CoinbaseOutputError) -> PoolError {
-        PoolError::CoinbaseOutput(e)
+impl From<stratum_apps::config_helpers::CoinbaseOutputError> for PoolErrorKind {
+    fn from(e: stratum_apps::config_helpers::CoinbaseOutputError) -> PoolErrorKind {
+        PoolErrorKind::CoinbaseOutput(e)
     }
 }
 
-impl From<noise_sv2::Error> for PoolError {
-    fn from(e: noise_sv2::Error) -> PoolError {
-        PoolError::Noise(e)
+impl From<noise_sv2::Error> for PoolErrorKind {
+    fn from(e: noise_sv2::Error) -> PoolErrorKind {
+        PoolErrorKind::Noise(e)
     }
 }
 
-impl<T: 'static + std::marker::Send + Debug> From<async_channel::SendError<T>> for PoolError {
-    fn from(e: async_channel::SendError<T>) -> PoolError {
-        PoolError::ChannelSend(Box::new(e))
+impl<T: 'static + std::marker::Send + Debug> From<async_channel::SendError<T>> for PoolErrorKind {
+    fn from(e: async_channel::SendError<T>) -> PoolErrorKind {
+        PoolErrorKind::ChannelSend(Box::new(e))
     }
 }
 
-impl From<String> for PoolError {
-    fn from(e: String) -> PoolError {
-        PoolError::Custom(e)
+impl From<String> for PoolErrorKind {
+    fn from(e: String) -> PoolErrorKind {
+        PoolErrorKind::Custom(e)
     }
 }
-impl From<framing_sv2::Error> for PoolError {
-    fn from(e: framing_sv2::Error) -> PoolError {
-        PoolError::Framing(e)
-    }
-}
-
-impl<T> From<PoisonError<MutexGuard<'_, T>>> for PoolError {
-    fn from(e: PoisonError<MutexGuard<T>>) -> PoolError {
-        PoolError::PoisonLock(e.to_string())
+impl From<framing_sv2::Error> for PoolErrorKind {
+    fn from(e: framing_sv2::Error) -> PoolErrorKind {
+        PoolErrorKind::Framing(e)
     }
 }
 
-impl From<(u32, Mining<'static>)> for PoolError {
+impl<T> From<PoisonError<MutexGuard<'_, T>>> for PoolErrorKind {
+    fn from(e: PoisonError<MutexGuard<T>>) -> PoolErrorKind {
+        PoolErrorKind::PoisonLock(e.to_string())
+    }
+}
+
+impl From<(u32, Mining<'static>)> for PoolErrorKind {
     fn from(e: (u32, Mining<'static>)) -> Self {
-        PoolError::Sv2ProtocolError(e)
+        PoolErrorKind::Sv2ProtocolError(e)
     }
 }
 
-impl HandlerErrorType for PoolError {
+impl From<stratum_apps::stratum_core::bitcoin::consensus::encode::Error> for PoolErrorKind {
+    fn from(value: stratum_apps::stratum_core::bitcoin::consensus::encode::Error) -> Self {
+        PoolErrorKind::BitcoinEncodeError(value)
+    }
+}
+
+impl From<ExtendedChannelError> for PoolErrorKind {
+    fn from(value: ExtendedChannelError) -> Self {
+        PoolErrorKind::ChannelSv2(ChannelSv2Error::ExtendedChannelServerSide(value))
+    }
+}
+
+impl From<StandardChannelError> for PoolErrorKind {
+    fn from(value: StandardChannelError) -> Self {
+        PoolErrorKind::ChannelSv2(ChannelSv2Error::StandardChannelServerSide(value))
+    }
+}
+
+impl From<GroupChannelError> for PoolErrorKind {
+    fn from(value: GroupChannelError) -> Self {
+        PoolErrorKind::ChannelSv2(ChannelSv2Error::GroupChannelServerSide(value))
+    }
+}
+
+impl From<ExtendedExtranonceError> for PoolErrorKind {
+    fn from(value: ExtendedExtranonceError) -> Self {
+        PoolErrorKind::ChannelSv2(ChannelSv2Error::ExtranonceError(value))
+    }
+}
+
+impl From<VardiffError> for PoolErrorKind {
+    fn from(value: VardiffError) -> Self {
+        PoolErrorKind::Vardiff(value)
+    }
+}
+
+impl From<ParserError> for PoolErrorKind {
+    fn from(value: ParserError) -> Self {
+        PoolErrorKind::Parser(value)
+    }
+}
+
+impl From<ShareValidationError> for PoolErrorKind {
+    fn from(value: ShareValidationError) -> Self {
+        PoolErrorKind::ChannelSv2(ChannelSv2Error::ShareValidationError(value))
+    }
+}
+
+impl<Owner> HandlerErrorType for PoolError<Owner> {
     fn parse_error(error: ParserError) -> Self {
-        PoolError::Parser(error)
+        Self {
+            kind: PoolErrorKind::Parser(error),
+            action: Action::Log,
+            _owner: PhantomData,
+        }
     }
 
     fn unexpected_message(extension_type: ExtensionType, message_type: MessageType) -> Self {
-        PoolError::UnexpectedMessage(extension_type, message_type)
+        Self {
+            kind: PoolErrorKind::UnexpectedMessage(extension_type, message_type),
+            action: Action::Log,
+            _owner: PhantomData,
+        }
     }
 }
 
-impl From<stratum_apps::stratum_core::bitcoin::consensus::encode::Error> for PoolError {
-    fn from(value: stratum_apps::stratum_core::bitcoin::consensus::encode::Error) -> Self {
-        PoolError::BitcoinEncodeError(value)
-    }
-}
-
-impl From<ExtendedChannelError> for PoolError {
-    fn from(value: ExtendedChannelError) -> Self {
-        PoolError::ChannelSv2(ChannelSv2Error::ExtendedChannelServerSide(value))
-    }
-}
-
-impl From<StandardChannelError> for PoolError {
-    fn from(value: StandardChannelError) -> Self {
-        PoolError::ChannelSv2(ChannelSv2Error::StandardChannelServerSide(value))
-    }
-}
-
-impl From<GroupChannelError> for PoolError {
-    fn from(value: GroupChannelError) -> Self {
-        PoolError::ChannelSv2(ChannelSv2Error::GroupChannelServerSide(value))
-    }
-}
-
-impl From<ExtendedExtranonceError> for PoolError {
-    fn from(value: ExtendedExtranonceError) -> Self {
-        PoolError::ChannelSv2(ChannelSv2Error::ExtranonceError(value))
-    }
-}
-
-impl From<VardiffError> for PoolError {
-    fn from(value: VardiffError) -> Self {
-        PoolError::Vardiff(value)
-    }
-}
-
-impl From<ParserError> for PoolError {
-    fn from(value: ParserError) -> Self {
-        PoolError::Parser(value)
-    }
-}
-
-impl From<ShareValidationError> for PoolError {
-    fn from(value: ShareValidationError) -> Self {
-        PoolError::ChannelSv2(ChannelSv2Error::ShareValidationError(value))
+impl<Owner> std::fmt::Display for PoolError<Owner> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "[{:?}/{:?}]", self.kind, self.action)
     }
 }

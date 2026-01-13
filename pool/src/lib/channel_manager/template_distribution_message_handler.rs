@@ -12,12 +12,12 @@ use tracing::{info, warn};
 
 use crate::{
     channel_manager::{ChannelManager, RouteMessageTo},
-    error::PoolError,
+    error::{self, PoolError},
 };
 
 #[cfg_attr(not(test), hotpath::measure_all)]
 impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
-    type Error = PoolError;
+    type Error = PoolError<error::ChannelManager>;
 
     fn get_negotiated_extensions_with_server(
         &self,

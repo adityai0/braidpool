@@ -8,7 +8,7 @@ use stratum_apps::{
         codec_sv2::HandshakeRole,
         framing_sv2,
         handlers_sv2::HandleCommonMessagesFromServerAsync,
-        noise_sv2::{Error, Initiator},
+        noise_sv2::Initiator,
         parsers_sv2::{AnyMessage, TemplateDistribution},
     },
     task_manager::TaskManager,
@@ -21,7 +21,7 @@ use tokio::{net::TcpStream, sync::broadcast};
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    error::{PoolError, PoolResult},
+    error::{self, PoolError, PoolErrorKind, PoolResult},
     io_task::spawn_io_tasks,
     status::{handle_error, Status, StatusSender},
     utils::{get_setup_connection_message_tp, ShutdownMessage},
@@ -57,7 +57,7 @@ impl Sv2Tp {
         notify_shutdown: broadcast::Sender<ShutdownMessage>,
         task_manager: Arc<TaskManager>,
         status_sender: Sender<Status>,
-    ) -> PoolResult<Sv2Tp> {
+    ) -> PoolResult<Sv2Tp, error::TemplateProvider> {
         const MAX_RETRIES: usize = 3;
 
         for attempt in 1..=MAX_RETRIES {
@@ -72,7 +72,8 @@ impl Sv2Tp {
                     debug!(attempt, "Using anonymous initiator (no public key)");
                     Initiator::without_pk()
                 }
-            }?;
+            }
+            .map_err(PoolError::shutdown)?;
 
             match TcpStream::connect(tp_address.as_str()).await {
                 Ok(stream) => {
@@ -137,7 +138,7 @@ impl Sv2Tp {
         }
 
         error!("Exhausted all connection attempts, shutting down TemplateReceiver");
-        Err(PoolError::Shutdown)
+        Err(PoolError::shutdown(PoolErrorKind::CouldNotInitiateSystem))
     }
 
     /// Start unified message loop for Sv2Tp.
@@ -154,7 +155,7 @@ impl Sv2Tp {
         notify_shutdown: broadcast::Sender<ShutdownMessage>,
         status_sender: Sender<Status>,
         task_manager: Arc<TaskManager>,
-    ) -> PoolResult<()> {
+    ) -> PoolResult<(), error::TemplateProvider> {
         let status_sender = StatusSender::TemplateReceiver(status_sender);
         let mut shutdown_rx = notify_shutdown.subscribe();
 
@@ -184,15 +185,17 @@ impl Sv2Tp {
                         res = self_clone_1.handle_template_provider_message() => {
                             if let Err(e) = res {
                                 error!("TemplateReceiver template provider handler failed: {e:?}");
-                                handle_error(&status_sender, e).await;
-                                break;
+                                if handle_error(&status_sender, e).await {
+                                    break;
+                                }
                             }
                         }
                         res = self_clone_2.handle_channel_manager_message() => {
                             if let Err(e) = res {
                                 error!("TemplateReceiver channel manager handler failed: {e:?}");
-                                handle_error(&status_sender, e).await;
-                                break;
+                                if handle_error(&status_sender, e).await {
+                                    break;
+                                }
                             }
                         },
                     }
@@ -209,12 +212,19 @@ impl Sv2Tp {
     /// - `Common` messages → handled locally
     /// - `TemplateDistribution` messages → forwarded to ChannelManager
     /// - Unsupported messages → logged and ignored
-    pub async fn handle_template_provider_message(&mut self) -> PoolResult<()> {
-        let mut sv2_frame = self.sv2_tp_channel.tp_receiver.recv().await?;
+    pub async fn handle_template_provider_message(
+        &mut self,
+    ) -> PoolResult<(), error::TemplateProvider> {
+        let mut sv2_frame = self
+            .sv2_tp_channel
+            .tp_receiver
+            .recv()
+            .await
+            .map_err(PoolError::shutdown)?;
         debug!("Received SV2 frame from Template provider.");
         let header = sv2_frame.get_header().ok_or_else(|| {
             error!("SV2 frame missing header");
-            PoolError::Framing(framing_sv2::Error::MissingHeader)
+            PoolError::shutdown(framing_sv2::Error::MissingHeader)
         })?;
 
         match protocol_message_type(header.ext_type(), header.msg_type()) {
@@ -230,7 +240,8 @@ impl Sv2Tp {
             }
             MessageType::TemplateDistribution => {
                 let message =
-                    TemplateDistribution::try_from((header.msg_type(), sv2_frame.payload()))?
+                    TemplateDistribution::try_from((header.msg_type(), sv2_frame.payload()))
+                        .map_err(PoolError::shutdown)?
                         .into_static();
 
                 self.sv2_tp_channel
@@ -239,7 +250,7 @@ impl Sv2Tp {
                     .await
                     .map_err(|e| {
                         error!(error=?e, "Failed to send template distribution message to channel manager.");
-                        PoolError::ChannelErrorSender
+                        PoolError::shutdown(PoolErrorKind::ChannelErrorSender)
                     })?;
             }
             _ => {
@@ -256,31 +267,41 @@ impl Sv2Tp {
     /// Handle messages from channel manager → template provider.
     ///
     /// Forwards outbound frames upstream
-    pub async fn handle_channel_manager_message(&self) -> PoolResult<()> {
-        let msg = self.sv2_tp_channel.channel_manager_receiver.recv().await?;
+    pub async fn handle_channel_manager_message(&self) -> PoolResult<(), error::TemplateProvider> {
+        let msg = self
+            .sv2_tp_channel
+            .channel_manager_receiver
+            .recv()
+            .await
+            .map_err(PoolError::shutdown)?;
         let message = AnyMessage::TemplateDistribution(msg).into_static();
-        let frame: Sv2Frame = message.try_into()?;
+        let frame: Sv2Frame = message.try_into().map_err(PoolError::shutdown)?;
 
         debug!("Forwarding message from channel manager to outbound_tx");
         self.sv2_tp_channel
             .tp_sender
             .send(frame)
             .await
-            .map_err(|_| PoolError::ChannelErrorSender)?;
+            .map_err(|_| PoolError::shutdown(PoolErrorKind::ChannelErrorSender))?;
 
         Ok(())
     }
 
     // Performs the initial handshake with Template Provider.
-    pub async fn setup_connection(&mut self, addr: String) -> PoolResult<()> {
+    pub async fn setup_connection(
+        &mut self,
+        addr: String,
+    ) -> PoolResult<(), error::TemplateProvider> {
         let socket: SocketAddr = addr.parse().map_err(|_| {
             error!(%addr, "Invalid socket address");
-            PoolError::InvalidSocketAddress(addr.clone())
+            PoolError::shutdown(PoolErrorKind::InvalidSocketAddress(addr.clone()))
         })?;
 
         debug!(%socket, "Building SetupConnection message to the Template Provider");
-        let setup_msg = get_setup_connection_message_tp(socket);
-        let frame: Sv2Frame = Message::Common(setup_msg.into()).try_into()?;
+        let setup_msg = get_setup_connection_message_tp(socket).map_err(PoolError::shutdown)?;
+        let frame: Sv2Frame = Message::Common(setup_msg.into())
+            .try_into()
+            .map_err(PoolError::shutdown)?;
 
         info!("Sending SetupConnection message to the Template Provider");
         self.sv2_tp_channel
@@ -289,18 +310,18 @@ impl Sv2Tp {
             .await
             .map_err(|_| {
                 error!("Failed to send setup connection message upstream");
-                PoolError::ChannelErrorSender
+                PoolError::shutdown(PoolErrorKind::ChannelErrorSender)
             })?;
 
         info!("Waiting for upstream handshake response");
         let mut incoming: Sv2Frame = self.sv2_tp_channel.tp_receiver.recv().await.map_err(|e| {
             error!(?e, "Upstream connection closed during handshake");
-            PoolError::Noise(Error::ExpectedIncomingHandshakeMessage)
+            PoolError::shutdown(e)
         })?;
 
         let header = incoming.get_header().ok_or_else(|| {
             error!("Handshake frame missing header");
-            PoolError::Framing(framing_sv2::Error::MissingHeader)
+            PoolError::shutdown(framing_sv2::Error::MissingHeader)
         })?;
         debug!(
             ext_type = ?header.ext_type(),

@@ -7,9 +7,9 @@
 //! converted into shutdown signals, allowing coordinated teardown of tasks.
 
 use stratum_apps::utils::types::DownstreamId;
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
-use crate::error::PoolError;
+use crate::error::{Action, PoolError, PoolErrorKind};
 
 /// Sender type for propagating status updates from different system components.
 #[derive(Debug, Clone)]
@@ -79,12 +79,12 @@ pub enum State {
     /// A downstream connection has shut down with a reason.
     DownstreamShutdown {
         downstream_id: DownstreamId,
-        reason: PoolError,
+        reason: PoolErrorKind,
     },
     /// Template receiver has shut down with a reason.
-    TemplateReceiverShutdown(PoolError),
+    TemplateReceiverShutdown(PoolErrorKind),
     /// Channel manager has shut down with a reason.
-    ChannelManagerShutdown(PoolError),
+    ChannelManagerShutdown(PoolErrorKind),
 }
 
 /// Wrapper around a component’s state, sent as status updates across the system.
@@ -95,33 +95,59 @@ pub struct Status {
 }
 
 #[cfg_attr(not(test), hotpath::measure)]
-/// Sends a shutdown status for the given component, logging the error cause.
-async fn send_status(sender: &StatusSender, error: PoolError) {
-    let state = match sender {
-        StatusSender::Downstream { downstream_id, .. } => {
-            warn!("Downstream [{downstream_id}] shutting down due to error: {error:?}");
-            State::DownstreamShutdown {
-                downstream_id: *downstream_id,
-                reason: error,
-            }
-        }
-        StatusSender::TemplateReceiver(_) => {
-            warn!("Template Receiver shutting down due to error: {error:?}");
-            State::TemplateReceiverShutdown(error)
-        }
-        StatusSender::ChannelManager(_) => {
-            warn!("ChannelManager shutting down due to error: {error:?}");
-            State::ChannelManagerShutdown(error)
-        }
-    };
+async fn send_status<O>(sender: &StatusSender, error: PoolError<O>) -> bool {
+    use Action::*;
 
-    if let Err(e) = sender.send(Status { state }).await {
-        tracing::error!("Failed to send status update from {sender:?}: {e:?}");
+    match error.action {
+        Log => {
+            warn!("Log-only error from {:?}: {:?}", sender, error.kind);
+            false
+        }
+
+        Disconnect(downstream_id) => {
+            let state = State::DownstreamShutdown {
+                downstream_id,
+                reason: error.kind,
+            };
+
+            if let Err(e) = sender.send(Status { state }).await {
+                tracing::error!(
+                    "Failed to send downstream shutdown status from {:?}: {:?}",
+                    sender,
+                    e
+                );
+                std::process::abort();
+            }
+            matches!(sender, StatusSender::Downstream { .. })
+        }
+        Shutdown => {
+            let state = match sender {
+                StatusSender::ChannelManager(_) => {
+                    warn!(
+                        "Channel Manager shutdown requested due to error: {:?}",
+                        error.kind
+                    );
+                    State::ChannelManagerShutdown(error.kind)
+                }
+                StatusSender::TemplateReceiver(_) => {
+                    warn!(
+                        "Template Receiver shutdown requested due to error: {:?}",
+                        error.kind
+                    );
+                    State::TemplateReceiverShutdown(error.kind)
+                }
+                _ => State::ChannelManagerShutdown(error.kind),
+            };
+
+            if let Err(e) = sender.send(Status { state }).await {
+                tracing::error!("Failed to send shutdown status from {:?}: {:?}", sender, e);
+                std::process::abort();
+            }
+            true
+        }
     }
 }
 
-/// Logs an error and propagates a corresponding shutdown status for the component.
-pub async fn handle_error(sender: &StatusSender, e: PoolError) {
-    error!("Error in {:?}: {:?}", sender, e);
-    send_status(sender, e).await;
+pub async fn handle_error<O>(sender: &StatusSender, e: PoolError<O>) -> bool {
+    send_status(sender, e).await
 }

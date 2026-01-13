@@ -20,7 +20,6 @@ use stratum_apps::{
         common_messages_sv2::MESSAGE_TYPE_SETUP_CONNECTION,
         framing_sv2,
         handlers_sv2::{HandleCommonMessagesFromClientAsync, HandleExtensionsFromClientAsync},
-        noise_sv2::Error,
         parsers_sv2::{parse_message_frame_with_tlvs, AnyMessage, Mining, Tlv},
     },
     task_manager::TaskManager,
@@ -33,7 +32,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, error, warn};
 
 use crate::{
-    error::{PoolError, PoolResult},
+    error::{self, PoolError, PoolErrorKind, PoolResult},
     io_task::spawn_io_tasks,
     status::{handle_error, Status, StatusSender},
     utils::ShutdownMessage,
@@ -200,15 +199,17 @@ impl Downstream {
                     res = self_clone_1.handle_downstream_message() => {
                         if let Err(e) = res {
                             error!(?e, "Error handling downstream message for {downstream_id}");
-                            handle_error(&status_sender, e).await;
-                            break;
+                            if handle_error(&status_sender, e).await {
+                                break;
+                            }
                         }
                     }
                     res = self_clone_2.handle_channel_manager_message(&mut receiver) => {
                         if let Err(e) = res {
                             error!(?e, "Error handling channel manager message for {downstream_id}");
-                            handle_error(&status_sender, e).await;
-                            break;
+                            if handle_error(&status_sender, e).await {
+                                break;
+                            }
                         }
                     }
 
@@ -219,11 +220,16 @@ impl Downstream {
     }
 
     // Performs the initial handshake with a downstream peer.
-    async fn setup_connection_with_downstream(&mut self) -> PoolResult<()> {
-        let mut frame = self.downstream_channel.downstream_receiver.recv().await?;
+    async fn setup_connection_with_downstream(&mut self) -> PoolResult<(), error::Downstream> {
+        let mut frame = self
+            .downstream_channel
+            .downstream_receiver
+            .recv()
+            .await
+            .map_err(|error| PoolError::disconnect(error, self.downstream_id))?;
         let header = frame.get_header().ok_or_else(|| {
             error!("SV2 frame missing header");
-            PoolError::Framing(framing_sv2::Error::MissingHeader)
+            PoolError::disconnect(framing_sv2::Error::MissingHeader, self.downstream_id)
         })?;
         // The first ever message received on a new downstream connection
         // should always be a setup connection message.
@@ -232,9 +238,12 @@ impl Downstream {
                 .await?;
             return Ok(());
         }
-        Err(PoolError::UnexpectedMessage(
-            header.ext_type_without_channel_msg(),
-            header.msg_type(),
+        Err(PoolError::disconnect(
+            PoolErrorKind::UnexpectedMessage(
+                header.ext_type_without_channel_msg(),
+                header.msg_type(),
+            ),
+            self.downstream_id,
         ))
     }
 
@@ -242,7 +251,7 @@ impl Downstream {
     async fn handle_channel_manager_message(
         self,
         receiver: &mut broadcast::Receiver<(DownstreamId, Mining<'static>, Option<Vec<Tlv>>)>,
-    ) -> PoolResult<()> {
+    ) -> PoolResult<(), error::Downstream> {
         let (downstream_id, msg, _tlv_fields) = match receiver.recv().await {
             Ok(msg) => msg,
             Err(e) => {
@@ -260,7 +269,7 @@ impl Downstream {
         }
 
         let message = AnyMessage::Mining(msg);
-        let std_frame: Sv2Frame = message.try_into()?;
+        let std_frame: Sv2Frame = message.try_into().map_err(PoolError::shutdown)?;
 
         self.downstream_channel
             .downstream_sender
@@ -268,18 +277,23 @@ impl Downstream {
             .await
             .map_err(|e| {
                 error!(?e, "Downstream send failed");
-                PoolError::Noise(Error::ExpectedIncomingHandshakeMessage)
+                PoolError::disconnect(PoolErrorKind::ChannelErrorSender, self.downstream_id)
             })?;
 
         Ok(())
     }
 
     // Handles incoming messages from the downstream peer.
-    async fn handle_downstream_message(&mut self) -> PoolResult<()> {
-        let mut sv2_frame = self.downstream_channel.downstream_receiver.recv().await?;
+    async fn handle_downstream_message(&mut self) -> PoolResult<(), error::Downstream> {
+        let mut sv2_frame = self
+            .downstream_channel
+            .downstream_receiver
+            .recv()
+            .await
+            .map_err(|error| PoolError::disconnect(error, self.downstream_id))?;
         let header = sv2_frame.get_header().ok_or_else(|| {
             error!("SV2 frame missing header");
-            PoolError::Framing(framing_sv2::Error::MissingHeader)
+            PoolError::disconnect(framing_sv2::Error::MissingHeader, self.downstream_id)
         })?;
 
         match protocol_message_type(header.ext_type(), header.msg_type()) {
@@ -292,14 +306,18 @@ impl Downstream {
                     header,
                     sv2_frame.payload(),
                     &negotiated_extensions,
-                )?;
+                )
+                .map_err(|error| PoolError::disconnect(error, self.downstream_id))?;
                 let mining_message = match any_message {
                     AnyMessage::Mining(msg) => msg,
                     _ => {
                         error!("Expected Mining message but got different type");
-                        return Err(PoolError::UnexpectedMessage(
-                            header.ext_type_without_channel_msg(),
-                            header.msg_type(),
+                        return Err(PoolError::disconnect(
+                            PoolErrorKind::UnexpectedMessage(
+                                header.ext_type_without_channel_msg(),
+                                header.msg_type(),
+                            ),
+                            self.downstream_id,
                         ));
                     }
                 };
@@ -309,7 +327,7 @@ impl Downstream {
                     .await
                     .map_err(|e| {
                         error!(?e, "Failed to send mining message to channel manager.");
-                        PoolError::ChannelErrorSender
+                        PoolError::shutdown(e)
                     })?;
             }
             MessageType::Extensions => {

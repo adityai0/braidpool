@@ -1,4 +1,7 @@
-use crate::{downstream::Downstream, error::PoolError};
+use crate::{
+    downstream::Downstream,
+    error::{self, PoolError, PoolErrorKind},
+};
 use std::{convert::TryInto, sync::atomic::Ordering};
 use stratum_apps::{
     stratum_core::{
@@ -14,7 +17,7 @@ use tracing::info;
 
 #[cfg_attr(not(test), hotpath::measure_all)]
 impl HandleCommonMessagesFromClientAsync for Downstream {
-    type Error = PoolError;
+    type Error = PoolError<error::Downstream>;
 
     fn get_negotiated_extensions_with_client(
         &self,
@@ -45,11 +48,16 @@ impl HandleCommonMessagesFromClientAsync for Downstream {
             used_version: 2,
             flags: msg.flags,
         };
-        let frame: Sv2Frame = AnyMessage::Common(response.into_static().into()).try_into()?;
+        let frame: Sv2Frame = AnyMessage::Common(response.into_static().into())
+            .try_into()
+            .map_err(PoolError::shutdown)?;
         self.downstream_channel
             .downstream_sender
             .send(frame)
-            .await?;
+            .await
+            .map_err(|_| {
+                PoolError::disconnect(PoolErrorKind::ChannelErrorSender, self.downstream_id)
+            })?;
 
         Ok(())
     }

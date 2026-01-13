@@ -1,5 +1,5 @@
 use crate::{
-    error::PoolError,
+    error::{self, PoolError, PoolErrorKind},
     status::{handle_error, State, Status, StatusSender},
     utils::ShutdownMessage,
 };
@@ -44,9 +44,9 @@ pub async fn connect_to_bitcoin_core(
                     // turn status_sender into a StatusSender::TemplateReceiver
                     let status_sender = StatusSender::TemplateReceiver(status_sender_clone);
 
-                    handle_error(
+                    handle_error::<error::TemplateProvider>(
                         &status_sender,
-                        PoolError::BitcoinCoreSv2CancellationTokenActivated,
+                        PoolError::shutdown(PoolErrorKind::BitcoinCoreSv2CancellationTokenActivated),
                     )
                     .await;
                     break;
@@ -70,7 +70,7 @@ pub async fn connect_to_bitcoin_core(
                 // we can't use handle_error here because we're not in a async context yet
                 let _ = status_sender_clone.send_blocking(Status {
                     state: State::TemplateReceiverShutdown(
-                        PoolError::FailedToCreateBitcoinCoreTokioRuntime,
+                        PoolErrorKind::FailedToCreateBitcoinCoreTokioRuntime,
                     ),
                 });
                 return;

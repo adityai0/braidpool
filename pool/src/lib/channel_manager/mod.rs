@@ -40,7 +40,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     config::PoolConfig,
     downstream::Downstream,
-    error::PoolResult,
+    error::{self, PoolError, PoolErrorKind, PoolResult},
     status::{handle_error, Status, StatusSender},
     utils::ShutdownMessage,
 };
@@ -111,7 +111,7 @@ impl ChannelManager {
         downstream_sender: broadcast::Sender<(DownstreamId, Mining<'static>, Option<Vec<Tlv>>)>,
         downstream_receiver: Receiver<(DownstreamId, Mining<'static>, Option<Vec<Tlv>>)>,
         coinbase_outputs: Vec<u8>,
-    ) -> PoolResult<Self> {
+    ) -> PoolResult<Self, error::ChannelManager> {
         let range_0 = 0..0;
         let range_1 = 0..POOL_ALLOCATION_BYTES;
         let range_2 = POOL_ALLOCATION_BYTES..POOL_ALLOCATION_BYTES + CLIENT_SEARCH_SPACE_BYTES;
@@ -183,12 +183,15 @@ impl ChannelManager {
             Mining<'static>,
             Option<Vec<Tlv>>,
         )>,
-    ) -> PoolResult<()> {
+    ) -> PoolResult<(), error::ChannelManager> {
         info!("Starting downstream server at {listening_address}");
-        let server = TcpListener::bind(listening_address).await.map_err(|e| {
-            error!(error = ?e, "Failed to bind downstream server at {listening_address}");
-            e
-        })?;
+        let server = TcpListener::bind(listening_address)
+            .await
+            .map_err(|e| {
+                error!(error = ?e, "Failed to bind downstream server at {listening_address}");
+                e
+            })
+            .map_err(PoolError::shutdown)?;
 
         let mut shutdown_rx = notify_shutdown.subscribe();
 
@@ -292,7 +295,7 @@ impl ChannelManager {
         status_sender: Sender<Status>,
         task_manager: Arc<TaskManager>,
         coinbase_outputs: Vec<TxOut>,
-    ) -> PoolResult<()> {
+    ) -> PoolResult<(), error::ChannelManager> {
         let status_sender = StatusSender::ChannelManager(status_sender);
         let mut shutdown_rx = notify_shutdown.subscribe();
 
@@ -331,15 +334,17 @@ impl ChannelManager {
                     res = cm_template.handle_template_provider_message() => {
                         if let Err(e) = res {
                             error!(error = ?e, "Error handling Template Receiver message");
-                            handle_error(&status_sender, e).await;
-                            break;
+                            if handle_error(&status_sender, e).await {
+                                break;
+                            }
                         }
                     }
                     res = cm_downstreams.handle_downstream_mining_message() => {
                         if let Err(e) = res {
                             error!(error = ?e, "Error handling Downstreams message");
-                            handle_error(&status_sender, e).await;
-                            break;
+                            if handle_error(&status_sender, e).await {
+                                break;
+                            }
                         }
                     }
                 }
@@ -354,7 +359,10 @@ impl ChannelManager {
     // 1. Removes the corresponding Downstream from the `downstream` map.
     // 2. Removes the channels of the corresponding Downstream from `vardiff` map.
     #[allow(clippy::result_large_err)]
-    fn remove_downstream(&self, downstream_id: DownstreamId) -> PoolResult<()> {
+    fn remove_downstream(
+        &self,
+        downstream_id: DownstreamId,
+    ) -> PoolResult<(), error::ChannelManager> {
         self.channel_manager_data.super_safe_lock(|cm_data| {
             cm_data.downstream.remove(&downstream_id);
             cm_data
@@ -370,7 +378,7 @@ impl ChannelManager {
     // - If the frame contains a TemplateDistribution message, it forwards it to the template
     //   distribution message handler.
     // - If the frame contains any unsupported message type, an error is returned.
-    async fn handle_template_provider_message(&mut self) -> PoolResult<()> {
+    async fn handle_template_provider_message(&mut self) -> PoolResult<(), error::ChannelManager> {
         if let Ok(message) = self.channel_manager_channel.tp_receiver.recv().await {
             self.handle_template_distribution_message_from_server(None, message, None)
                 .await?;
@@ -378,7 +386,7 @@ impl ChannelManager {
         Ok(())
     }
 
-    async fn handle_downstream_mining_message(&mut self) -> PoolResult<()> {
+    async fn handle_downstream_mining_message(&mut self) -> PoolResult<(), error::ChannelManager> {
         if let Ok((downstream_id, message, tlv_fields)) = self
             .channel_manager_channel
             .downstream_receiver
@@ -486,7 +494,7 @@ impl ChannelManager {
     // # Purpose
     // - Executes the vardiff cycle every 60 seconds for all downstreams.
     // - Delegates to [`Self::run_vardiff`] on each tick.
-    async fn run_vardiff_loop(&self) -> PoolResult<()> {
+    async fn run_vardiff_loop(&self) -> PoolResult<(), error::ChannelManager> {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             ticker.tick().await;
@@ -505,7 +513,7 @@ impl ChannelManager {
     // - Runs vardiff for each channel and collects the resulting updates.
     // - Propagates difficulty changes to downstreams and also sends an `UpdateChannel` message
     //   upstream if applicable.
-    async fn run_vardiff(&self) -> PoolResult<()> {
+    async fn run_vardiff(&self) -> PoolResult<(), error::ChannelManager> {
         let mut messages: Vec<RouteMessageTo> = vec![];
         self.channel_manager_data
             .super_safe_lock(|channel_manager_data| {
@@ -560,7 +568,7 @@ impl ChannelManager {
     pub async fn coinbase_output_constraints(
         &self,
         coinbase_outputs: Vec<TxOut>,
-    ) -> PoolResult<()> {
+    ) -> PoolResult<(), error::ChannelManager> {
         let msg = coinbase_output_constraints_message(coinbase_outputs);
 
         self.channel_manager_channel
@@ -569,7 +577,7 @@ impl ChannelManager {
             .await
             .map_err(|e| {
                 error!(error = ?e, "Failed to send CoinbaseOutputConstraints message to TP");
-                crate::error::PoolError::ChannelErrorSender
+                PoolError::shutdown(PoolErrorKind::ChannelErrorSender)
             })?;
 
         Ok(())

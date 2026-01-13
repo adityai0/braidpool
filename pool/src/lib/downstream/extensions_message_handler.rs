@@ -1,4 +1,7 @@
-use crate::{downstream::Downstream, error::PoolError};
+use crate::{
+    downstream::Downstream,
+    error::{self, PoolError, PoolErrorKind},
+};
 use std::convert::TryInto;
 use stratum_apps::{
     stratum_core::{
@@ -13,7 +16,7 @@ use tracing::{error, info};
 
 #[cfg_attr(not(test), hotpath::measure_all)]
 impl HandleExtensionsFromClientAsync for Downstream {
-    type Error = PoolError;
+    type Error = PoolError<error::Downstream>;
 
     fn get_negotiated_extensions_with_client(
         &self,
@@ -76,17 +79,21 @@ impl HandleExtensionsFromClientAsync for Downstream {
 
             let error = RequestExtensionsError {
                 request_id: msg.request_id,
-                unsupported_extensions: Seq064K::new(unsupported)
-                    .map_err(PoolError::InvalidUnsupportedExtensionsSequence)?,
+                unsupported_extensions: Seq064K::new(unsupported).map_err(PoolError::shutdown)?,
                 required_extensions: Seq064K::new(missing_required.clone())
-                    .map_err(PoolError::InvalidRequiredExtensionsSequence)?,
+                    .map_err(PoolError::shutdown)?,
             };
 
-            let frame: Sv2Frame = AnyMessage::Extensions(error.into_static().into()).try_into()?;
+            let frame: Sv2Frame = AnyMessage::Extensions(error.into_static().into())
+                .try_into()
+                .map_err(PoolError::shutdown)?;
             self.downstream_channel
                 .downstream_sender
                 .send(frame)
-                .await?;
+                .await
+                .map_err(|_| {
+                    PoolError::disconnect(PoolErrorKind::ChannelErrorSender, self.downstream_id)
+                })?;
 
             // If required extensions are missing, the server SHOULD disconnect the client
             if !missing_required.is_empty() {
@@ -94,8 +101,9 @@ impl HandleExtensionsFromClientAsync for Downstream {
                     "Downstream {}: Client does not support required extensions {:?}. Server MUST disconnect.",
                     self.downstream_id, missing_required
                 );
-                Err(PoolError::ClientDoesNotSupportRequiredExtensions(
-                    missing_required,
+                Err(PoolError::disconnect(
+                    PoolErrorKind::ClientDoesNotSupportRequiredExtensions(missing_required),
+                    self.downstream_id,
                 ))?;
             }
         } else {
@@ -113,15 +121,19 @@ impl HandleExtensionsFromClientAsync for Downstream {
             let success = RequestExtensionsSuccess {
                 request_id: msg.request_id,
                 supported_extensions: Seq064K::new(supported.clone())
-                    .map_err(PoolError::InvalidSupportedExtensionsSequence)?,
+                    .map_err(PoolError::shutdown)?,
             };
 
-            let frame: Sv2Frame =
-                AnyMessage::Extensions(success.into_static().into()).try_into()?;
+            let frame: Sv2Frame = AnyMessage::Extensions(success.into_static().into())
+                .try_into()
+                .map_err(PoolError::shutdown)?;
             self.downstream_channel
                 .downstream_sender
                 .send(frame)
-                .await?;
+                .await
+                .map_err(|_| {
+                    PoolError::disconnect(PoolErrorKind::ChannelErrorSender, self.downstream_id)
+                })?;
 
             info!(
                 "Downstream {}: Stored negotiated extensions: {:?}",
