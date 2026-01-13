@@ -29,3 +29,9 @@ impl From<(DownstreamId, ChannelId)> for VardiffKey {
         }
     }
 }
+
+/// Marker traits used to define set of action
+/// the implementor can take
+pub trait CanDisconnect {}
+pub trait CanFallback {}
+pub trait CanShutdown {}
