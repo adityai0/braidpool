@@ -362,7 +362,10 @@ impl Sv1Server {
                         .await
                         .map_err(|error| {
                             error!("Down: Failed to send message to downstream: {error:?}");
-                            TproxyError::ChannelErrorSender
+                            TproxyError::disconnect(
+                                TproxyErrorKind::ChannelErrorSender,
+                                downstream_id,
+                            )
                         })?;
 
                     // Check if this was an authorize message and handle sv1 handshake completion
@@ -371,7 +374,7 @@ impl Sv1Server {
                             info!("Down: Handling mining.authorize after handshake completion");
                             if let Err(e) = downstream.handle_sv1_handshake_completion().await {
                                 error!("Down: Failed to handle handshake completion: {:?}", e);
-                                return Err(e);
+                                return Err(TproxyError::disconnect(e, downstream_id));
                             }
                         }
                     }
@@ -381,7 +384,7 @@ impl Sv1Server {
                 }
                 Err(e) => {
                     error!("Down: Error handling downstream message: {:?}", e);
-                    return Err(e.into());
+                    return Err(TproxyError::disconnect(e, downstream_id));
                 }
             }
 
@@ -404,11 +407,11 @@ impl Sv1Server {
     ) -> TproxyResult<(), error::Sv1Server> {
         // Increment vardiff counter for this downstream (only if vardiff is enabled)
         if self.config.downstream_difficulty_config.enable_vardiff {
-            self.sv1_server_data.safe_lock(|v| {
+            self.sv1_server_data.super_safe_lock(|v| {
                 if let Some(vardiff_state) = v.vardiff.get_mut(&message.downstream_id) {
                     vardiff_state.increment_shares_since_last_update();
                 }
-            })?;
+            });
         }
 
         let job_version = match message.job_version {
@@ -523,7 +526,10 @@ impl Sv1Server {
     /// # Returns
     /// * `Ok(())` - Message processed successfully
     /// * `Err(TproxyError)` - Error processing the message
-    pub async fn handle_upstream_message(&self, first_target: Target) -> TproxyResult<(), error::Sv1Server> {
+    pub async fn handle_upstream_message(
+        &self,
+        first_target: Target,
+    ) -> TproxyResult<(), error::Sv1Server> {
         let (message, _tlv_fields) = self
             .sv1_server_channel_state
             .channel_manager_receiver

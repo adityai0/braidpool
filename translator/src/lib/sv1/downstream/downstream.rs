@@ -398,7 +398,7 @@ impl Downstream {
             .sv1_server_sender
             .send((downstream_id, message))
             .await
-            .map_err(|_| TproxyError::ChannelErrorSender)?;
+            .map_err(|_| TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender))?;
 
         Ok(())
     }
@@ -408,12 +408,17 @@ impl Downstream {
     /// This method is called when the downstream completes the SV1 handshake
     /// (subscribe + authorize). It sends any cached messages in the correct order:
     /// set_difficulty first, then notify.
-    pub async fn handle_sv1_handshake_completion(&self) -> Result<(), TproxyError> {
-        let (cached_set_difficulty, cached_notify) = self.downstream_data.super_safe_lock(|d| {
-            d.sv1_handshake_complete
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            (d.cached_set_difficulty.take(), d.cached_notify.take())
-        });
+    pub async fn handle_sv1_handshake_completion(&self) -> TproxyResult<(), error::Downstream> {
+        let (cached_set_difficulty, cached_notify, downstream_id) =
+            self.downstream_data.super_safe_lock(|d| {
+                d.sv1_handshake_complete
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                (
+                    d.cached_set_difficulty.take(),
+                    d.cached_notify.take(),
+                    d.downstream_id,
+                )
+            });
         debug!("Down: SV1 handshake completed for downstream");
 
         // Send cached messages in correct order: set_difficulty first, then notify

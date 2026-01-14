@@ -54,7 +54,7 @@ pub fn validate_sv1_share(
     extranonce1: Vec<u8>,
     version_rolling_mask: Option<HexU32Be>,
     job: Notify<'static>,
-) -> Result<bool, TproxyError> {
+) -> Result<bool, TproxyErrorKind> {
     let mut full_extranonce = vec![];
     full_extranonce.extend_from_slice(extranonce1.as_slice());
     full_extranonce.extend_from_slice(share.extra_nonce2.0.as_ref());
