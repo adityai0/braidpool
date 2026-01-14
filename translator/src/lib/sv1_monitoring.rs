@@ -34,17 +34,16 @@ fn downstream_to_sv1_client_info(downstream: &Arc<Downstream>) -> Option<Sv1Clie
 
 impl Sv1ClientsMonitoring for Sv1Server {
     fn get_sv1_clients(&self) -> Vec<Sv1ClientInfo> {
-        let mut clients = Vec::new();
+        // Clone Arc references and release lock immediately to avoid contention
+        let downstream_refs: Vec<Arc<Downstream>> = self
+            .sv1_server_data
+            .safe_lock(|data| data.downstreams.values().cloned().collect())
+            .unwrap_or_default();
 
-        let _ = self.sv1_server_data.safe_lock(|data| {
-            for (_downstream_id, downstream) in data.downstreams.iter() {
-                if let Some(client_info) = downstream_to_sv1_client_info(downstream) {
-                    clients.push(client_info);
-                }
-            }
-        });
-
-        clients
+        downstream_refs
+            .iter()
+            .filter_map(downstream_to_sv1_client_info)
+            .collect()
     }
 
     fn get_sv1_client_by_id(&self, client_id: usize) -> Option<Sv1ClientInfo> {
