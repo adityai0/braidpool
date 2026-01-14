@@ -825,80 +825,89 @@ impl Sv1Server {
     /// Sends set_difficulty to all downstreams (aggregated mode).
     /// Used only when vardiff is disabled.
     async fn send_set_difficulty_to_all_downstreams(&self, target: Target) {
-        self.sv1_server_data.super_safe_lock(|data| {
-            for (downstream_id, downstream) in data.downstreams.iter() {
-                let Some(channel_id) = downstream.downstream_data.super_safe_lock(|d| {
-                    let channel_id = d.channel_id?;
+        let downstreams: Vec<(DownstreamId, _)> = self.sv1_server_data.super_safe_lock(|data| {
+            data.downstreams
+                .iter()
+                .map(|(id, ds)| (*id, ds.clone()))
+                .collect()
+        });
 
-                    d.set_upstream_target(target);
-                    d.set_pending_target(target);
+        for (downstream_id, downstream) in downstreams {
+            let channel_id = downstream.downstream_data.super_safe_lock(|d| {
+                let channel_id = d.channel_id?;
 
-                    Some(channel_id)
-                }) else {
-                    trace!(
-                        "Skipping downstream {}: no channel_id set (vardiff disabled)",
-                        downstream_id
-                    );
-                    continue;
-                };
+                d.set_upstream_target(target);
+                d.set_pending_target(target);
 
-                let set_difficulty_msg = match build_sv1_set_difficulty_from_sv2_target(target) {
-                    Ok(msg) => msg,
-                    Err(e) => {
-                        error!(
-                            "Failed to build SetDifficulty for downstream {}: {:?}",
-                            downstream_id, e
-                        );
-                        continue;
-                    }
-                };
+                Some(channel_id)
+            });
 
-                if let Err(e) = self
-                    .sv1_server_channel_state
-                    .sv1_server_to_downstream_sender
-                    .send((channel_id, Some(*downstream_id), set_difficulty_msg))
-                {
+            let Some(channel_id) = channel_id else {
+                trace!(
+                    "Skipping downstream {}: no channel_id set (vardiff disabled)",
+                    downstream_id
+                );
+                continue;
+            };
+
+            let set_difficulty_msg = match build_sv1_set_difficulty_from_sv2_target(target) {
+                Ok(msg) => msg,
+                Err(e) => {
                     error!(
-                        "Failed to send SetDifficulty to downstream {}: {:?}",
+                        "Failed to build SetDifficulty for downstream {}: {:?}",
                         downstream_id, e
                     );
-                } else {
-                    debug!(
-                        "Sent SetDifficulty to downstream {} (vardiff disabled)",
-                        downstream_id
-                    );
+                    continue;
                 }
+            };
+
+            if let Err(e) = self
+                .sv1_server_channel_state
+                .sv1_server_to_downstream_sender
+                .send((channel_id, Some(downstream_id), set_difficulty_msg))
+            {
+                error!(
+                    "Failed to send SetDifficulty to downstream {}: {:?}",
+                    downstream_id, e
+                );
+            } else {
+                debug!(
+                    "Sent SetDifficulty to downstream {} (vardiff disabled)",
+                    downstream_id
+                );
             }
-        });
+        }
     }
 
     /// Sends set_difficulty to the specific downstream associated with a channel (non-aggregated
     /// mode).
     /// Used only when vardiff is disabled.
     async fn send_set_difficulty_to_specific_downstream(&self, channel_id: u32, target: Target) {
-        let result = self.sv1_server_data.super_safe_lock(|data| {
+        let downstreams: Vec<(DownstreamId, _)> = self.sv1_server_data.super_safe_lock(|data| {
             data.downstreams
                 .iter()
-                .find_map(|(downstream_id, downstream)| {
-                    downstream.downstream_data.super_safe_lock(|d| {
-                        if d.channel_id == Some(channel_id) {
-                            d.set_upstream_target(target);
-                            d.set_pending_target(target);
-                            Some(*downstream_id)
-                        } else {
-                            None
-                        }
-                    })
-                })
+                .map(|(id, ds)| (*id, ds.clone()))
+                .collect()
         });
 
-        let Some(downstream_id) = result else {
+        let affected = downstreams.iter().find(|(_, downstream)| {
+            downstream
+                .downstream_data
+                .super_safe_lock(|d| d.channel_id == Some(channel_id))
+        });
+
+        let Some((downstream_id, downstream)) = affected else {
             warn!(
                 "No downstream found for channel {} when vardiff is disabled",
                 channel_id
             );
             return;
         };
+
+        downstream.downstream_data.super_safe_lock(|d| {
+            d.set_upstream_target(target);
+            d.set_pending_target(target);
+        });
 
         let set_difficulty_msg = match build_sv1_set_difficulty_from_sv2_target(target) {
             Ok(msg) => msg,
@@ -914,7 +923,7 @@ impl Sv1Server {
         if let Err(e) = self
             .sv1_server_channel_state
             .sv1_server_to_downstream_sender
-            .send((channel_id, Some(downstream_id), set_difficulty_msg))
+            .send((channel_id, Some(*downstream_id), set_difficulty_msg))
         {
             error!(
                 "Failed to send SetDifficulty to downstream {}: {:?}",

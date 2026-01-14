@@ -193,33 +193,35 @@ impl Sv1Server {
             return;
         };
 
-        let (min_target, total_hashrate, downstream_count) =
-            self.sv1_server_data.super_safe_lock(|data| {
-                let mut min_target: Option<Target> = None;
-                let mut total_hashrate: Hashrate = 0.0;
+        let downstreams: Vec<_> = self
+            .sv1_server_data
+            .super_safe_lock(|data| data.downstreams.values().cloned().collect());
 
-                for downstream in data.downstreams.values() {
-                    downstream.downstream_data.super_safe_lock(|d| {
-                        let target = *d.pending_target.as_ref().unwrap_or(&d.target);
-                        let hashrate = d
-                            .pending_hashrate
-                            .unwrap_or_else(|| d.hashrate.expect("vardiff implies hashrate"));
+        if downstreams.is_empty() {
+            return;
+        }
 
-                        min_target = Some(match min_target {
-                            Some(current) => current.min(target),
-                            None => target,
-                        });
+        let mut min_target: Option<Target> = None;
+        let mut total_hashrate: Hashrate = 0.0;
 
-                        total_hashrate += hashrate;
-                    });
-                }
+        for downstream in &downstreams {
+            downstream.downstream_data.super_safe_lock(|d| {
+                let target = *d.pending_target.as_ref().unwrap_or(&d.target);
+                let hashrate = d
+                    .pending_hashrate
+                    .unwrap_or_else(|| d.hashrate.expect("vardiff implies hashrate"));
 
-                (
-                    min_target.expect("at least one downstream must exist"),
-                    total_hashrate,
-                    data.downstreams.len(),
-                )
+                min_target = Some(match min_target {
+                    Some(current) => current.min(target),
+                    None => target,
+                });
+
+                total_hashrate += hashrate;
             });
+        }
+
+        let min_target = min_target.expect("at least one downstream must exist");
+        let downstream_count = downstreams.len();
 
         let update_channel = UpdateChannel {
             channel_id: *channel_id,
@@ -308,18 +310,20 @@ impl Sv1Server {
     ) {
         debug!("Aggregated mode: Updating upstream target for all downstreams");
 
-        // Update upstream target for ALL downstreams
-        self.sv1_server_data.super_safe_lock(|data| {
-            for (_, downstream) in data.downstreams.iter() {
-                downstream.downstream_data.super_safe_lock(|d| {
-                    d.set_upstream_target(new_upstream_target);
-                });
-            }
-        });
+        let downstreams: Vec<_> = self
+            .sv1_server_data
+            .super_safe_lock(|data| data.downstreams.values().cloned().collect());
+
+        for downstream in &downstreams {
+            downstream.downstream_data.super_safe_lock(|d| {
+                d.set_upstream_target(new_upstream_target);
+            });
+        }
 
         // Process ALL pending difficulty updates that can now be sent downstream
         let applicable_updates =
             self.get_pending_difficulty_updates(new_upstream_target, None, channel_id);
+
         self.send_pending_set_difficulty_messages_to_downstream(applicable_updates)
             .await;
     }
@@ -336,37 +340,37 @@ impl Sv1Server {
             channel_id
         );
 
-        let affected_downstream = self.sv1_server_data.super_safe_lock(|data| {
-            data.downstreams
-                .iter()
-                .find_map(|(downstream_id, downstream)| {
-                    downstream.downstream_data.super_safe_lock(|d| {
-                        (d.channel_id == Some(channel_id)).then_some(*downstream_id)
-                    })
-                })
+        let downstreams: Vec<_> = self
+            .sv1_server_data
+            .super_safe_lock(|data| data.downstreams.values().cloned().collect());
+
+        let affected = downstreams.iter().find(|downstream| {
+            downstream
+                .downstream_data
+                .super_safe_lock(|d| d.channel_id == Some(channel_id))
         });
 
-        let Some(downstream_id) = affected_downstream else {
+        let Some(downstream) = affected else {
             warn!("No downstream found for channel {}", channel_id);
             return;
         };
 
-        // Update upstream target for this specific downstream
-        _ = self.sv1_server_data.safe_lock(|data| {
-            if let Some(downstream) = data.downstreams.get(&downstream_id) {
-                _ = downstream.downstream_data.safe_lock(|d| {
-                    d.set_upstream_target(new_upstream_target);
-                });
-            }
+        let downstream_id = downstream
+            .downstream_data
+            .super_safe_lock(|d| d.downstream_id);
+
+        downstream.downstream_data.super_safe_lock(|d| {
+            d.set_upstream_target(new_upstream_target);
         });
+
         trace!("Updated upstream target for downstream {}", downstream_id);
 
-        // Process pending difficulty updates for this specific downstream only
         let applicable_updates = self.get_pending_difficulty_updates(
             new_upstream_target,
             Some(downstream_id),
             channel_id,
         );
+
         self.send_pending_set_difficulty_messages_to_downstream(applicable_updates)
             .await;
     }
@@ -466,17 +470,17 @@ impl Sv1Server {
             return;
         }
 
-        let snapshot = self.sv1_server_data.super_safe_lock(|data| {
-            let downstreams = &data.downstreams;
+        let downstreams: Vec<_> = self
+            .sv1_server_data
+            .super_safe_lock(|data| data.downstreams.values().cloned().collect());
 
-            if downstreams.is_empty() {
-                return AggregatedSnapshot::NoDownstreams;
-            }
-
+        let snapshot = if downstreams.is_empty() {
+            AggregatedSnapshot::NoDownstreams
+        } else {
             let mut total_hashrate: Hashrate = 0.0;
             let mut min_target: Option<Target> = None;
 
-            for downstream in downstreams.values() {
+            for downstream in downstreams {
                 downstream.downstream_data.super_safe_lock(|d| {
                     let hashrate = d.pending_hashrate.unwrap_or_else(|| {
                         d.hashrate
@@ -497,7 +501,7 @@ impl Sv1Server {
                 total_hashrate,
                 min_target: min_target.expect("downstreams is non-empty"),
             }
-        });
+        };
 
         let update = match snapshot {
             AggregatedSnapshot::Active {
