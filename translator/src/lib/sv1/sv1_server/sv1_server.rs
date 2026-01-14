@@ -1072,16 +1072,6 @@ impl Sv1Server {
     /// This method implements the SV1 server's variable difficulty logic for all downstreams.
     /// Every 60 seconds, this method updates the difficulty state for each downstream.
     pub async fn spawn_vardiff_loop(self) {
-        let enable_vardiff = self.config.downstream_difficulty_config.enable_vardiff;
-        if !enable_vardiff {
-            info!("Variable difficulty adjustment disabled - upstream will manage difficulty, SV1 server will forward SetTarget messages to downstreams");
-            // In the vardiff disabled case, this branch intentionally awaits forever to remain
-            // pending. Without it, the future would resolve immediately, leading the
-            // tokio::select! block to finish execution and terminate the task.
-            tokio::time::sleep(tokio::time::Duration::MAX).await;
-            return;
-        }
-
         info!("Variable difficulty adjustment enabled - starting vardiff loop");
 
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
