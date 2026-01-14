@@ -1,8 +1,5 @@
 use crate::sv1::downstream::downstream::Downstream;
-use std::{
-    collections::HashMap,
-    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
-};
+use std::collections::HashMap;
 use stratum_apps::{
     stratum_core::{
         bitcoin::Target, channels_sv2::vardiff::classic::VardiffState, mining_sv2::SetNewPrevHash,
@@ -26,8 +23,6 @@ pub struct Sv1ServerData {
     /// HashMap to store the SetNewPrevHash for each channel
     /// Used in both aggregated and non-aggregated mode
     pub prevhashes: HashMap<ChannelId, SetNewPrevHash<'static>>,
-    pub downstream_id_factory: AtomicUsize,
-    pub request_id_factory: AtomicU32,
     /// Job storage for aggregated mode - all Sv1 downstreams share the same jobs
     pub aggregated_valid_jobs: Option<Vec<server_to_client::Notify<'static>>>,
     /// Job storage for non-aggregated mode - each Sv1 downstream has its own jobs
@@ -37,8 +32,6 @@ pub struct Sv1ServerData {
     pub pending_target_updates: Vec<PendingTargetUpdate>,
     /// The initial target used when opening channels - used when no downstreams remain
     pub initial_target: Option<Target>,
-    /// Counter for generating unique keepalive job IDs
-    pub keepalive_job_id_counter: AtomicU32,
 }
 
 /// Delimiter used to separate original job ID from keepalive mutation counter.
@@ -52,38 +45,11 @@ impl Sv1ServerData {
             request_id_to_downstream_id: HashMap::new(),
             vardiff: HashMap::new(),
             prevhashes: HashMap::new(),
-            downstream_id_factory: AtomicUsize::new(1),
-            request_id_factory: AtomicU32::new(1),
             aggregated_valid_jobs: aggregate_channels.then(Vec::new),
             non_aggregated_valid_jobs: (!aggregate_channels).then(HashMap::new),
             pending_target_updates: Vec::new(),
             initial_target: None,
-            keepalive_job_id_counter: AtomicU32::new(0),
         }
-    }
-
-    /// Generates a keepalive job ID by appending a mutation counter to the original job ID.
-    /// Format: `{original_job_id}#{counter}` where `#` is the delimiter.
-    /// When receiving a share, split on `#` to extract the original job ID.
-    pub fn next_keepalive_job_id(&self, original_job_id: &str) -> String {
-        let counter = self
-            .keepalive_job_id_counter
-            .fetch_add(1, Ordering::Relaxed);
-        format!("{}#{}", original_job_id, counter)
-    }
-
-    /// Extracts the original upstream job ID from a keepalive job ID.
-    /// Returns None if the job_id doesn't contain the keepalive delimiter.
-    pub fn extract_original_job_id(job_id: &str) -> Option<String> {
-        job_id
-            .split_once(KEEPALIVE_JOB_ID_DELIMITER)
-            .map(|(original, _)| original.to_string())
-    }
-
-    /// Returns true if the job_id is a keepalive job (contains the delimiter).
-    #[inline]
-    pub fn is_keepalive_job_id(job_id: &str) -> bool {
-        job_id.contains(KEEPALIVE_JOB_ID_DELIMITER)
     }
 
     /// Gets the prevhash for a given channel.

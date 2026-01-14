@@ -6,7 +6,7 @@ use crate::{
         downstream::downstream::Downstream,
         sv1_server::{
             channel::Sv1ServerChannelState,
-            data::{PendingTargetUpdate, Sv1ServerData},
+            data::{PendingTargetUpdate, Sv1ServerData, KEEPALIVE_JOB_ID_DELIMITER},
         },
     },
     utils::ShutdownMessage,
@@ -16,7 +16,7 @@ use std::{
     collections::HashMap,
     net::SocketAddr,
     sync::{
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicUsize, Ordering},
         Arc,
     },
     time::{Duration, Instant},
@@ -69,6 +69,9 @@ pub struct Sv1Server {
     clean_job: Arc<AtomicBool>,
     sequence_counter: Arc<AtomicU32>,
     miner_counter: Arc<AtomicU32>,
+    keepalive_job_id_counter: Arc<AtomicU32>,
+    downstream_id_factory: Arc<AtomicUsize>,
+    request_id_factory: Arc<AtomicU32>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -107,6 +110,9 @@ impl Sv1Server {
             clean_job: Arc::new(AtomicBool::new(true)),
             miner_counter: Arc::new(AtomicU32::new(0)),
             sequence_counter: Arc::new(AtomicU32::new(0)),
+            keepalive_job_id_counter: Arc::new(AtomicU32::new(0)),
+            downstream_id_factory: Arc::new(AtomicUsize::new(1)),
+            request_id_factory: Arc::new(AtomicU32::new(1)),
         }
     }
 
@@ -232,7 +238,7 @@ impl Sv1Server {
                             Ok((stream, addr)) => {
                                 info!("New SV1 downstream connection from {}", addr);
                                 let connection = ConnectionSV1::new(stream).await;
-                                let downstream_id = self.sv1_server_data.super_safe_lock(|v| v.downstream_id_factory.fetch_add(1, Ordering::Relaxed));
+                                let downstream_id = self.downstream_id_factory.fetch_add(1, Ordering::Relaxed);
                                 let downstream = Downstream::new(
                                     downstream_id,
                                     connection.sender().clone(),
@@ -425,8 +431,8 @@ impl Sv1Server {
         // If this is a keepalive job, extract the original upstream job_id from the job_id string
         let mut share = message.share;
         let job_id_str = share.job_id.clone();
-        if Sv1ServerData::is_keepalive_job_id(&job_id_str) {
-            if let Some(original_job_id) = Sv1ServerData::extract_original_job_id(&job_id_str) {
+        if Self::is_keepalive_job_id(&job_id_str) {
+            if let Some(original_job_id) = Self::extract_original_job_id(&job_id_str) {
                 debug!(
                     "Extracting original job_id {} from keepalive job_id {}",
                     original_job_id, job_id_str
@@ -489,11 +495,12 @@ impl Sv1Server {
     ) -> TproxyResult<(), error::Sv1Server> {
         info!("SV1 Server: Opening extended mining channel for downstream {} after receiving first message", downstream_id);
 
-        let (request_id, downstreams) = self.sv1_server_data.super_safe_lock(|v| {
-            let request_id = v.request_id_factory.fetch_add(1, Ordering::Relaxed);
+        let request_id = self.request_id_factory.fetch_add(1, Ordering::Relaxed);
+
+        let downstreams = self.sv1_server_data.super_safe_lock(|v| {
             v.request_id_to_downstream_id
                 .insert(request_id, downstream_id);
-            (request_id, v.downstreams.clone())
+            v.downstreams.clone()
         });
         if let Some(downstream) = Self::get_downstream(downstream_id, downstreams) {
             self.open_extended_mining_channel(request_id, downstream)
@@ -986,9 +993,8 @@ impl Sv1Server {
                         // Extract the original upstream job_id from the last job
                         // If it's already a keepalive job, extract its original; otherwise use
                         // as-is
-                        let original_job_id =
-                            Sv1ServerData::extract_original_job_id(&last_job.job_id)
-                                .unwrap_or_else(|| last_job.job_id.clone());
+                        let original_job_id = Self::extract_original_job_id(&last_job.job_id)
+                            .unwrap_or_else(|| last_job.job_id.clone());
 
                         // Find the original upstream job to get its base time
                         let original_job = data.get_original_job(&original_job_id, channel_id);
@@ -1013,7 +1019,7 @@ impl Sv1Server {
                         }
 
                         // Generate new keepalive job_id: {original_job_id}#{counter}
-                        let new_job_id = data.next_keepalive_job_id(&original_job_id);
+                        let new_job_id = self.next_keepalive_job_id(&original_job_id);
 
                         let mut keepalive_notify = last_job;
                         keepalive_notify.job_id = new_job_id.clone();
@@ -1571,6 +1577,30 @@ impl Sv1Server {
                 e
             );
         }
+    }
+
+    /// Generates a keepalive job ID by appending a mutation counter to the original job ID.
+    /// Format: `{original_job_id}#{counter}` where `#` is the delimiter.
+    /// When receiving a share, split on `#` to extract the original job ID.
+    fn next_keepalive_job_id(&self, original_job_id: &str) -> String {
+        let counter = self
+            .keepalive_job_id_counter
+            .fetch_add(1, Ordering::Relaxed);
+        format!("{}#{}", original_job_id, counter)
+    }
+
+    /// Extracts the original upstream job ID from a keepalive job ID.
+    /// Returns None if the job_id doesn't contain the keepalive delimiter.
+    fn extract_original_job_id(job_id: &str) -> Option<String> {
+        job_id
+            .split_once(KEEPALIVE_JOB_ID_DELIMITER)
+            .map(|(original, _)| original.to_string())
+    }
+
+    /// Returns true if the job_id is a keepalive job (contains the delimiter).
+    #[inline]
+    fn is_keepalive_job_id(job_id: &str) -> bool {
+        job_id.contains(KEEPALIVE_JOB_ID_DELIMITER)
     }
 }
 
