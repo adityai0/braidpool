@@ -1,11 +1,7 @@
-use crate::sv1::downstream::downstream::Downstream;
 use std::collections::HashMap;
 use stratum_apps::{
-    stratum_core::{
-        bitcoin::Target, channels_sv2::vardiff::classic::VardiffState, mining_sv2::SetNewPrevHash,
-        sv1_api::server_to_client,
-    },
-    utils::types::{ChannelId, DownstreamId, Hashrate, RequestId},
+    stratum_core::{bitcoin::Target, mining_sv2::SetNewPrevHash, sv1_api::server_to_client},
+    utils::types::{ChannelId, DownstreamId, Hashrate},
 };
 
 #[derive(Debug, Clone)]
@@ -17,9 +13,6 @@ pub struct PendingTargetUpdate {
 
 #[derive(Debug)]
 pub struct Sv1ServerData {
-    pub downstreams: HashMap<DownstreamId, Downstream>,
-    pub request_id_to_downstream_id: HashMap<RequestId, DownstreamId>,
-    pub vardiff: HashMap<DownstreamId, VardiffState>,
     /// HashMap to store the SetNewPrevHash for each channel
     /// Used in both aggregated and non-aggregated mode
     pub prevhashes: HashMap<ChannelId, SetNewPrevHash<'static>>,
@@ -41,9 +34,6 @@ pub const KEEPALIVE_JOB_ID_DELIMITER: char = '#';
 impl Sv1ServerData {
     pub fn new(aggregate_channels: bool) -> Self {
         Self {
-            downstreams: HashMap::new(),
-            request_id_to_downstream_id: HashMap::new(),
-            vardiff: HashMap::new(),
             prevhashes: HashMap::new(),
             aggregated_valid_jobs: aggregate_channels.then(Vec::new),
             non_aggregated_valid_jobs: (!aggregate_channels).then(HashMap::new),

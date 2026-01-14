@@ -7,13 +7,13 @@ use tracing::{debug, info, warn};
 
 use crate::{
     error,
-    sv1::{downstream::SubmitShareWithChannelId, sv1_server::data::Sv1ServerData},
+    sv1::{downstream::SubmitShareWithChannelId, Sv1Server},
     utils::validate_sv1_share,
 };
 
 // Implements `IsServer` for `Downstream` to handle the Sv1 messages.
 #[hotpath::measure_all]
-impl IsServer<'static> for Sv1ServerData {
+impl IsServer<'static> for Sv1Server {
     fn handle_configure(
         &mut self,
         client_id: Option<usize>,
@@ -113,17 +113,18 @@ impl IsServer<'static> for Sv1ServerData {
             None => return false,
         };
 
-        let job = self
-            .aggregated_valid_jobs
-            .as_ref()
-            .and_then(|jobs| jobs.iter().find(|j| &j.job_id == job_id))
-            .or_else(|| {
-                self.non_aggregated_valid_jobs
-                    .as_ref()
-                    .and_then(|jobs| jobs.get(&channel_id))
-                    .and_then(|jobs| jobs.iter().find(|j| &j.job_id == job_id))
-            })
-            .cloned();
+        let job = self.sv1_server_data.super_safe_lock(|data| {
+            data.aggregated_valid_jobs
+                .as_ref()
+                .and_then(|jobs| jobs.iter().find(|j| &j.job_id == job_id))
+                .or_else(|| {
+                    data.non_aggregated_valid_jobs
+                        .as_ref()
+                        .and_then(|jobs| jobs.get(&channel_id))
+                        .and_then(|jobs| jobs.iter().find(|j| &j.job_id == job_id))
+                })
+                .cloned()
+        });
 
         let job = match job {
             Some(job) => job,

@@ -53,84 +53,94 @@ impl Sv1Server {
         let mut immediate_updates = Vec::new();
         let mut all_updates = Vec::new(); // All updates will generate UpdateChannel messages
 
-        self.sv1_server_data.super_safe_lock(|sv1_server| {
-            for (downstream_id, vardiff) in sv1_server.vardiff.iter_mut() {
-                debug!("Updating vardiff for downstream_id: {}", downstream_id);
-                let Some(downstream) = sv1_server.downstreams.get_mut(downstream_id) else {
-                    continue;
-                };
-                let (channel_id, hashrate, target, upstream_target) = downstream.downstream_data.super_safe_lock(|data| {
+        for vardiff_key_pair in self.vardiff.iter() {
+            let downstream_id = vardiff_key_pair.key();
+            let vardiff = vardiff_key_pair.value();
+            debug!("Updating vardiff for downstream_id: {}", downstream_id);
+            let Some(downstream) = self.downstreams.get(downstream_id) else {
+                continue;
+            };
+            let (channel_id, hashrate, target, upstream_target) =
+                downstream.downstream_data.super_safe_lock(|data| {
                     // It's safe to unwrap hashrate because we know that
                     // the downstream has a hashrate (we are
-                    // doing vardiff) 
-                    (data.channel_id, data.hashrate.unwrap(), data.target, data.upstream_target)
+                    // doing vardiff)
+                    (
+                        data.channel_id,
+                        data.hashrate.unwrap(),
+                        data.target,
+                        data.upstream_target,
+                    )
                 });
 
-                let Some(channel_id) = channel_id else {
-                    error!("Channel id is none for downstream_id: {}", downstream_id);
-                    continue;
-                };
-                let new_hashrate_opt = vardiff.try_vardiff(hashrate, &target, self.shares_per_minute);
+            let Some(channel_id) = channel_id else {
+                error!("Channel id is none for downstream_id: {}", downstream_id);
+                continue;
+            };
+            let new_hashrate_opt = vardiff.super_safe_lock(|state| {
+                state.try_vardiff(hashrate, &target, self.shares_per_minute)
+            });
 
-                if let Ok(Some(new_hashrate)) = new_hashrate_opt {
-                    // Calculate new target based on new hashrate
-                    let new_target: Target =
-                        match hash_rate_to_target(new_hashrate as f64, self.shares_per_minute as f64) {
-                            Ok(target) => target,
-                            Err(e) => {
-                                error!(
-                                    "Failed to calculate target for hashrate {}: {:?}",
-                                    new_hashrate, e
-                                );
-                                continue;
-                            }
-                        };
-                    // Always update the downstream's pending target and hashrate
-                    if let Some(d) = sv1_server.downstreams.get(downstream_id) {
-                        _ = d.downstream_data.safe_lock(|d| {
-                            d.set_pending_target(new_target);
-                            d.set_pending_hashrate(Some(new_hashrate));
-                        });
-                    }
-                    // All updates will be sent as UpdateChannel messages
-                    all_updates.push((*downstream_id, channel_id, new_target, new_hashrate));
-                    // Determine if we should send set_difficulty immediately or wait
-                    match upstream_target {
-                        Some(upstream_target) => {
-                            if new_target >= upstream_target {
-                                // Case 1: new_target >= upstream_target, send set_difficulty
-                                // immediately
-                                trace!(
-                                    "✅ Target comparison: new_target ({:?}) >= upstream_target ({:?}) for downstream {}, will send set_difficulty immediately",
-                                    new_target, upstream_target, downstream_id
-                                );
-                                immediate_updates.push((channel_id, Some(*downstream_id), new_target));
-                            } else {
-                                // Case 2: new_target < upstream_target, delay set_difficulty until
-                                // SetTarget
-                                trace!(
-                                    "⏳ Target comparison: new_target ({:?}) < upstream_target ({:?}) for downstream {}, will delay set_difficulty until SetTarget",
-                                    new_target, upstream_target, downstream_id
-                                );
-                                sv1_server.pending_target_updates.push(PendingTargetUpdate {
+            if let Ok(Some(new_hashrate)) = new_hashrate_opt {
+                // Calculate new target based on new hashrate
+                let new_target: Target =
+                    match hash_rate_to_target(new_hashrate as f64, self.shares_per_minute as f64) {
+                        Ok(target) => target,
+                        Err(e) => {
+                            error!(
+                                "Failed to calculate target for hashrate {}: {:?}",
+                                new_hashrate, e
+                            );
+                            continue;
+                        }
+                    };
+                // Always update the downstream's pending target and hashrate
+                if let Some(d) = self.downstreams.get(downstream_id) {
+                    _ = d.downstream_data.safe_lock(|d| {
+                        d.set_pending_target(new_target);
+                        d.set_pending_hashrate(Some(new_hashrate));
+                    });
+                }
+                // All updates will be sent as UpdateChannel messages
+                all_updates.push((*downstream_id, channel_id, new_target, new_hashrate));
+                // Determine if we should send set_difficulty immediately or wait
+                match upstream_target {
+                    Some(upstream_target) => {
+                        if new_target >= upstream_target {
+                            // Case 1: new_target >= upstream_target, send set_difficulty
+                            // immediately
+                            trace!(
+                                "✅ Target comparison: new_target ({:?}) >= upstream_target ({:?}) for downstream {}, will send set_difficulty immediately",
+                                new_target, upstream_target, downstream_id
+                            );
+                            immediate_updates.push((channel_id, Some(*downstream_id), new_target));
+                        } else {
+                            // Case 2: new_target < upstream_target, delay set_difficulty until
+                            // SetTarget
+                            trace!(
+                                "⏳ Target comparison: new_target ({:?}) < upstream_target ({:?}) for downstream {}, will delay set_difficulty until SetTarget",
+                                new_target, upstream_target, downstream_id
+                            );
+                            self.sv1_server_data.super_safe_lock(|data| {
+                                data.pending_target_updates.push(PendingTargetUpdate {
                                     downstream_id: *downstream_id,
                                     new_target,
                                     new_hashrate,
-                                });
-                            }
+                                })
+                            });
                         }
-                        None => {
-                            // No upstream target set yet, send set_difficulty immediately as fallback
-                            trace!(
-                                "No upstream target set for downstream {}, will send set_difficulty immediately",
-                                downstream_id
-                            );
-                            immediate_updates.push((channel_id, Some(*downstream_id), new_target));
-                        }
+                    }
+                    None => {
+                        // No upstream target set yet, send set_difficulty immediately as fallback
+                        trace!(
+                            "No upstream target set for downstream {}, will send set_difficulty immediately",
+                            downstream_id
+                        );
+                        immediate_updates.push((channel_id, Some(*downstream_id), new_target));
                     }
                 }
             }
-        });
+        }
 
         // Send UpdateChannel messages for ALL updates (both immediate and delayed)
         if !all_updates.is_empty() {
@@ -193,18 +203,15 @@ impl Sv1Server {
             return;
         };
 
-        let downstreams: Vec<_> = self
-            .sv1_server_data
-            .super_safe_lock(|data| data.downstreams.values().cloned().collect());
-
-        if downstreams.is_empty() {
+        if self.downstreams.is_empty() {
             return;
         }
 
         let mut min_target: Option<Target> = None;
         let mut total_hashrate: Hashrate = 0.0;
 
-        for downstream in &downstreams {
+        for downstream in self.downstreams.iter() {
+            let downstream = downstream.value();
             downstream.downstream_data.super_safe_lock(|d| {
                 let target = *d.pending_target.as_ref().unwrap_or(&d.target);
                 let hashrate = d
@@ -221,7 +228,7 @@ impl Sv1Server {
         }
 
         let min_target = min_target.expect("at least one downstream must exist");
-        let downstream_count = downstreams.len();
+        let downstream_count = self.downstreams.len();
 
         let update_channel = UpdateChannel {
             channel_id: *channel_id,
@@ -310,11 +317,8 @@ impl Sv1Server {
     ) {
         debug!("Aggregated mode: Updating upstream target for all downstreams");
 
-        let downstreams: Vec<_> = self
-            .sv1_server_data
-            .super_safe_lock(|data| data.downstreams.values().cloned().collect());
-
-        for downstream in &downstreams {
+        for downstream in self.downstreams.iter() {
+            let downstream = downstream.value();
             downstream.downstream_data.super_safe_lock(|d| {
                 d.set_upstream_target(new_upstream_target);
             });
@@ -340,11 +344,7 @@ impl Sv1Server {
             channel_id
         );
 
-        let downstreams: Vec<_> = self
-            .sv1_server_data
-            .super_safe_lock(|data| data.downstreams.values().cloned().collect());
-
-        let affected = downstreams.iter().find(|downstream| {
+        let affected = self.downstreams.iter().find(|downstream| {
             downstream
                 .downstream_data
                 .super_safe_lock(|d| d.channel_id == Some(channel_id))
@@ -421,11 +421,10 @@ impl Sv1Server {
         difficulty_updates: Vec<PendingTargetUpdate>,
     ) {
         for update in difficulty_updates {
-            let channel_id = self.sv1_server_data.super_safe_lock(|data| {
-                data.downstreams
-                    .get(&update.downstream_id)
-                    .and_then(|ds| ds.downstream_data.super_safe_lock(|d| d.channel_id))
-            });
+            let channel_id = self
+                .downstreams
+                .get(&update.downstream_id)
+                .and_then(|ds| ds.downstream_data.super_safe_lock(|d| d.channel_id));
 
             let Some(channel_id) = channel_id else {
                 trace!(
@@ -470,17 +469,16 @@ impl Sv1Server {
             return;
         }
 
-        let downstreams: Vec<_> = self
-            .sv1_server_data
-            .super_safe_lock(|data| data.downstreams.values().cloned().collect());
+        let is_empty = self.downstreams.is_empty();
 
-        let snapshot = if downstreams.is_empty() {
+        let snapshot = if is_empty {
             AggregatedSnapshot::NoDownstreams
         } else {
             let mut total_hashrate: Hashrate = 0.0;
             let mut min_target: Option<Target> = None;
 
-            for downstream in downstreams {
+            for downstream in self.downstreams.iter() {
+                let downstream = downstream.value();
                 downstream.downstream_data.super_safe_lock(|d| {
                     let hashrate = d.pending_hashrate.unwrap_or_else(|| {
                         d.hashrate

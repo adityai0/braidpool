@@ -12,6 +12,7 @@ use crate::{
     utils::ShutdownMessage,
 };
 use async_channel::{Receiver, Sender};
+use dashmap::DashMap;
 use std::{
     collections::HashMap,
     net::SocketAddr,
@@ -41,7 +42,7 @@ use stratum_apps::{
         sv1_api::{json_rpc, utils::HexU32Be, IsServer},
     },
     task_manager::TaskManager,
-    utils::types::{DownstreamId, Hashrate, SharesPerMinute},
+    utils::types::{DownstreamId, Hashrate, RequestId, SharesPerMinute},
 };
 use tokio::{
     net::TcpListener,
@@ -72,6 +73,9 @@ pub struct Sv1Server {
     pub(crate) keepalive_job_id_counter: Arc<AtomicU32>,
     pub(crate) downstream_id_factory: Arc<AtomicUsize>,
     pub(crate) request_id_factory: Arc<AtomicU32>,
+    pub(crate) downstreams: Arc<DashMap<DownstreamId, Downstream>>,
+    pub(crate) request_id_to_downstream_id: Arc<DashMap<RequestId, DownstreamId>>,
+    pub(crate) vardiff: Arc<DashMap<DownstreamId, Arc<Mutex<VardiffState>>>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -113,6 +117,9 @@ impl Sv1Server {
             keepalive_job_id_counter: Arc::new(AtomicU32::new(0)),
             downstream_id_factory: Arc::new(AtomicUsize::new(1)),
             request_id_factory: Arc::new(AtomicU32::new(1)),
+            downstreams: Arc::new(DashMap::new()),
+            request_id_to_downstream_id: Arc::new(DashMap::new()),
+            vardiff: Arc::new(DashMap::new()),
         }
     }
 
@@ -189,14 +196,13 @@ impl Sv1Server {
                                 break;
                             }
                             Ok(ShutdownMessage::DownstreamShutdown(downstream_id)) => {
-                                let current_downstream = self.sv1_server_data.super_safe_lock(|d| {
+                                if self.config.downstream_difficulty_config.enable_vardiff {
                                     // Only remove from vardiff map if vardiff is enabled
-                                    if self.config.downstream_difficulty_config.enable_vardiff {
-                                        d.vardiff.remove(&downstream_id);
-                                    }
-                                    d.downstreams.remove(&downstream_id)
-                                });
-                                if let Some(downstream) = current_downstream {
+                                    self.vardiff.remove(&downstream_id);
+                                }
+                                let current_downstream = self.downstreams.remove(&downstream_id);
+
+                                if let Some((downstream_id, downstream)) = current_downstream {
                                     info!("🔌 Downstream: {downstream_id} disconnected and removed from sv1 server downstreams");
                                     // In aggregated mode, send UpdateChannel to reflect the new state (only if vardiff enabled)
                                     if self.config.downstream_difficulty_config.enable_vardiff {
@@ -220,12 +226,10 @@ impl Sv1Server {
                                 }
                             }
                             Ok(ShutdownMessage::UpstreamFallback {tx}) => {
-                                self.sv1_server_data.super_safe_lock(|d|{
-                                    if self.config.downstream_difficulty_config.enable_vardiff {
-                                        d.vardiff = HashMap::new();
-                                    }
-                                    d.downstreams = HashMap::new();
-                                });
+                                if self.config.downstream_difficulty_config.enable_vardiff {
+                                    self.vardiff.clear();
+                                }
+                                self.downstreams.clear();
                                 info!("Fallback in processing stopping sv1 server");
                                 drop(tx);
                                 break;
@@ -249,15 +253,12 @@ impl Sv1Server {
                                     Some(self.config.downstream_difficulty_config.min_individual_miner_hashrate),
                                 );
                                 // vardiff initialization (only if enabled)
-                                _ = self.sv1_server_data
-                                    .safe_lock(|d| {
-                                        d.downstreams.insert(downstream_id, downstream.clone());
-                                        // Insert vardiff state for this downstream only if vardiff is enabled
-                                        if self.config.downstream_difficulty_config.enable_vardiff {
-                                            let vardiff = VardiffState::new().expect("Failed to create vardiffstate");
-                                            d.vardiff.insert(downstream_id, vardiff);
-                                        }
-                                    });
+                                self.downstreams.insert(downstream_id, downstream.clone());
+                                // Insert vardiff state for this downstream only if vardiff is enabled
+                                if self.config.downstream_difficulty_config.enable_vardiff {
+                                    let vardiff = VardiffState::new().expect("Failed to create vardiffstate");
+                                    self.vardiff.insert(downstream_id, Arc::new(Mutex::new(vardiff)));
+                                }
                                 info!("Downstream {} registered successfully (channel will be opened after first message)", downstream_id);
                                 // Start downstream tasks immediately, but defer channel opening until first message
                                 let status_sender = StatusSender::Downstream {
@@ -325,9 +326,7 @@ impl Sv1Server {
             .await
             .map_err(TproxyError::shutdown)?;
 
-        let downstream = self
-            .sv1_server_data
-            .super_safe_lock(|data| data.downstreams.get(&downstream_id).cloned());
+        let downstream = self.downstreams.get(&downstream_id);
 
         if let Some(downstream) = downstream {
             let channel_id = downstream
@@ -352,9 +351,10 @@ impl Sv1Server {
                 return Ok(());
             }
 
-            let response = self.sv1_server_data.super_safe_lock(|data| {
-                data.handle_message(Some(downstream_id), downstream_message.clone())
-            });
+            let response = self
+                .clone()
+                .handle_message(Some(downstream_id), downstream_message.clone());
+
             match response {
                 Ok(Some(response_msg)) => {
                     debug!(
@@ -413,11 +413,9 @@ impl Sv1Server {
     ) -> TproxyResult<(), error::Sv1Server> {
         // Increment vardiff counter for this downstream (only if vardiff is enabled)
         if self.config.downstream_difficulty_config.enable_vardiff {
-            self.sv1_server_data.super_safe_lock(|v| {
-                if let Some(vardiff_state) = v.vardiff.get_mut(&message.downstream_id) {
-                    vardiff_state.increment_shares_since_last_update();
-                }
-            });
+            if let Some(vardiff_state) = self.vardiff.get(&message.downstream_id) {
+                vardiff_state.super_safe_lock(|state| state.increment_shares_since_last_update());
+            }
         }
 
         let job_version = match message.job_version {
@@ -458,13 +456,12 @@ impl Sv1Server {
 
         // Only add TLV fields with user identity in non-aggregated mode
         let tlv_fields = if !self.config.aggregate_channels {
-            let user_identity_string = self.sv1_server_data.super_safe_lock(|d| {
-                d.downstreams
-                    .get(&message.downstream_id)
-                    .unwrap()
-                    .downstream_data
-                    .super_safe_lock(|d| d.user_identity.clone())
-            });
+            let user_identity_string = self
+                .downstreams
+                .get(&message.downstream_id)
+                .unwrap()
+                .downstream_data
+                .super_safe_lock(|d| d.user_identity.clone());
             UserIdentity::new(&user_identity_string)
                 .unwrap()
                 .to_tlv()
@@ -496,14 +493,12 @@ impl Sv1Server {
         info!("SV1 Server: Opening extended mining channel for downstream {} after receiving first message", downstream_id);
 
         let request_id = self.request_id_factory.fetch_add(1, Ordering::Relaxed);
+        self.request_id_to_downstream_id
+            .insert(request_id, downstream_id);
+        let contains_key = self.downstreams.contains_key(&downstream_id);
 
-        let downstreams = self.sv1_server_data.super_safe_lock(|v| {
-            v.request_id_to_downstream_id
-                .insert(request_id, downstream_id);
-            v.downstreams.clone()
-        });
-        if let Some(downstream) = Self::get_downstream(downstream_id, downstreams) {
-            self.open_extended_mining_channel(request_id, downstream)
+        if contains_key {
+            self.open_extended_mining_channel(request_id, downstream_id)
                 .await?;
         } else {
             error!(
@@ -550,16 +545,14 @@ impl Sv1Server {
                     "Received OpenExtendedMiningChannelSuccess for channel id: {}",
                     m.channel_id
                 );
-                let (downstream_id, downstreams) = self.sv1_server_data.super_safe_lock(|v| {
-                    let downstream_id = v.request_id_to_downstream_id.remove(&m.request_id);
-                    (downstream_id, v.downstreams.clone())
-                });
-                let Some(downstream_id) = downstream_id else {
+                let downstream_id = self.request_id_to_downstream_id.remove(&m.request_id);
+
+                let Some((_, downstream_id)) = downstream_id else {
                     return Err(TproxyError::log(TproxyErrorKind::DownstreamNotFound(
                         m.request_id,
                     )));
                 };
-                if let Some(downstream) = Self::get_downstream(downstream_id, downstreams) {
+                if let Some(downstream) = self.downstreams.get(&downstream_id) {
                     let initial_target =
                         Target::from_le_bytes(m.target.inner_as_ref().try_into().unwrap());
                     let extranonce1 = m
@@ -599,9 +592,7 @@ impl Sv1Server {
 
                             for message in queued_messages {
                                 if let Ok(Some(response_msg)) =
-                                    self.sv1_server_data.super_safe_lock(|data| {
-                                        data.handle_message(Some(downstream_id), message)
-                                    })
+                                    self.clone().handle_message(Some(downstream_id), message)
                                 {
                                     self.sv1_server_channel_state
                                         .sv1_server_to_downstream_sender
@@ -721,10 +712,11 @@ impl Sv1Server {
     /// * `Err(TproxyError)` - Error setting up the channel
     pub async fn open_extended_mining_channel(
         &self,
-        request_id: u32,
-        downstream: Downstream,
+        request_id: RequestId,
+        downstream_id: DownstreamId,
     ) -> TproxyResult<(), error::Sv1Server> {
         let config = &self.config.downstream_difficulty_config;
+        let downstream = self.downstreams.get(&downstream_id).unwrap();
 
         let hashrate = config.min_individual_miner_hashrate as f64;
         let shares_per_min = config.shares_per_minute as f64;
@@ -830,14 +822,9 @@ impl Sv1Server {
     /// Sends set_difficulty to all downstreams (aggregated mode).
     /// Used only when vardiff is disabled.
     async fn send_set_difficulty_to_all_downstreams(&self, target: Target) {
-        let downstreams: Vec<(DownstreamId, _)> = self.sv1_server_data.super_safe_lock(|data| {
-            data.downstreams
-                .iter()
-                .map(|(id, ds)| (*id, ds.clone()))
-                .collect()
-        });
-
-        for (downstream_id, downstream) in downstreams {
+        for downstream in self.downstreams.iter() {
+            let downstream_id = downstream.key();
+            let downstream = downstream.value();
             let channel_id = downstream.downstream_data.super_safe_lock(|d| {
                 let channel_id = d.channel_id?;
 
@@ -869,7 +856,7 @@ impl Sv1Server {
             if let Err(e) = self
                 .sv1_server_channel_state
                 .sv1_server_to_downstream_sender
-                .send((channel_id, Some(downstream_id), set_difficulty_msg))
+                .send((channel_id, Some(*downstream_id), set_difficulty_msg))
             {
                 error!(
                     "Failed to send SetDifficulty to downstream {}: {:?}",
@@ -888,26 +875,22 @@ impl Sv1Server {
     /// mode).
     /// Used only when vardiff is disabled.
     async fn send_set_difficulty_to_specific_downstream(&self, channel_id: u32, target: Target) {
-        let downstreams: Vec<(DownstreamId, _)> = self.sv1_server_data.super_safe_lock(|data| {
-            data.downstreams
-                .iter()
-                .map(|(id, ds)| (*id, ds.clone()))
-                .collect()
-        });
-
-        let affected = downstreams.iter().find(|(_, downstream)| {
+        let affected = self.downstreams.iter().find(|downstream| {
             downstream
                 .downstream_data
                 .super_safe_lock(|d| d.channel_id == Some(channel_id))
         });
 
-        let Some((downstream_id, downstream)) = affected else {
+        let Some(downstream) = affected else {
             warn!(
                 "No downstream found for channel {} when vardiff is disabled",
                 channel_id
             );
             return;
         };
+
+        let downstream_id = downstream.key();
+        let downstream = downstream.value();
 
         downstream.downstream_data.super_safe_lock(|d| {
             d.set_upstream_target(target);
@@ -967,37 +950,35 @@ impl Sv1Server {
 
         loop {
             tokio::time::sleep(check_interval).await;
+            let keepalive_targets: Vec<(DownstreamId, Option<u32>)> = self
+                .downstreams
+                .iter()
+                .filter_map(|downstream| {
+                    let downstream_id = downstream.key();
+                    let downstream = downstream.value();
+                    downstream.downstream_data.super_safe_lock(|d| {
+                        // Only send keepalive if:
+                        // 1. Handshake is complete
+                        // 2. Enough time has passed since last job
+                        let handshake_complete = d.sv1_handshake_complete.load(Ordering::SeqCst);
 
-            let keepalive_targets: Vec<(DownstreamId, Option<u32>)> =
-                self.sv1_server_data.super_safe_lock(|data| {
-                    data.downstreams
-                        .iter()
-                        .filter_map(|(downstream_id, downstream)| {
-                            downstream.downstream_data.super_safe_lock(|d| {
-                                // Only send keepalive if:
-                                // 1. Handshake is complete
-                                // 2. Enough time has passed since last job
-                                let handshake_complete =
-                                    d.sv1_handshake_complete.load(Ordering::SeqCst);
+                        if !handshake_complete {
+                            return None;
+                        }
 
-                                if !handshake_complete {
-                                    return None;
-                                }
+                        let needs_keepalive = match d.last_job_received_time {
+                            Some(last_time) => last_time.elapsed() >= interval,
+                            None => false, // No job received yet, don't send keepalive
+                        };
 
-                                let needs_keepalive = match d.last_job_received_time {
-                                    Some(last_time) => last_time.elapsed() >= interval,
-                                    None => false, // No job received yet, don't send keepalive
-                                };
-
-                                if needs_keepalive {
-                                    Some((*downstream_id, d.channel_id))
-                                } else {
-                                    None
-                                }
-                            })
-                        })
-                        .collect()
-                });
+                        if needs_keepalive {
+                            Some((*downstream_id, d.channel_id))
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect();
 
             // Send keepalive to each downstream that needs one
             for (downstream_id, channel_id) in keepalive_targets {
@@ -1072,14 +1053,9 @@ impl Sv1Server {
                             "Failed to send keepalive job to downstream {}: {:?}",
                             downstream_id, e
                         );
-                    } else {
-                        // Update the downstream's last job received time
-                        self.sv1_server_data.super_safe_lock(|data| {
-                            if let Some(downstream) = data.downstreams.get(&downstream_id) {
-                                downstream.downstream_data.super_safe_lock(|d| {
-                                    d.last_job_received_time = Some(Instant::now());
-                                });
-                            }
+                    } else if let Some(downstream) = self.downstreams.get(&downstream_id) {
+                        downstream.downstream_data.super_safe_lock(|d| {
+                            d.last_job_received_time = Some(Instant::now());
                         });
                     }
                 }
