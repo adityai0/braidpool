@@ -2,7 +2,10 @@ use std::{cell::RefCell, sync::atomic::AtomicBool, time::Instant};
 use stratum_apps::{
     stratum_core::{
         bitcoin::Target,
-        sv1_api::{json_rpc, utils::HexU32Be},
+        sv1_api::{
+            json_rpc,
+            utils::{Extranonce, HexU32Be},
+        },
     },
     utils::types::{ChannelId, DownstreamId, Hashrate},
 };
@@ -14,7 +17,7 @@ use super::SubmitShareWithChannelId;
 pub struct DownstreamData {
     pub channel_id: Option<ChannelId>,
     pub downstream_id: DownstreamId,
-    pub extranonce1: Vec<u8>,
+    pub extranonce1: Extranonce<'static>,
     pub extranonce2_len: usize,
     pub version_rolling_mask: Option<HexU32Be>,
     pub version_rolling_min_bit: Option<HexU32Be>,
@@ -46,7 +49,9 @@ impl DownstreamData {
         DownstreamData {
             channel_id: None,
             downstream_id,
-            extranonce1: vec![0; 8],
+            extranonce1: vec![0; 8]
+                .try_into()
+                .expect("8-byte extranonce is always valid"),
             extranonce2_len: 4,
             version_rolling_mask: None,
             version_rolling_min_bit: None,

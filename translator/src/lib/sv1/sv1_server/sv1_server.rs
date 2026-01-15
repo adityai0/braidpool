@@ -562,10 +562,15 @@ impl Sv1Server {
                 if let Some(downstream) = Self::get_downstream(downstream_id, downstreams) {
                     let initial_target =
                         Target::from_le_bytes(m.target.inner_as_ref().try_into().unwrap());
+                    let extranonce1 = m
+                        .extranonce_prefix
+                        .to_vec()
+                        .try_into()
+                        .map_err(|error| TproxyError::disconnect(error, downstream_id))?;
                     downstream
                         .downstream_data
                         .safe_lock(|d| {
-                            d.extranonce1 = m.extranonce_prefix.to_vec();
+                            d.extranonce1 = extranonce1;
                             d.extranonce2_len = m.extranonce_size.into();
                             d.channel_id = Some(m.channel_id);
                             // Set the initial upstream target from OpenExtendedMiningChannelSuccess

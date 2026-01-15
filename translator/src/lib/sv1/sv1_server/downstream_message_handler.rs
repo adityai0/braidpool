@@ -150,7 +150,7 @@ impl IsServer<'static> for Sv1ServerData {
             let is_valid = validate_sv1_share(
                 request,
                 data.target,
-                data.extranonce1.clone(),
+                data.extranonce1.clone().into(),
                 data.version_rolling_mask.clone(),
                 job,
             )
@@ -165,7 +165,7 @@ impl IsServer<'static> for Sv1ServerData {
                 channel_id,
                 downstream_id: data.downstream_id,
                 share: request.clone(),
-                extranonce: data.extranonce1.clone(),
+                extranonce: data.extranonce1.clone().into(),
                 extranonce2_len: data.extranonce2_len,
                 version_rolling_mask: data.version_rolling_mask.clone(),
                 job_version: data.last_job_version_field,
@@ -221,7 +221,7 @@ impl IsServer<'static> for Sv1ServerData {
         let downstream = self.downstreams.get(&downstream_id).unwrap();
         downstream
             .downstream_data
-            .super_safe_lock(|data| data.extranonce1.clone().try_into().unwrap())
+            .super_safe_lock(|data| data.extranonce1.clone())
     }
 
     /// Returns the `Downstream`'s `extranonce1` value.
@@ -230,7 +230,7 @@ impl IsServer<'static> for Sv1ServerData {
         let downstream = self.downstreams.get(&downstream_id).unwrap();
         downstream
             .downstream_data
-            .super_safe_lock(|data| data.extranonce1.clone().try_into().unwrap())
+            .super_safe_lock(|data| data.extranonce1.clone())
     }
 
     /// Sets the `extranonce2_size` field sent in the SV1 `mining.notify` message to the value
