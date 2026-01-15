@@ -1,3 +1,4 @@
+use crate::config_helpers::opt_path_from_toml;
 use crate::key_utils::Secp256k1PublicKey;
 use std::path::PathBuf;
 
@@ -68,6 +69,7 @@ pub enum TemplateProviderType {
         /// Network for determining socket path subdirectory.
         network: BitcoinNetwork,
         /// Custom Bitcoin data directory. Uses OS default if not set.
+        #[serde(default, deserialize_with = "opt_path_from_toml")]
         data_dir: Option<PathBuf>,
         fee_threshold: u64,
         min_interval: u8,

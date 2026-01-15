@@ -14,6 +14,7 @@ use std::{
 };
 
 use stratum_apps::{
+    config_helpers::opt_path_from_toml,
     config_helpers::CoinbaseRewardScript,
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
     stratum_core::bitcoin::{Amount, TxOut},
@@ -33,6 +34,7 @@ pub struct PoolConfig {
     pool_signature: String,
     shares_per_minute: SharesPerMinute,
     share_batch_size: SharesBatchSize,
+    #[serde(default, deserialize_with = "opt_path_from_toml")]
     log_file: Option<PathBuf>,
     server_id: u16,
     supported_extensions: Vec<u16>,

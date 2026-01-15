@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use std::net::SocketAddr;
 use stratum_apps::{
+    config_helpers::opt_path_from_toml,
     key_utils::Secp256k1PublicKey,
     utils::types::{Hashrate, SharesPerMinute},
 };
@@ -49,6 +50,7 @@ pub struct TranslatorConfig {
     /// upstream.
     pub required_extensions: Vec<u16>,
     /// The path to the log file for the Translator.
+    #[serde(default, deserialize_with = "opt_path_from_toml")]
     log_file: Option<PathBuf>,
     /// Optional monitoring server bind address
     #[serde(default)]

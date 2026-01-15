@@ -1,3 +1,8 @@
+use serde::{
+    de::{self, Deserializer},
+    Deserialize,
+};
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Deserialize a duration from a TOML string.
@@ -30,4 +35,28 @@ where
         // ... add other units as needed
         _ => Err(serde::de::Error::custom("Unsupported duration unit")),
     }
+}
+
+/// Deserialize an optional TOML string into `Option<PathBuf>`, expanding:
+/// - `~` (home directory)
+/// - environment variables like `$HOME` or `${VAR}`
+///
+/// Use this for **optional** path fields with:
+/// `#[serde(default, deserialize_with = "opt_path_from_toml")]`.
+///
+/// - Missing field → `None`
+/// - Present field → `Some(PathBuf)`
+///
+/// Fails if the field is present but not a string, or if expansion fails.
+pub fn opt_path_from_toml<'de, D>(deserializer: D) -> Result<Option<PathBuf>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(deserializer)?;
+
+    opt.map(|raw| {
+        let expanded = shellexpand::full(&raw).map_err(|e| de::Error::custom(e.to_string()))?;
+        Ok(PathBuf::from(expanded.to_string()))
+    })
+    .transpose()
 }
