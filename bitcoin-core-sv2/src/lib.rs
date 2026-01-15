@@ -6,7 +6,7 @@
 //!
 //! ## Overview
 //!
-//! `bitcoin_core_sv2` allows for the official Bitcoin Core v30+ distribution (or any compatible
+//! `bitcoin_core_sv2` allows for the official Bitcoin Core v30.2+ distribution (or any compatible
 //! fork) to be leveraged for the following use-cases:
 //!
 //! - Building Sv2 applications that act as a Client under the Template Distribution Protocol (e.g.:

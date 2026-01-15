@@ -21,7 +21,7 @@ The most typical high level configuration is:
 
 It can receive templates from two potential sources:
 - Sv2 Template Provider: a separate Sv2 application running either locally or on a different machine, for which a (optionally encrypted) TCP connection will be established
-- Bitcoin Core v30+: an officially released Bitcoin Core node running locally, on the same machine, for which a UNIX socket connection will be established
+- Bitcoin Core v30.2+: an officially released Bitcoin Core node running locally, on the same machine, for which a UNIX socket connection will be established
 
 ## Requirements
 
