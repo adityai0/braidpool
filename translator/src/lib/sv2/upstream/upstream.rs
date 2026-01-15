@@ -230,8 +230,8 @@ impl Upstream {
     pub async fn setup_connection(&mut self) -> TproxyResult<(), error::Upstream> {
         debug!("Upstream: initiating SV2 handshake...");
         // Build SetupConnection message
-        let setup_conn_msg =
-            Self::get_setup_connection_message(2, 2, &self.address, false).map_err(TproxyError::shutdown)?;
+        let setup_conn_msg = Self::get_setup_connection_message(2, 2, &self.address, false)
+            .map_err(TproxyError::shutdown)?;
         let sv2_frame: Sv2Frame =
             Message::Common(setup_conn_msg.into())
                 .try_into()

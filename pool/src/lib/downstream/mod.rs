@@ -239,8 +239,12 @@ impl Downstream {
         // The first ever message received on a new downstream connection
         // should always be a setup connection message.
         if header.msg_type() == MESSAGE_TYPE_SETUP_CONNECTION {
-            self.handle_common_message_frame_from_client(None, header, frame.payload())
-                .await?;
+            self.handle_common_message_frame_from_client(
+                Some(self.downstream_id),
+                header,
+                frame.payload(),
+            )
+            .await?;
             return Ok(());
         }
         Err(PoolError::disconnect(

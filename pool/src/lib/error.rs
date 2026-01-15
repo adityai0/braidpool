@@ -271,7 +271,7 @@ impl std::fmt::Display for PoolErrorKind {
             BitcoinCoreSv2CancellationTokenActivated => {
                 write!(f, "BitcoinCoreSv2 cancellation token activated")
             },
-            UnsupportedProtocol => write!(f, "Protocol not supported")
+            UnsupportedProtocol => write!(f, "Protocol not supported"),
             SetupConnectionError => {
                 write!(f, "Failed to Setup connection")
             }

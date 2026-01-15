@@ -31,7 +31,7 @@ impl HandleCommonMessagesFromClientAsync for Downstream {
 
     async fn handle_setup_connection(
         &mut self,
-        _client_id: Option<usize>,
+        client_id: Option<usize>,
         msg: SetupConnection<'_>,
         _tlv_fields: Option<&[Tlv]>,
     ) -> Result<(), Self::Error> {
@@ -40,8 +40,10 @@ impl HandleCommonMessagesFromClientAsync for Downstream {
             msg.min_version, msg.flags
         );
 
+        let downstream_id = client_id.expect("downstream id should be present");
+
         if msg.protocol != Protocol::MiningProtocol {
-            info!("Rejecting connection: SetupConnection asking for other protocols than mining protocol.");
+            info!("Rejecting connection from {downstream_id}: SetupConnection asking for other protocols than mining protocol.");
             let response = SetupConnectionError {
                 flags: 0,
                 error_code: "unsupported-protocol"
@@ -49,13 +51,21 @@ impl HandleCommonMessagesFromClientAsync for Downstream {
                     .try_into()
                     .expect("error code must be valid string"),
             };
-            let frame: Sv2Frame = AnyMessage::Common(response.into_static().into()).try_into()?;
+            let frame: Sv2Frame = AnyMessage::Common(response.into_static().into())
+                .try_into()
+                .map_err(PoolError::shutdown)?;
             self.downstream_channel
                 .downstream_sender
                 .send(frame)
-                .await?;
+                .await
+                .map_err(|_| {
+                    PoolError::disconnect(PoolErrorKind::ChannelErrorSender, downstream_id)
+                })?;
 
-            return Err(PoolError::UnsupportedProtocol);
+            return Err(PoolError::disconnect(
+                PoolErrorKind::UnsupportedProtocol,
+                downstream_id,
+            ));
         }
 
         self.requires_custom_work
