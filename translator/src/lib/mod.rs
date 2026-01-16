@@ -160,7 +160,7 @@ impl TranslatorSv2 {
                                                 * handled separately) */
             )
             .expect("Failed to initialize monitoring server")
-            .with_sv1_monitoring(sv1_server.clone()) // SV1 client connections
+            .with_sv1_monitoring(Arc::new(sv1_server.clone())) // SV1 client connections
             .expect("Failed to add SV1 monitoring");
 
             // Create shutdown signal that waits for ShutdownAll

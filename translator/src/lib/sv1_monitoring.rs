@@ -1,14 +1,12 @@
 //! SV1 client monitoring integration for Sv1Server
 //!
 //! This module implements the Sv1ClientsMonitoring trait on `Sv1Server`.
-
-use std::sync::Arc;
 use stratum_apps::monitoring::sv1::{Sv1ClientInfo, Sv1ClientsMonitoring};
 
 use crate::sv1::{downstream::downstream::Downstream, sv1_server::sv1_server::Sv1Server};
 
 /// Helper to convert a Downstream to Sv1ClientInfo
-fn downstream_to_sv1_client_info(downstream: &Arc<Downstream>) -> Option<Sv1ClientInfo> {
+fn downstream_to_sv1_client_info(downstream: &Downstream) -> Option<Sv1ClientInfo> {
     downstream
         .downstream_data
         .safe_lock(|dd| Sv1ClientInfo {
@@ -34,26 +32,15 @@ fn downstream_to_sv1_client_info(downstream: &Arc<Downstream>) -> Option<Sv1Clie
 
 impl Sv1ClientsMonitoring for Sv1Server {
     fn get_sv1_clients(&self) -> Vec<Sv1ClientInfo> {
-        // Clone Arc references and release lock immediately to avoid contention
-        let downstream_refs: Vec<Arc<Downstream>> = self
-            .sv1_server_data
-            .safe_lock(|data| data.downstreams.values().cloned().collect())
-            .unwrap_or_default();
-
-        downstream_refs
+        self.downstreams
             .iter()
-            .filter_map(downstream_to_sv1_client_info)
+            .filter_map(|downstream| downstream_to_sv1_client_info(downstream.value()))
             .collect()
     }
 
     fn get_sv1_client_by_id(&self, client_id: usize) -> Option<Sv1ClientInfo> {
-        self.sv1_server_data
-            .safe_lock(|data| {
-                data.downstreams
-                    .get(&client_id)
-                    .and_then(downstream_to_sv1_client_info)
-            })
-            .ok()
-            .flatten()
+        self.downstreams
+            .get(&client_id)
+            .and_then(|downstream| downstream_to_sv1_client_info(downstream.value()))
     }
 }
