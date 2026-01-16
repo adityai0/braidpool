@@ -51,30 +51,6 @@ If prior reviews exist:
 | [description] | `file.tsx:87` | open | ⚠️ still open |
 ```
 
-## Pre-Review: Check Past Findings
-
-**Before starting**, check for prior reviews on this branch:
-```bash
-BRANCH=$(git branch --show-current)
-PERSONA="typescript"
-ls .reviews/${BRANCH}-${PERSONA}-*.json 2>/dev/null
-```
-
-If prior reviews exist:
-1. **Load findings**: Parse the JSON to get previous issues
-2. **Verify fixes**: For each finding, check if the code has been updated
-3. **Update status**: Mark as `resolved`, `open`, or `regressed`
-4. **Reference in report**: Include a "Previous Findings" section showing what was addressed
-
-**In your output**, add this section if prior reviews exist:
-```markdown
-### Previous Findings Status
-| Issue | File:Line | Previous Status | Current Status |
-|-------|-----------|-----------------|----------------|
-| [description] | `file.tsx:42` | open | ✅ resolved |
-| [description] | `file.tsx:87` | open | ⚠️ still open |
-```
-
 ## Review Checklist
 
 ### 1. React Best Practices
