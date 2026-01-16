@@ -5,7 +5,7 @@ use crate::{
         channel::ChannelState,
         data::{ChannelManagerData, ChannelMode},
     },
-    utils::ShutdownMessage,
+    utils::{ShutdownMessage, AGGREGATED_CHANNEL_ID},
 };
 use async_channel::{Receiver, Sender};
 use std::sync::{Arc, RwLock};
@@ -403,6 +403,10 @@ impl ChannelManager {
                                                 .on_new_extended_mining_job(job.clone());
                                         }
                                     });
+
+                                    // set the channel id to the aggregated channel id
+                                    // before sending the message to the SV1Server
+                                    job.channel_id = AGGREGATED_CHANNEL_ID;
 
                                     self.channel_state
                                         .sv1_server_sender
