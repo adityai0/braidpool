@@ -404,6 +404,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     ));
     match server_join.await {
         Ok(Ok(_addr)) => {}
+        Ok(Err(error)) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("RPC server startup failed due - {}", error.to_string()),
+            )
+            .into());
+        }
         Err(e) => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -679,7 +686,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         if broadcast_ts  < threshold as u32 {
                                             info!("Incoming BEAD received during IBD within threshold limit with broadcast timestamp - {:?} and threshold is - {:?}",broadcast_ts,threshold);
                                            match status{
-                                            braid::AddBeadStatus::InvalidBead | braid::AddBeadStatus::ParentsMissing=>{
+                                            braid::AddBeadStatus::InvalidBead | braid::AddBeadStatus::ParentsNotYetReceived | braid::AddBeadStatus::ParentsMissing=>{
                                                 //Aborting/evicting the wait_ibd handler corresponding to the sync peer
                                                 match ibd_command_tx.send(IBDCommands::AbortWaitHandle { peer_id:sync_peer_id }).await{
                                                     Ok(_)=>{
@@ -700,7 +707,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                                 }
                                                 continue;
                                             },
-                                            braid::AddBeadStatus::BeadAdded | braid::AddBeadStatus::DuplicateBead =>{
+                                            braid::AddBeadStatus::BeadAdded | braid::AddBeadStatus::DagAlreadyContainsBead | braid::AddBeadStatus::DuplicateBead =>{
                                                 ibd_spinlock.store(false,Ordering::SeqCst);
                                                 continue;
                                             },
@@ -1088,8 +1095,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                             }
                                         } else if let braid::AddBeadStatus::BeadAdded = status {
                                             let bead_id = match braid_data
-                                                .bead_index_mapping
-                                                .get(&bead.block_header.block_hash()) {
+                                                .index
+                                                .get(&bead.block_header.block_hash())
+                                            {
                                                 Some(id) => id,
                                                 None => {
                                                     error!(bead_hash = ?bead.block_header.block_hash(), "Bead ID not found in index mapping (GetBeadsAfter)");
@@ -1104,7 +1112,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                             }
                                             let (txs_json, relative_json, parent_timestamp_json) = match prepare_bead_tuple_data(
                                                 &braid_data.beads,
-                                                &braid_data.bead_index_mapping,
+                                                &braid_data.index,
                                                 &braid_parent_set,
                                                 &bead,
                                             ){

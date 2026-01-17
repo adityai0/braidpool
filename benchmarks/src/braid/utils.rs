@@ -1,9 +1,9 @@
 use crate::braid::benchmark_types::{BeadIdx, ParentMap, SimpleNetwork};
-use node::braid::{algorithms, Cohort, Relatives};
-use std::f64::consts::E;
 use crate::braid::simple_generator::SimpleParentGenerator;
+use node::braid::{algorithms, Cohort, Relatives};
 use rand::prelude::*;
 use std::collections::{HashMap, HashSet};
+use std::f64::consts::E;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy)]
@@ -153,11 +153,7 @@ fn network_parents(total_beads: usize, width: f64, seed: u64) -> ParentMap {
         parents
     } else {
         let mut network = SimpleNetwork::new(20, 4, seed);
-        network.simulate_parents(
-            total_beads,
-            max_parents,
-            y * SimpleNetwork::NETWORK_SIZE,
-        )
+        network.simulate_parents(total_beads, max_parents, y * SimpleNetwork::NETWORK_SIZE)
     }
 }
 

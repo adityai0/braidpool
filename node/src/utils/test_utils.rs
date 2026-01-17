@@ -37,7 +37,12 @@ macro_rules! cohorts {
         vec![$(BeadSet::from($set)),*]
     }};
 }
-
+#[cfg(test)]
+pub(crate) fn hashset_to_vec_deterministic(hashset: &HashSet<BeadHash>) -> Vec<BeadHash> {
+    let mut vec: Vec<BeadHash> = hashset.iter().cloned().collect();
+    vec.sort();
+    vec
+}
 // A macro for creating test braids like:
 // let braid = make_test_braid!(0 => [], 1 => [0], 2 => [0, 1]);
 #[cfg(test)]

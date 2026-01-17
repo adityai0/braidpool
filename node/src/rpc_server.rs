@@ -302,11 +302,15 @@ impl RpcServer for RpcServerImpl {
 
         match success_status {
             AddBeadStatus::BeadAdded => Ok("Bead added successfully".to_string()),
-            AddBeadStatus::DuplicateBead => Ok("Bead already exists".to_string()),
+            AddBeadStatus::DuplicateBead | AddBeadStatus::DagAlreadyContainsBead => {
+                Ok("Bead already exists".to_string())
+            }
             AddBeadStatus::InvalidBead => {
                 Err(ErrorObjectOwned::owned(4, "Invalid bead", None::<()>))
             }
-            AddBeadStatus::ParentsMissing => Ok("Bead queued, waiting for parents".to_string()),
+            AddBeadStatus::ParentsMissing | AddBeadStatus::ParentsNotYetReceived => {
+                Ok("Bead queued, waiting for parents".to_string())
+            }
         }
     }
 
@@ -2248,7 +2252,8 @@ async fn spawn_test_server(braid: Arc<RwLock<Braid>>) -> Option<SocketAddr> {
     let start = START_OFFSET.fetch_add(1, Ordering::Relaxed);
     let mut last_error: Option<io::Error> = None;
     let peer_manager = Arc::new(tokio::sync::RwLock::new(PeerManager::new(8)));
-    let stratum_connection_mapping = Arc::new(tokio::sync::RwLock::new(stratum::ConnectionMapping::new()));
+    let stratum_connection_mapping =
+        Arc::new(tokio::sync::RwLock::new(stratum::ConnectionMapping::new()));
     let latest_block_template = Arc::new(Mutex::new(stratum::BlockTemplate::default()));
     let (rpc_proxy_tx, _rpc_proxy_rx) = mpsc::unbounded_channel();
     let bitcoin_rpc_config = None;

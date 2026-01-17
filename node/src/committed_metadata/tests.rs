@@ -1,5 +1,5 @@
 use super::*;
-use crate::utils::hashset_to_vec_deterministic;
+use crate::utils::test_utils::hashset_to_vec_deterministic;
 use crate::utils::test_utils::TestCommittedMetadataBuilder;
 use bitcoin::consensus::encode::deserialize;
 use bitcoin::consensus::serialize;

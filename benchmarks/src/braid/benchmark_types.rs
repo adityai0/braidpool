@@ -62,10 +62,7 @@ impl SimpleNetwork {
         for i in 0..num_nodes {
             let node = SimpleNode {
                 id: i as NodeId,
-                position: (
-                    rng.gen_range(-PI / 2.0..PI / 2.0),
-                    rng.gen_range(0.0..TAU),
-                ),
+                position: (rng.gen_range(-PI / 2.0..PI / 2.0), rng.gen_range(0.0..TAU)),
                 peers: Vec::new(),
                 hashrate: 1.0 / num_nodes as f64,
                 known_beads: HashMap::new(),
@@ -126,8 +123,7 @@ impl SimpleNetwork {
         let (lat2, lon2) = p2;
         let dlat = lat2 - lat1;
         let dlon = lon2 - lon1;
-        let a = (dlat / 2.0).sin().powi(2)
-            + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().powi(2);
+        let a = (dlat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().powi(2);
         let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
         // Scale arc length by network size (round-trip) to get one-way latency.
         0.5 * Self::NETWORK_SIZE * c / PI
@@ -140,12 +136,11 @@ impl SimpleNetwork {
 
         // Distribute genesis to all nodes
         for idx in 0..self.nodes.len() {
-            let delay =
-                    Self::sample_geometric(
-                        &mut self.rng,
-                        self.nodes[idx].hashrate,
-                        self.mine_rate_scale,
-                    );
+            let delay = Self::sample_geometric(
+                &mut self.rng,
+                self.nodes[idx].hashrate,
+                self.mine_rate_scale,
+            );
             let node = &mut self.nodes[idx];
             node.known_beads.insert(0, HashSet::new());
             node.tips.insert(0);
@@ -155,8 +150,7 @@ impl SimpleNetwork {
 
     fn sample_geometric(rng: &mut StdRng, hashrate: f64, mine_rate_scale: f64) -> f64 {
         // Exponential wait with mean tied to network size to create natural overlap.
-        let rate =
-            (hashrate * mine_rate_scale / Self::NETWORK_SIZE.max(1e-6)).max(1e-6);
+        let rate = (hashrate * mine_rate_scale / Self::NETWORK_SIZE.max(1e-6)).max(1e-6);
         let u: f64 = f64::max(rng.gen_range(0.0..1.0), 1e-9);
         (-u.ln()) / rate
     }
@@ -170,24 +164,25 @@ impl SimpleNetwork {
         self.mine_rate_scale = mine_rate_scale.max(1e-3);
         // Re-seed initial mining times with the requested scale.
         for idx in 0..self.nodes.len() {
-            let rate_delay =
-                Self::sample_geometric(&mut self.rng, self.nodes[idx].hashrate, self.mine_rate_scale);
+            let rate_delay = Self::sample_geometric(
+                &mut self.rng,
+                self.nodes[idx].hashrate,
+                self.mine_rate_scale,
+            );
             self.nodes[idx].next_mining_time = rate_delay;
         }
         while self.parents.len() < target_beads {
             let next_arrival = self
                 .pending_transmissions
                 .peek()
-                .map(|t| t.0 .arrival_time)
+                .map(|t| t.0.arrival_time)
                 .unwrap_or(f64::INFINITY);
             let (next_node_idx, next_mine_time) = self
                 .nodes
                 .iter()
                 .enumerate()
                 .min_by(|(_, a), (_, b)| {
-                    a.next_mining_time
-                        .partial_cmp(&b.next_mining_time)
-                        .unwrap()
+                    a.next_mining_time.partial_cmp(&b.next_mining_time).unwrap()
                 })
                 .map(|(idx, node)| (idx, node.next_mining_time))
                 .unwrap();

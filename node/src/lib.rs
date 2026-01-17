@@ -1,4 +1,5 @@
 //These implementations must be defined under lib.rs as they are required for intergration tests
+use crate::db::db_handlers::prepare_bead_tuple_data;
 use bitcoin::{
     consensus::encode::deserialize, ecdsa::Signature, pow::CompactTargetExt, BlockHash,
     CompactTarget, EcdsaSighashType, Txid,
@@ -28,7 +29,7 @@ use crate::{
     bead::Bead,
     braid::{AddBeadStatus, Braid},
     committed_metadata::{CommittedMetadata, TimeVec, TxIdVec},
-    db::{BraidpoolDBTypes, db_handlers::prepare_bead_tuple_data},
+    db::BraidpoolDBTypes,
     error::{IPCtemplateError, StratumErrors},
     stratum::{BlockTemplate, NotifyCmd},
     uncommitted_metadata::UnCommittedMetadata,
@@ -44,8 +45,8 @@ pub mod cli;
 pub mod committed_metadata;
 pub mod config;
 pub mod db;
-pub mod ibd_manager;
 pub mod error;
+pub mod ibd_manager;
 pub mod ipc;
 pub mod peer_manager;
 pub mod rpc_server;
@@ -302,7 +303,7 @@ impl SwarmHandler {
         //Committing parents data in bead
         for tip_bead in tips_index {
             let current_tip_bead = braid_data.beads.get(*tip_bead).unwrap();
-            parent_hash_set.insert(current_tip_bead.hash());
+            parent_hash_set.insert(current_tip_bead.block_header.block_hash());
             time_hash_set
                 .0
                 .push(current_tip_bead.committed_metadata.start_timestamp);
@@ -314,8 +315,7 @@ impl SwarmHandler {
         //Mindiff
         let min_target = CompactTarget::from_unprefixed_hex("1d00ffff").unwrap();
         //Job sent time before downstream starts mining
-        let job_notification_time_val =
-            MicrosecondTimestamp::from_micros(job_sent_timestamp as u64);
+        let job_notification_time_val = MicrosecondTimestamp::from_secs(job_sent_timestamp);
         let candidate_block_bead_committed_metadata = CommittedMetadata {
             comm_pub_key: public_key,
             transaction_ids: TxIdVec(transaction_ids),

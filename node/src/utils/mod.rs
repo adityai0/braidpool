@@ -14,22 +14,16 @@ use crate::utils::timestamp::MicrosecondTimestamp;
 
 // Re-export Time for other modules
 pub use bitcoin::absolute::MedianTimePast as Time;
+
+/// BeadHash is a type alias for BlockHash, representing the hash of a bead.
+pub type BeadHash = BlockHash;
+
 // Standard Imports
 #[allow(unused_imports)]
 use tracing::{debug, error, info, trace, warn};
 
 pub mod test_utils;
 pub mod timestamp;
-pub type BeadHash = BlockHash;
-pub(crate) fn hashset_to_vec_deterministic(hashset: &HashSet<BeadHash>) -> Vec<BeadHash> {
-    let mut vec: Vec<BeadHash> = hashset.iter().cloned().collect();
-    vec.sort();
-    vec
-}
-
-pub(crate) fn vec_to_hashset(vec: Vec<BeadHash>) -> HashSet<BeadHash> {
-    vec.iter().cloned().collect()
-}
 // Error Definitions
 use std::{collections::HashSet, net::IpAddr, str::FromStr};
 
