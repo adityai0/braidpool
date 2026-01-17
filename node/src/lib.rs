@@ -1,5 +1,4 @@
 //These implementations must be defined under lib.rs as they are required for intergration tests
-use crate::db::db_handlers::prepare_bead_tuple_data;
 use bitcoin::{
     consensus::encode::deserialize, ecdsa::Signature, pow::CompactTargetExt, BlockHash,
     CompactTarget, EcdsaSighashType, Txid,
@@ -33,10 +32,9 @@ use crate::{
     error::{IPCtemplateError, StratumErrors},
     stratum::{BlockTemplate, NotifyCmd},
     uncommitted_metadata::UnCommittedMetadata,
+    utils::timestamp::MicrosecondTimestamp,
 };
 use std::error::Error;
-#[macro_use]
-pub mod macros;
 pub mod bead;
 pub mod behaviour;
 pub mod braid;
@@ -45,7 +43,6 @@ pub mod committed_metadata;
 pub mod config;
 pub mod db;
 pub mod error;
-pub mod ibd_manager;
 pub mod ipc;
 pub mod peer_manager;
 pub mod rpc_server;
@@ -250,8 +247,6 @@ pub async fn ipc_template_consumer(
 }
 pub enum SwarmCommand {
     PropagateValidBead { bead_bytes: Vec<u8> },
-    //Initiate IBD after waiting for connection_mapping to be populated via peer discovery
-    InitiateIBD,
 }
 pub struct SwarmHandler {
     pub command_sender: Sender<SwarmCommand>,
@@ -302,7 +297,7 @@ impl SwarmHandler {
         //Committing parents data in bead
         for tip_bead in tips_index {
             let current_tip_bead = braid_data.beads.get(*tip_bead).unwrap();
-            parent_hash_set.insert(current_tip_bead.block_header.block_hash());
+            parent_hash_set.insert(current_tip_bead.hash());
             time_hash_set
                 .0
                 .push(current_tip_bead.committed_metadata.start_timestamp);
@@ -315,8 +310,7 @@ impl SwarmHandler {
         let min_target = CompactTarget::from_unprefixed_hex("1d00ffff").unwrap();
         //Job sent time before downstream starts mining
         let job_notification_time_val =
-            bitcoin::blockdata::locktime::absolute::Time::from_consensus(job_sent_timestamp)
-                .unwrap();
+            MicrosecondTimestamp::from_micros(job_sent_timestamp as u64);
         let candidate_block_bead_committed_metadata = CommittedMetadata {
             comm_pub_key: public_key,
             transaction_ids: TxIdVec(transaction_ids),
@@ -348,10 +342,7 @@ impl SwarmHandler {
         let unix_timestamp = duration_since_epoch.as_secs().to_u32().unwrap();
 
         let candidate_block_bead_uncommitted_metadata = UnCommittedMetadata {
-            broadcast_timestamp: bitcoin::blockdata::locktime::absolute::MedianTimePast::from_u32(
-                unix_timestamp,
-            )
-            .unwrap(),
+            broadcast_timestamp: MicrosecondTimestamp::from_secs(unix_timestamp),
             extra_nonce_1: extranonce_1_raw_value,
             extra_nonce_2: extranonce_2_raw_value,
             signature: sig,
@@ -366,76 +357,61 @@ impl SwarmHandler {
             AddBeadStatus::BeadAdded => {
                 let new_tips: Vec<_> = braid_data.tips.iter().map(|&idx| idx).collect();
                 info!(
-                    hash = %weak_share.block_header.block_hash(),
+                    hash = %weak_share.hash(),
                     new_tips = ?new_tips,
                     "Braid extended successfully"
                 );
-                //Considering the index of the beads in braid will be same as the (insertion ids-1)
-                let bead_id = braid_data
-                    .bead_index_mapping
-                    .get(&weak_share.block_header.block_hash())
-                    .unwrap();
-                let (txs_json, relative_json, parent_timestamp_json) = prepare_bead_tuple_data(
-                    &braid_data.beads,
-                    &braid_data.bead_index_mapping,
-                    &weak_share,
-                )
-                .unwrap();
-                let _db_insertion_command = match self
-                    .db_command_sender
-                    .send(BraidpoolDBTypes::InsertTupleTypes {
-                        query: db::InsertTupleTypes::InsertBeadSequentially {
-                            bead_to_insert: weak_share.clone(),
-                            txs_json: txs_json,
-                            relative_json: relative_json,
-                            parent_timestamp_json: parent_timestamp_json,
-                            bead_id: *bead_id,
-                        },
-                    })
-                    .await
-                {
-                    Ok(_) => {
-                        debug!(
-                            hash = %weak_share.block_header.block_hash(),
-                            "InsertBeadSequentially sent to DB thread"
-                        );
-                    }
-                    Err(error) => {
-                        error!(error = ?error, "Database insertion command failed");
-                    }
-                };
-                let serialized_weak_share_bytes = bitcoin::consensus::serialize(&weak_share);
-                //After validation of the candidate block constructed by the downstream node sending it to swarm for further propogation
-                match self
-                    .command_sender
-                    .send(SwarmCommand::PropagateValidBead {
-                        bead_bytes: serialized_weak_share_bytes,
-                    })
-                    .await
-                {
-                    Ok(_) => {
-                        info!(
-                            hash = %weak_share.block_header.block_hash(),
-                            "Bead sent to swarm"
-                        );
-                    }
-                    Err(e) => {
-                        error!(
-                            hash = %weak_share.block_header.block_hash(),
-                            error = %e,
-                            "Failed to send candidate block to swarm"
-                        );
-                        return Err(StratumErrors::CandidateBlockNotSent {
-                            error: e.to_string(),
-                        });
-                    }
-                };
             }
             _ => {
-                warn!(status = ?status, hash = %weak_share.block_header.block_hash(),
+                warn!(status = ?status, hash = %weak_share.hash(),
                     "Failed to extend Braid")
             }
         }
+        let _db_insertion_command = match self
+            .db_command_sender
+            .send(BraidpoolDBTypes::InsertTupleTypes {
+                query: db::InsertTupleTypes::InsertBeadSequentially {
+                    bead_to_insert: weak_share.clone(),
+                },
+            })
+            .await
+        {
+            Ok(_) => {
+                debug!(
+                    hash = %weak_share.hash(),
+                    "InsertBeadSequentially sent to DB thread"
+                );
+            }
+            Err(error) => {
+                error!(error = ?error, "Database insertion command failed");
+            }
+        };
+        let serialized_weak_share_bytes = bitcoin::consensus::serialize(&weak_share);
+        //After validation of the candidate block constructed by the downstream node sending it to swarm for further propogation
+        match self
+            .command_sender
+            .send(SwarmCommand::PropagateValidBead {
+                bead_bytes: serialized_weak_share_bytes,
+            })
+            .await
+        {
+            Ok(_) => {
+                info!(
+                    hash = %weak_share.hash(),
+                    "Bead sent to swarm"
+                );
+            }
+            Err(e) => {
+                error!(
+                    hash = %weak_share.hash(),
+                    error = %e,
+                    "Failed to send candidate block to swarm"
+                );
+                return Err(StratumErrors::CandidateBlockNotSent {
+                    error: e.to_string(),
+                });
+            }
+        };
         Ok(())
     }
 }
