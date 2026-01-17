@@ -14,6 +14,10 @@ use crate::utils::timestamp::MicrosecondTimestamp;
 
 // Re-export Time for other modules
 pub use bitcoin::absolute::MedianTimePast as Time;
+
+/// BeadHash is a type alias for BlockHash, representing the hash of a bead.
+pub type BeadHash = BlockHash;
+
 // Standard Imports
 #[allow(unused_imports)]
 use tracing::{debug, error, info, trace, warn};

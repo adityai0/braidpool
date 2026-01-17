@@ -1,4 +1,4 @@
-use crate::bead::BeadHash;
+use crate::utils::BeadHash;
 use crate::utils::timestamp::MicrosecondTimestamp;
 use bitcoin::consensus::encode::Decodable;
 use bitcoin::consensus::encode::Encodable;

@@ -22,10 +22,16 @@ pub type CohortIdx = usize;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AddBeadStatus {
+    /// Bead already exists in the DAG (duplicate)
     DuplicateBead,
+    /// Alias for DuplicateBead (sprint-agents compatibility)
+    DagAlreadyContainsBead,
     InvalidBead,
     BeadAdded,
+    /// Parents not yet in DAG, bead added to orphanage
     ParentsMissing,
+    /// Alias for ParentsMissing (sprint-agents compatibility)  
+    ParentsNotYetReceived,
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +129,18 @@ impl Braid {
             let _ = braid.extend(&bead);
         }
         braid
+    }
+
+    // ==================== Compatibility Accessors (sprint-agents naming) ====================
+
+    /// Compatibility accessor: returns reference to `index` (sprint-agents called it `bead_index_mapping`)
+    pub fn bead_index_mapping(&self) -> &HashMap<BeadHash, BeadIdx> {
+        &self.index
+    }
+
+    /// Compatibility accessor: returns reference to `geneses` (sprint-agents called it `genesis_beads`)
+    pub fn genesis_beads(&self) -> &BeadSet {
+        &self.geneses
     }
 
     // ==================== Public API ====================
@@ -530,6 +548,11 @@ impl Braid {
         }
     }
 
+    /// Compatibility alias for check_geneses (sprint-agents naming)
+    pub fn check_genesis_beads(&self, genesis_beads: &Vec<BeadHash>) -> GenesisCheckStatus {
+        self.check_geneses(genesis_beads)
+    }
+
     pub fn insert_geneses(&mut self, geneses: Vec<Bead>) {
         for bead in geneses {
             let bead_hash = bead.hash();
@@ -539,6 +562,77 @@ impl Braid {
                 self.index.insert(bead_hash, new_index);
                 self.geneses.insert(new_index);
             }
+        }
+    }
+
+    /// Compatibility alias for insert_geneses (sprint-agents naming)
+    pub fn insert_genesis_beads(&mut self, genesis_beads: Vec<Bead>) {
+        self.insert_geneses(genesis_beads)
+    }
+
+    /// Utility function for GetBeadsAfter request (IBD sync)
+    /// Returns beads that come after the given tips, or all beads if tips is empty
+    pub fn get_beads_after(&self, old_tips: Vec<BeadHash>) -> Option<Vec<Bead>> {
+        let old_tips_set: HashSet<BeadHash> = old_tips.into_iter().collect();
+        tracing::debug!(
+            old_tips=?old_tips_set, "Tips received for IBD sync"
+        );
+        
+        // If no tips provided, return all beads
+        if old_tips_set.is_empty() {
+            return Some(self.beads.clone());
+        }
+        
+        // Find the smallest index among the old tips
+        let mut smallest_index = usize::MAX;
+        for hash in &old_tips_set {
+            if let Some(&index) = self.index.get(hash) {
+                if index < smallest_index {
+                    smallest_index = index;
+                }
+            }
+        }
+        
+        // If no tips matched, return all beads as fallback
+        if smallest_index == usize::MAX {
+            return Some(self.beads.clone());
+        }
+
+        tracing::debug!(smallest_index, "Starting from bead index");
+        
+        // Find the cohort containing the smallest index using cohort_map cache
+        let smallest_cohort_index = self.cohort_map.get(&smallest_index).copied()
+            .unwrap_or_else(|| {
+                // Fallback: search cohorts linearly
+                for (idx, cohort) in self.cohorts.iter().enumerate() {
+                    if cohort.contains(&smallest_index) {
+                        return idx;
+                    }
+                }
+                usize::MAX
+            });
+        
+        if smallest_cohort_index == usize::MAX {
+            return Some(self.beads.clone());
+        }
+
+        tracing::debug!(smallest_cohort_index, "Starting from cohort index");
+        
+        // Collect beads from the smallest cohort onward, excluding old tips
+        let mut response_beads = Vec::new();
+        for cohort in self.cohorts.iter().skip(smallest_cohort_index) {
+            for &bead_index in cohort {
+                let bead = &self.beads[bead_index];
+                if !old_tips_set.contains(&bead.hash()) {
+                    response_beads.push(bead.clone());
+                }
+            }
+        }
+        
+        if response_beads.is_empty() {
+            None
+        } else {
+            Some(response_beads)
         }
     }
 }
