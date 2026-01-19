@@ -11,7 +11,7 @@ pub struct DownstreamChannelState {
     pub downstream_sv1_sender: Sender<json_rpc::Message>,
     pub downstream_sv1_receiver: Receiver<json_rpc::Message>,
     pub sv1_server_sender: Sender<(DownstreamId, json_rpc::Message)>,
-    pub sv1_server_receiver:
+    pub sv1_server_broadcast:
         broadcast::Sender<(ChannelId, Option<DownstreamId>, json_rpc::Message)>, /* channel_id, optional downstream_id, message */
 }
 
@@ -21,7 +21,7 @@ impl DownstreamChannelState {
         downstream_sv1_sender: Sender<json_rpc::Message>,
         downstream_sv1_receiver: Receiver<json_rpc::Message>,
         sv1_server_sender: Sender<(DownstreamId, json_rpc::Message)>,
-        sv1_server_receiver: broadcast::Sender<(
+        sv1_server_broadcast: broadcast::Sender<(
             ChannelId,
             Option<DownstreamId>,
             json_rpc::Message,
@@ -30,7 +30,7 @@ impl DownstreamChannelState {
         Self {
             downstream_sv1_receiver,
             downstream_sv1_sender,
-            sv1_server_receiver,
+            sv1_server_broadcast,
             sv1_server_sender,
         }
     }

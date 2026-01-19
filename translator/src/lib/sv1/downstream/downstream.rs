@@ -49,7 +49,7 @@ impl Downstream {
         downstream_sv1_sender: Sender<json_rpc::Message>,
         downstream_sv1_receiver: Receiver<json_rpc::Message>,
         sv1_server_sender: Sender<(DownstreamId, json_rpc::Message)>,
-        sv1_server_receiver: broadcast::Sender<(
+        sv1_server_broadcast: broadcast::Sender<(
             ChannelId,
             Option<DownstreamId>,
             json_rpc::Message,
@@ -66,7 +66,7 @@ impl Downstream {
             downstream_sv1_sender,
             downstream_sv1_receiver,
             sv1_server_sender,
-            sv1_server_receiver,
+            sv1_server_broadcast,
         );
         Self {
             downstream_data,
@@ -94,7 +94,7 @@ impl Downstream {
     ) {
         let mut sv1_server_receiver = self
             .downstream_channel_state
-            .sv1_server_receiver
+            .sv1_server_broadcast
             .subscribe();
         let mut shutdown_rx = notify_shutdown.subscribe();
         let downstream_id = self.downstream_data.super_safe_lock(|d| d.downstream_id);
