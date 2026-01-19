@@ -390,10 +390,6 @@ impl Downstream {
             }
         };
 
-        let downstream_id = self
-            .downstream_data
-            .super_safe_lock(|data| data.downstream_id);
-
         self.downstream_channel_state
             .sv1_server_sender
             .send((downstream_id, message))

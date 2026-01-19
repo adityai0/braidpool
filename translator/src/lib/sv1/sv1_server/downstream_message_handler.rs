@@ -11,7 +11,7 @@ use crate::{
     utils::validate_sv1_share,
 };
 
-// Implements `IsServer` for `Downstream` to handle the Sv1 messages.
+// Implements `IsServer` for `Sv1Server` to handle the Sv1 messages.
 #[hotpath::measure_all]
 impl IsServer<'static> for Sv1Server {
     fn handle_configure(
@@ -294,7 +294,7 @@ impl IsServer<'static> for Sv1Server {
         &'_ mut self,
         _client_id: Option<usize>,
     ) -> Result<json_rpc::Message, stratum_apps::stratum_core::sv1_api::error::Error<'_>> {
-        warn!("notify() called on DownstreamData - this method is not implemented for the translator proxy");
+        warn!("notify() called on Sv1Server - this method is not implemented for Sv1Server");
         Err(
             stratum_apps::stratum_core::sv1_api::error::Error::UnexpectedMessage(
                 "notify".to_string(),
