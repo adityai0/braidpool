@@ -27,10 +27,10 @@ impl IsServer<'static> for Sv1Server {
             request
         );
 
-        let downstream = match self.downstreams.get(&downstream_id) {
-            Some(d) => d,
-            None => return (None, None),
-        };
+        let downstream = self
+            .downstreams
+            .get(&downstream_id)
+            .expect("Downstream should exist");
 
         downstream.downstream_data.super_safe_lock(|data| {
             data.version_rolling_mask = request
@@ -98,10 +98,10 @@ impl IsServer<'static> for Sv1Server {
     ) -> bool {
         let downstream_id = client_id.expect("Downstream id should exist");
 
-        let downstream = match self.downstreams.get(&downstream_id) {
-            Some(d) => d,
-            None => return false,
-        };
+        let downstream = self
+            .downstreams
+            .get(&downstream_id)
+            .expect("Downstream should exist");
 
         let job_id = &request.job_id;
 
@@ -182,10 +182,10 @@ impl IsServer<'static> for Sv1Server {
     /// Checks if a Downstream role is authorized.
     fn is_authorized(&self, client_id: Option<usize>, name: &str) -> bool {
         let downstream_id = client_id.expect("Downstream id should exist");
-        let downstream = match self.downstreams.get(&downstream_id) {
-            Some(d) => d,
-            None => return false,
-        };
+        let downstream = self
+            .downstreams
+            .get(&downstream_id)
+            .expect("Downstream should exist");
         downstream
             .downstream_data
             .super_safe_lock(|data| data.authorized_worker_name == *name)
@@ -194,10 +194,11 @@ impl IsServer<'static> for Sv1Server {
     /// Authorizes a Downstream role.
     fn authorize(&mut self, client_id: Option<usize>, name: &str) {
         let downstream_id = client_id.expect("Downstream id should exist");
-        let downstream = match self.downstreams.get(&downstream_id) {
-            Some(d) => d,
-            None => return,
-        };
+        let downstream = self
+            .downstreams
+            .get(&downstream_id)
+            .expect("Downstream should exist");
+
         let is_authorized = self.is_authorized(client_id, name);
         downstream.downstream_data.super_safe_lock(|data| {
             if !is_authorized {
@@ -269,10 +270,11 @@ impl IsServer<'static> for Sv1Server {
     /// Sets the version rolling mask.
     fn set_version_rolling_mask(&mut self, client_id: Option<usize>, mask: Option<HexU32Be>) {
         let downstream_id = client_id.expect("Downstream id should exist");
-        let downstream = match self.downstreams.get(&downstream_id) {
-            Some(d) => d,
-            None => return,
-        };
+        let downstream = self
+            .downstreams
+            .get(&downstream_id)
+            .expect("Downstream should exist");
+
         downstream
             .downstream_data
             .super_safe_lock(|data| data.version_rolling_mask = mask)
@@ -281,10 +283,10 @@ impl IsServer<'static> for Sv1Server {
     /// Sets the minimum version rolling bit.
     fn set_version_rolling_min_bit(&mut self, client_id: Option<usize>, mask: Option<HexU32Be>) {
         let downstream_id = client_id.expect("Downstream id should exist");
-        let downstream = match self.downstreams.get(&downstream_id) {
-            Some(d) => d,
-            None => return,
-        };
+        let downstream = self
+            .downstreams
+            .get(&downstream_id)
+            .expect("Downstream should exist");
         downstream
             .downstream_data
             .super_safe_lock(|data| data.version_rolling_min_bit = mask)
