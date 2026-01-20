@@ -490,22 +490,28 @@ impl Sv1Server {
         &self,
         downstream_id: DownstreamId,
     ) -> TproxyResult<(), error::Sv1Server> {
-        info!("SV1 Server: Opening extended mining channel for downstream {} after receiving first message", downstream_id);
+        info!(
+            "SV1 server: opening extended mining channel for downstream {} after first message",
+            downstream_id
+        );
 
         let request_id = self.request_id_factory.fetch_add(1, Ordering::Relaxed);
         self.request_id_to_downstream_id
             .insert(request_id, downstream_id);
-        let contains_key = self.downstreams.contains_key(&downstream_id);
 
-        if contains_key {
-            self.open_extended_mining_channel(request_id, downstream_id)
-                .await?;
-        } else {
+        if !self.downstreams.contains_key(&downstream_id) {
             error!(
-                "Downstream {} not found when trying to open channel",
+                "Downstream {} not found when attempting to open channel",
                 downstream_id
             );
+            return Err(TproxyError::disconnect(
+                TproxyErrorKind::DownstreamNotFound(downstream_id as u32),
+                downstream_id,
+            ));
         }
+
+        self.open_extended_mining_channel(request_id, downstream_id)
+            .await?;
 
         Ok(())
     }
@@ -559,7 +565,7 @@ impl Sv1Server {
                         .extranonce_prefix
                         .to_vec()
                         .try_into()
-                        .map_err(|error| TproxyError::disconnect(error, downstream_id))?;
+                        .map_err(TproxyError::fallback)?;
                     downstream
                         .downstream_data
                         .safe_lock(|d| {
@@ -685,7 +691,7 @@ impl Sv1Server {
                 } else {
                     // Vardiff disabled - just forward the difficulty to downstreams
                     debug!("Vardiff disabled - forwarding SetTarget to downstreams");
-                    self.handle_set_target_without_vardiff(m).await;
+                    self.handle_set_target_without_vardiff(m).await?;
                 }
             }
             // Guaranteed unreachable: the channel manager only forwards valid,
@@ -799,7 +805,10 @@ impl Sv1Server {
     /// This method forwards difficulty changes from upstream directly to downstream miners
     /// without any variable difficulty logic. It respects the aggregated/non-aggregated
     /// channel configuration.
-    async fn handle_set_target_without_vardiff(&self, set_target: SetTarget<'_>) {
+    async fn handle_set_target_without_vardiff(
+        &self,
+        set_target: SetTarget<'_>,
+    ) -> TproxyResult<(), error::Sv1Server> {
         let new_target =
             Target::from_le_bytes(set_target.maximum_target.inner_as_ref().try_into().unwrap());
         debug!(
@@ -809,19 +818,22 @@ impl Sv1Server {
 
         if self.config.aggregate_channels {
             // Aggregated mode: send set_difficulty to ALL downstreams
-            self.send_set_difficulty_to_all_downstreams(new_target)
+            return self
+                .send_set_difficulty_to_all_downstreams(new_target)
                 .await;
-            return;
         }
 
         // Non-aggregated mode: send set_difficulty to specific downstream for this channel
         self.send_set_difficulty_to_specific_downstream(set_target.channel_id, new_target)
-            .await;
+            .await
     }
 
     /// Sends set_difficulty to all downstreams (aggregated mode).
     /// Used only when vardiff is disabled.
-    async fn send_set_difficulty_to_all_downstreams(&self, target: Target) {
+    async fn send_set_difficulty_to_all_downstreams(
+        &self,
+        target: Target,
+    ) -> TproxyResult<(), error::Sv1Server> {
         for downstream in self.downstreams.iter() {
             let downstream_id = downstream.key();
             let downstream = downstream.value();
@@ -849,7 +861,7 @@ impl Sv1Server {
                         "Failed to build SetDifficulty for downstream {}: {:?}",
                         downstream_id, e
                     );
-                    continue;
+                    return Err(TproxyError::shutdown(e));
                 }
             };
 
@@ -862,6 +874,7 @@ impl Sv1Server {
                     "Failed to send SetDifficulty to downstream {}: {:?}",
                     downstream_id, e
                 );
+                return Err(TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender));
             } else {
                 debug!(
                     "Sent SetDifficulty to downstream {} (vardiff disabled)",
@@ -869,12 +882,17 @@ impl Sv1Server {
                 );
             }
         }
+        Ok(())
     }
 
     /// Sends set_difficulty to the specific downstream associated with a channel (non-aggregated
     /// mode).
     /// Used only when vardiff is disabled.
-    async fn send_set_difficulty_to_specific_downstream(&self, channel_id: u32, target: Target) {
+    async fn send_set_difficulty_to_specific_downstream(
+        &self,
+        channel_id: u32,
+        target: Target,
+    ) -> TproxyResult<(), error::Sv1Server> {
         let affected = self.downstreams.iter().find(|downstream| {
             downstream
                 .downstream_data
@@ -886,7 +904,9 @@ impl Sv1Server {
                 "No downstream found for channel {} when vardiff is disabled",
                 channel_id
             );
-            return;
+            return Err(TproxyError::shutdown(TproxyErrorKind::ChannelNotFound(
+                channel_id,
+            )));
         };
 
         let downstream_id = downstream.key();
@@ -904,7 +924,7 @@ impl Sv1Server {
                     "Failed to build SetDifficulty for downstream {}: {:?}",
                     downstream_id, e
                 );
-                return;
+                return Err(TproxyError::shutdown(e));
             }
         };
 
@@ -917,12 +937,14 @@ impl Sv1Server {
                 "Failed to send SetDifficulty to downstream {}: {:?}",
                 downstream_id, e
             );
+            return Err(TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender));
         } else {
             debug!(
                 "Sent SetDifficulty to downstream {} for channel {} (vardiff disabled)",
                 downstream_id, channel_id
             );
         }
+        Ok(())
     }
 
     /// Spawns the job keepalive loop that sends periodic mining.notify messages.
@@ -1185,7 +1207,7 @@ mod tests {
         let target: Target = hash_rate_to_target(200.0, 5.0).unwrap();
 
         // Test with empty downstreams
-        server.send_set_difficulty_to_all_downstreams(target).await;
+        _ = server.send_set_difficulty_to_all_downstreams(target).await;
 
         // Should not crash with empty downstreams
     }
@@ -1197,7 +1219,7 @@ mod tests {
         let channel_id = 1u32;
 
         // Test with no downstreams
-        server
+        _ = server
             .send_set_difficulty_to_specific_downstream(channel_id, target)
             .await;
 
@@ -1223,7 +1245,7 @@ mod tests {
         };
 
         // Test should not panic and should handle the message
-        server.handle_set_target_without_vardiff(set_target).await;
+        _ = server.handle_set_target_without_vardiff(set_target).await;
     }
 
     #[tokio::test]
@@ -1245,7 +1267,7 @@ mod tests {
         };
 
         // Test should not panic and should handle the message
-        server.handle_set_target_without_vardiff(set_target).await;
+        _ = server.handle_set_target_without_vardiff(set_target).await;
     }
 
     #[test]

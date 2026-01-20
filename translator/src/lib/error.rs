@@ -25,7 +25,8 @@ use stratum_apps::{
         sv1_api::server_to_client::SetDifficulty,
     },
     utils::types::{
-        CanDisconnect, CanFallback, CanShutdown, DownstreamId, ExtensionType, MessageType,
+        CanDisconnect, CanFallback, CanShutdown, ChannelId, DownstreamId, ExtensionType,
+        MessageType,
     },
 };
 use tokio::sync::broadcast;
@@ -65,6 +66,7 @@ impl CanDisconnect for ChannelManager {}
 
 impl CanFallback for Upstream {}
 impl CanFallback for ChannelManager {}
+impl CanFallback for Sv1Server {}
 
 impl CanShutdown for ChannelManager {}
 impl CanShutdown for Sv1Server {}
@@ -189,6 +191,8 @@ pub enum TproxyErrorKind {
     /// Could not initiate subsystem
     CouldNotInitiateSystem,
     /// Channel not found
+    ChannelNotFound(ChannelId),
+    /// Channel not found
     ChannelNotFound,
     /// Failed to process SetNewPrevHash message
     FailedToProcessSetNewPrevHash,
@@ -262,6 +266,7 @@ impl fmt::Display for TproxyErrorKind {
             OpenMiningChannelError => write!(f, "failed to open mining channel"),
             SetupConnectionError => write!(f, "failed to setup connection with upstream"),
             CouldNotInitiateSystem => write!(f, "Could not initiate subsystem"),
+            ChannelNotFound(channel_id) => write!(f, "Channel not found with id: {channel_id}"),
             ChannelNotFound => write!(f, "Channel not found"),
             FailedToProcessSetNewPrevHash => write!(f, "Failed to process SetNewPrevHash message"),
             FailedToProcessNewExtendedMiningJob => {
