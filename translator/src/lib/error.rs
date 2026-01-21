@@ -191,7 +191,7 @@ pub enum TproxyErrorKind {
     /// Could not initiate subsystem
     CouldNotInitiateSystem,
     /// Channel not found
-    ChannelNotFound(ChannelId),
+    DownstreamNotFoundWithChannelId(ChannelId),
     /// Channel not found
     ChannelNotFound,
     /// Failed to process SetNewPrevHash message
@@ -266,7 +266,9 @@ impl fmt::Display for TproxyErrorKind {
             OpenMiningChannelError => write!(f, "failed to open mining channel"),
             SetupConnectionError => write!(f, "failed to setup connection with upstream"),
             CouldNotInitiateSystem => write!(f, "Could not initiate subsystem"),
-            ChannelNotFound(channel_id) => write!(f, "Channel not found with id: {channel_id}"),
+            DownstreamNotFoundWithChannelId(channel_id) => {
+                write!(f, "Downstream not found with channel id: {channel_id}")
+            }
             ChannelNotFound => write!(f, "Channel not found"),
             FailedToProcessSetNewPrevHash => write!(f, "Failed to process SetNewPrevHash message"),
             FailedToProcessNewExtendedMiningJob => {

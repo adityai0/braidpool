@@ -15,7 +15,7 @@ use stratum_apps::{
         },
         sv1_api::{client_to_server, server_to_client::Notify, utils::HexU32Be},
     },
-    utils::types::DownstreamId,
+    utils::types::{ChannelId, DownstreamId},
 };
 
 use tokio::sync::mpsc;

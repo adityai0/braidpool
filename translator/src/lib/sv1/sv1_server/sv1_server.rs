@@ -67,7 +67,6 @@ pub struct Sv1Server {
     pub(crate) shares_per_minute: SharesPerMinute,
     pub(crate) listener_addr: SocketAddr,
     pub(crate) config: TranslatorConfig,
-    pub(crate) clean_job: Arc<AtomicBool>,
     pub(crate) sequence_counter: Arc<AtomicU32>,
     pub(crate) miner_counter: Arc<AtomicU32>,
     pub(crate) keepalive_job_id_counter: Arc<AtomicU32>,
@@ -111,7 +110,6 @@ impl Sv1Server {
             config,
             listener_addr,
             shares_per_minute,
-            clean_job: Arc::new(AtomicBool::new(true)),
             miner_counter: Arc::new(AtomicU32::new(0)),
             sequence_counter: Arc::new(AtomicU32::new(0)),
             keepalive_job_id_counter: Arc::new(AtomicU32::new(0)),
@@ -904,9 +902,9 @@ impl Sv1Server {
                 "No downstream found for channel {} when vardiff is disabled",
                 channel_id
             );
-            return Err(TproxyError::shutdown(TproxyErrorKind::ChannelNotFound(
-                channel_id,
-            )));
+            return Err(TproxyError::shutdown(
+                TproxyErrorKind::DownstreamNotFoundWithChannelId(channel_id),
+            ));
         };
 
         let downstream_id = downstream.key();
