@@ -39,6 +39,9 @@ fn main() {
     println!("Calibration sweep (target={}):", target_width);
     println!("multiplier | eff_target | beads/cohort | cohorts");
     for (m, eff, actual, cohorts) in results {
-        println!("{:10.2} | {:10.4} | {:12.4} | {:7}", m, eff, actual, cohorts);
+        println!(
+            "{:10.2} | {:10.4} | {:12.4} | {:7}",
+            m, eff, actual, cohorts
+        );
     }
 }

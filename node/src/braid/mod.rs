@@ -577,12 +577,12 @@ impl Braid {
         tracing::debug!(
             old_tips=?old_tips_set, "Tips received for IBD sync"
         );
-        
+
         // If no tips provided, return all beads
         if old_tips_set.is_empty() {
             return Some(self.beads.clone());
         }
-        
+
         // Find the smallest index among the old tips
         let mut smallest_index = usize::MAX;
         for hash in &old_tips_set {
@@ -592,16 +592,19 @@ impl Braid {
                 }
             }
         }
-        
+
         // If no tips matched, return all beads as fallback
         if smallest_index == usize::MAX {
             return Some(self.beads.clone());
         }
 
         tracing::debug!(smallest_index, "Starting from bead index");
-        
+
         // Find the cohort containing the smallest index using cohort_map cache
-        let smallest_cohort_index = self.cohort_map.get(&smallest_index).copied()
+        let smallest_cohort_index = self
+            .cohort_map
+            .get(&smallest_index)
+            .copied()
             .unwrap_or_else(|| {
                 // Fallback: search cohorts linearly
                 for (idx, cohort) in self.cohorts.iter().enumerate() {
@@ -611,13 +614,13 @@ impl Braid {
                 }
                 usize::MAX
             });
-        
+
         if smallest_cohort_index == usize::MAX {
             return Some(self.beads.clone());
         }
 
         tracing::debug!(smallest_cohort_index, "Starting from cohort index");
-        
+
         // Collect beads from the smallest cohort onward, excluding old tips
         let mut response_beads = Vec::new();
         for cohort in self.cohorts.iter().skip(smallest_cohort_index) {
@@ -628,7 +631,7 @@ impl Braid {
                 }
             }
         }
-        
+
         if response_beads.is_empty() {
             None
         } else {

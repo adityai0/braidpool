@@ -371,12 +371,9 @@ impl SwarmHandler {
                     .index
                     .get(&weak_share.block_header.block_hash())
                     .unwrap();
-                let (txs_json, relative_json, parent_timestamp_json) = prepare_bead_tuple_data(
-                    &braid_data.beads,
-                    &braid_data.index,
-                    &weak_share,
-                )
-                .unwrap();
+                let (txs_json, relative_json, parent_timestamp_json) =
+                    prepare_bead_tuple_data(&braid_data.beads, &braid_data.index, &weak_share)
+                        .unwrap();
                 let _db_insertion_command = match self
                     .db_command_sender
                     .send(BraidpoolDBTypes::InsertTupleTypes {

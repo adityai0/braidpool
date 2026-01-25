@@ -1,8 +1,9 @@
 #[cfg(test)]
 use crate::bead::Bead;
-use crate::utils::BeadHash;
 #[cfg(test)]
 pub use crate::braid::{BeadIdx, BeadSet, BeadWork, Cohort, CohortIdx, Relatives};
+#[cfg(test)]
+use crate::utils::BeadHash;
 
 // A macro for making parents and children relationships for testing like:
 // parents: relatives!(0 => [], 1 => [0])

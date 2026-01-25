@@ -2,12 +2,12 @@ use crate::{
     bead::Bead,
     db::{init_db::init_db, BraidpoolDBTypes, InsertTupleTypes},
     error::DBErrors,
-    utils::BeadHash,
     utils::timestamp::MicrosecondTimestamp,
+    utils::BeadHash,
 };
 use bitcoin::{
-    ecdsa::Signature, BlockHash, BlockTime, BlockVersion, CompactTarget,
-    PublicKey, TxMerkleNode, Txid,
+    ecdsa::Signature, BlockHash, BlockTime, BlockVersion, CompactTarget, PublicKey, TxMerkleNode,
+    Txid,
 };
 use futures::lock::Mutex;
 use num::ToPrimitive;
