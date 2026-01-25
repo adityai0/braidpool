@@ -42,7 +42,7 @@ use stratum_apps::{
         sv1_api::{json_rpc, utils::HexU32Be, IsServer},
     },
     task_manager::TaskManager,
-    utils::types::{DownstreamId, Hashrate, RequestId, SharesPerMinute},
+    utils::types::{ChannelId, DownstreamId, Hashrate, RequestId, SharesPerMinute},
 };
 use tokio::{
     net::TcpListener,
@@ -888,7 +888,7 @@ impl Sv1Server {
     /// Used only when vardiff is disabled.
     async fn send_set_difficulty_to_specific_downstream(
         &self,
-        channel_id: u32,
+        channel_id: ChannelId,
         target: Target,
     ) -> TproxyResult<(), error::Sv1Server> {
         let affected = self.downstreams.iter().find(|downstream| {
@@ -955,11 +955,6 @@ impl Sv1Server {
             .downstream_difficulty_config
             .job_keepalive_interval_secs;
 
-        if keepalive_interval_secs == 0 {
-            debug!("Job keepalive disabled (interval set to 0)");
-            return;
-        }
-
         let interval = Duration::from_secs(keepalive_interval_secs as u64);
         let check_interval =
             Duration::from_secs(keepalive_interval_secs as u64 / 2).max(Duration::from_secs(5));
@@ -970,7 +965,7 @@ impl Sv1Server {
 
         loop {
             tokio::time::sleep(check_interval).await;
-            let keepalive_targets: Vec<(DownstreamId, Option<u32>)> = self
+            let keepalive_targets: Vec<(DownstreamId, Option<ChannelId>)> = self
                 .downstreams
                 .iter()
                 .filter_map(|downstream| {
