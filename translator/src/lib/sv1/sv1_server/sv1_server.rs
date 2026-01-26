@@ -902,7 +902,7 @@ impl Sv1Server {
                 "No downstream found for channel {} when vardiff is disabled",
                 channel_id
             );
-            return Err(TproxyError::shutdown(
+            return Err(TproxyError::log(
                 TproxyErrorKind::DownstreamNotFoundWithChannelId(channel_id),
             ));
         };
