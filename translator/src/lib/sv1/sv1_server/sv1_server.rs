@@ -7,7 +7,7 @@ use crate::{
         downstream::downstream::Downstream,
         sv1_server::{channel::Sv1ServerChannelState, KEEPALIVE_JOB_ID_DELIMITER},
     },
-    utils::{ShutdownMessage, AGGREGATED_CHANNEL_ID},
+    utils::AGGREGATED_CHANNEL_ID,
 };
 use async_channel::{Receiver, Sender};
 use dashmap::DashMap;
@@ -22,6 +22,7 @@ use std::{
 };
 use stratum_apps::{
     custom_mutex::Mutex,
+    fallback_coordinator::FallbackCoordinator,
     network_helpers::sv1_connection::ConnectionSV1,
     stratum_core::{
         binary_sv2::Str0255,
@@ -42,10 +43,8 @@ use stratum_apps::{
     task_manager::TaskManager,
     utils::types::{ChannelId, DownstreamId, Hashrate, RequestId, SharesPerMinute},
 };
-use tokio::{
-    net::TcpListener,
-    sync::{broadcast, mpsc},
-};
+use tokio::{net::TcpListener, sync::mpsc};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
 /// SV1 server that handles connections from SV1 miners.
@@ -141,7 +140,8 @@ impl Sv1Server {
     /// The server will continue running until a shutdown signal is received.
     ///
     /// # Arguments
-    /// * `notify_shutdown` - Broadcast channel for shutdown coordination
+    /// * `cancellation_token` - Global application cancellation token
+    /// * `fallback_coordinator` - Fallback coordinator
     /// * `shutdown_complete_tx` - Channel to signal shutdown completion
     /// * `status_sender` - Channel for sending status updates
     /// * `task_manager` - Manager for spawned async tasks
@@ -151,13 +151,13 @@ impl Sv1Server {
     /// * `Err(TproxyError)` - Server encountered an error
     pub async fn start(
         self: Arc<Self>,
-        notify_shutdown: broadcast::Sender<ShutdownMessage>,
+        cancellation_token: CancellationToken,
+        fallback_coordinator: FallbackCoordinator,
         shutdown_complete_tx: mpsc::Sender<()>,
         status_sender: Sender<Status>,
         task_manager: Arc<TaskManager>,
     ) -> TproxyResult<(), error::Sv1Server> {
         info!("Starting SV1 server on {}", self.listener_addr);
-        let mut shutdown_rx_main = notify_shutdown.subscribe();
 
         // get the first target for the first set difficulty message
         let first_target: Target = hash_rate_to_target(
@@ -188,66 +188,42 @@ impl Sv1Server {
             .job_keepalive_interval_secs
             > 0;
         task_manager_clone.spawn(async move {
+            // we just spawned a new task that's relevant to fallback coordination
+            // so register it with the fallback coordinator
+            let fallback_handler = fallback_coordinator.register();
+
+            // get the cancellation token that signals fallback
+            let fallback_token = fallback_coordinator.token();
+
             tokio::pin!(vardiff_future);
             tokio::pin!(keepalive_future);
             loop {
                 tokio::select! {
-                    message = shutdown_rx_main.recv() => {
-                        match message {
-                            Ok(ShutdownMessage::ShutdownAll) => {
-                                debug!("SV1 Server: received shutdown signal. Exiting.");
-                                self.sv1_server_channel_state.drop();
-                                break;
-                            }
-                            Ok(ShutdownMessage::DownstreamShutdown(downstream_id)) => {
-                                if self.config.downstream_difficulty_config.enable_vardiff {
-                                    // Only remove from vardiff map if vardiff is enabled
-                                    self.vardiff.remove(&downstream_id);
-                                }
-                                let current_downstream = self.downstreams.remove(&downstream_id);
+                    // Handle app shutdown signal
+                    _ = cancellation_token.cancelled() => {
+                        debug!("SV1 Server: received shutdown signal. Exiting.");
+                        self.sv1_server_channel_state.drop();
+                        break;
+                    }
 
-                                if let Some((downstream_id, downstream)) = current_downstream {
-                                    info!("🔌 Downstream: {downstream_id} disconnected and removed from sv1 server downstreams");
-                                    // In aggregated mode, send UpdateChannel to reflect the new state (only if vardiff enabled)
-                                    if self.config.downstream_difficulty_config.enable_vardiff {
-                                        self.send_update_channel_on_downstream_state_change().await;
-                                    }
-
-                                    let channel_id = downstream.downstream_data.super_safe_lock(|d| d.channel_id);
-                                    if let Some(channel_id) = channel_id {
-                                        self.prevhashes.remove(&channel_id);
-                                        if is_non_aggregated() {
-                                            info!("Sending CloseChannel message: {channel_id} for downstream: {downstream_id}");
-                                            let reason_code =  Str0255::try_from("downstream disconnected".to_string()).unwrap();
-                                            _ = self.sv1_server_channel_state
-                                                .channel_manager_sender
-                                                .send((Mining::CloseChannel(CloseChannel {
-                                                    channel_id,
-                                                    reason_code,
-                                                }), None))
-                                                .await;
-                                        }
-                                    }
-                                }
-                            }
-                            Ok(ShutdownMessage::UpstreamFallback {tx}) => {
-                                if self.config.downstream_difficulty_config.enable_vardiff {
-                                    self.vardiff.clear();
-                                }
-                                self.prevhashes.clear();
-                                self.downstreams.clear();
-                                info!("Fallback in processing stopping sv1 server");
-                                drop(tx);
-                                break;
-                            }
-                            _ => {}
+                    // Handle fallback trigger
+                    _ = fallback_token.cancelled() => {
+                        info!("SV1 Server: fallback triggered, clearing state");
+                        if self.config.downstream_difficulty_config.enable_vardiff {
+                            self.vardiff.clear();
                         }
+                        self.downstreams.clear();
+                        break;
                     }
                     result = listener.accept() => {
                         match result {
                             Ok((stream, addr)) => {
                                 info!("New SV1 downstream connection from {}", addr);
-                                let connection = ConnectionSV1::new(stream).await;
+                                let connection_token = cancellation_token.child_token();
+                                let connection = ConnectionSV1::new(
+                                    stream,
+                                    connection_token.clone(),
+                                ).await;
                                 let downstream_id = self.downstream_id_factory.fetch_add(1, Ordering::Relaxed);
                                 let downstream = Downstream::new(
                                     downstream_id,
@@ -257,6 +233,7 @@ impl Sv1Server {
                                     self.sv1_server_channel_state.sv1_server_to_downstream_sender.clone(),
                                     first_target,
                                     Some(self.config.downstream_difficulty_config.min_individual_miner_hashrate),
+                                    connection_token,
                                 );
                                 // vardiff initialization (only if enabled)
                                 self.downstreams.insert(downstream_id, downstream.clone());
@@ -266,6 +243,8 @@ impl Sv1Server {
                                     self.vardiff.insert(downstream_id, Arc::new(Mutex::new(vardiff)));
                                 }
                                 info!("Downstream {} registered successfully (channel will be opened after first message)", downstream_id);
+
+
                                 // Start downstream tasks immediately, but defer channel opening until first message
                                 let status_sender = StatusSender::Downstream {
                                     downstream_id,
@@ -273,7 +252,8 @@ impl Sv1Server {
                                 };
                                 Downstream::run_downstream_tasks(
                                     downstream,
-                                    notify_shutdown.clone(),
+                                    cancellation_token.clone(),
+                                    fallback_coordinator.clone(),
                                     shutdown_complete_tx.clone(),
                                     status_sender,
                                     task_manager.clone(),
@@ -308,6 +288,9 @@ impl Sv1Server {
             }
             drop(shutdown_complete_tx);
             debug!("SV1 Server main listener loop exited.");
+
+            // signal fallback coordinator that this task has completed its cleanup
+            fallback_handler.done();
         });
 
         Ok(())
@@ -773,6 +756,65 @@ impl Sv1Server {
         downstream: HashMap<DownstreamId, Downstream>,
     ) -> Option<Downstream> {
         downstream.get(&downstream_id).cloned()
+    }
+
+    /// Extracts the downstream ID from a Downstream instance.
+    ///
+    /// # Arguments
+    /// * `downstream` - The downstream connection to get the ID from
+    ///
+    /// # Returns
+    /// The downstream ID as a u32
+    pub fn get_downstream_id(downstream: Downstream) -> DownstreamId {
+        downstream.downstream_id
+    }
+
+    /// Handles cleanup when a downstream connection disconnects.
+    ///
+    /// This method should be called from the main loop when a `State::DownstreamShutdown`
+    /// status message is received. It:
+    /// - Removes the downstream from the downstreams map
+    /// - Removes vardiff state (if enabled)
+    /// - Sends UpdateChannel if needed (aggregated mode with vardiff)
+    /// - Sends CloseChannel message to ChannelManager (non-aggregated mode)
+    ///
+    /// # Arguments
+    /// * `downstream_id` - The ID of the downstream that disconnected
+    pub async fn handle_downstream_disconnect(&self, downstream_id: DownstreamId) {
+        if self.config.downstream_difficulty_config.enable_vardiff {
+            // Only remove from vardiff map if vardiff is enabled
+            self.vardiff.remove(&downstream_id);
+        }
+        let current_downstream = self.downstreams.remove(&downstream_id);
+
+        if let Some((downstream_id, downstream)) = current_downstream {
+            info!("🔌 Downstream: {downstream_id} disconnected and removed from sv1 server downstreams");
+            // In aggregated mode, send UpdateChannel to reflect the new state (only if vardiff
+            // enabled)
+            if self.config.downstream_difficulty_config.enable_vardiff {
+                self.send_update_channel_on_downstream_state_change().await;
+            }
+
+            let channel_id = downstream.downstream_data.super_safe_lock(|d| d.channel_id);
+            if let Some(channel_id) = channel_id {
+                if !self.config.aggregate_channels {
+                    info!("Sending CloseChannel message: {channel_id} for downstream: {downstream_id}");
+                    let reason_code =
+                        Str0255::try_from("downstream disconnected".to_string()).unwrap();
+                    _ = self
+                        .sv1_server_channel_state
+                        .channel_manager_sender
+                        .send((
+                            Mining::CloseChannel(CloseChannel {
+                                channel_id,
+                                reason_code,
+                            }),
+                            None,
+                        ))
+                        .await;
+                }
+            }
+        }
     }
 
     /// Handles SetTarget messages when vardiff is disabled.

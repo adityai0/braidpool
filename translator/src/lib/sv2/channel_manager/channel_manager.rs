@@ -3,13 +3,14 @@ use crate::{
     is_aggregated,
     status::{handle_error, Status, StatusSender},
     sv2::channel_manager::channel::ChannelState,
-    utils::{ShutdownMessage, AGGREGATED_CHANNEL_ID},
+    utils::AGGREGATED_CHANNEL_ID,
 };
 use async_channel::{Receiver, Sender};
 use dashmap::DashMap;
 use std::sync::Arc;
 use stratum_apps::{
     custom_mutex::Mutex,
+    fallback_coordinator::FallbackCoordinator,
     stratum_core::{
         channels_sv2::client::{extended::ExtendedChannel, group::GroupChannel},
         codec_sv2::StandardSv2Frame,
@@ -25,7 +26,8 @@ use stratum_apps::{
         types::{ChannelId, DownstreamId, Hashrate, Sv2Frame},
     },
 };
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 /// Extra bytes allocated for translator search space in aggregated mode.
@@ -136,50 +138,44 @@ impl ChannelManager {
     /// and error reporting.
     ///
     /// # Arguments
-    /// * `notify_shutdown` - Broadcast channel for receiving shutdown signals
+    /// * `cancellation_token` - Global application cancellation token
+    /// * `fallback_coordinator` - Fallback coordinator
     /// * `shutdown_complete_tx` - Channel to signal when shutdown is complete
     /// * `status_sender` - Channel for sending status updates and errors
     /// * `task_manager` - Manager for tracking spawned tasks
     pub async fn run_channel_manager_tasks(
         self: Arc<Self>,
-        notify_shutdown: broadcast::Sender<ShutdownMessage>,
+        cancellation_token: CancellationToken,
+        fallback_coordinator: FallbackCoordinator,
         shutdown_complete_tx: mpsc::Sender<()>,
         status_sender: Sender<Status>,
         task_manager: Arc<TaskManager>,
     ) {
-        let mut shutdown_rx = notify_shutdown.subscribe();
         let status_sender = StatusSender::ChannelManager(status_sender);
+
         task_manager.spawn(async move {
+            // we just spawned a new task that's relevant to fallback coordination
+            // so register it with the fallback coordinator
+            let fallback_handler = fallback_coordinator.register();
+
+            // get the cancellation token that signals fallback
+            let fallback_token = fallback_coordinator.token();
+
             loop {
                 tokio::select! {
-                    message = shutdown_rx.recv() => {
-                        match message {
-                            Ok(ShutdownMessage::ShutdownAll) => {
-                                info!("ChannelManager: received shutdown signal.");
-                                break;
-                            }
-                            Ok(ShutdownMessage::UpstreamFallback{tx}) => {
-                                self.pending_channels.clear();
-                                self.extended_channels.clear();
-                                self.group_channels.clear();
-                                self.share_sequence_counters.clear();
-                                self.negotiated_extensions.super_safe_lock(|data| data.clear());
-                                self.extranonce_factories.clear();
-                                drop(tx);
-                            }
-                            Ok(_) => {
-                                // Ignore other shutdown message types
-                            }
-                            Err(e) => {
-                                // Handle channel lag gracefully - don't shutdown on lag errors
-                                if let tokio::sync::broadcast::error::RecvError::Lagged(_) = e {
-                                    warn!("ChannelManager: broadcast channel lagged, continuing: {e}");
-                                } else {
-                                    error!("ChannelManager: failed to receive shutdown signal: {e}");
-                                    break;
-                                }
-                            }
-                        }
+                    _ = cancellation_token.cancelled() => {
+                        info!("ChannelManager: received shutdown signal.");
+                        break;
+                    }
+                    _ = fallback_token.cancelled() => {
+                        info!("ChannelManager: fallback triggered, resetting state");
+                        self.pending_channels.clear();
+                        self.extended_channels.clear();
+                        self.group_channels.clear();
+                        self.share_sequence_counters.clear();
+                        self.negotiated_extensions.super_safe_lock(|data| data.clear());
+                        self.extranonce_factories.clear();
+                        break;
                     }
                     res = self.clone().handle_upstream_frame() => {
                         if let Err(e) = res {
@@ -205,6 +201,9 @@ impl ChannelManager {
             self.channel_state.drop();
             drop(shutdown_complete_tx);
             warn!("ChannelManager: unified message loop exited.");
+
+            // signal fallback coordinator that this task has completed its cleanup
+            fallback_handler.done();
         });
     }
 

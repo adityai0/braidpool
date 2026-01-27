@@ -15,10 +15,9 @@ use stratum_apps::{
         },
         sv1_api::{client_to_server, server_to_client::Notify, utils::HexU32Be},
     },
-    utils::types::{ChannelId, DownstreamId},
+    utils::types::ChannelId,
 };
 
-use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::error::TproxyErrorKind;
@@ -140,20 +139,6 @@ pub fn proxy_extranonce_prefix_len(
     channel_rollable_extranonce_size - downstream_rollable_extranonce_size
 }
 
-/// Messages used for coordinating shutdown across different components.
-///
-/// This enum defines the different types of shutdown signals that can be sent
-/// through the broadcast channel to coordinate graceful shutdown of the translator.
-#[derive(Debug, Clone)]
-pub enum ShutdownMessage {
-    /// Shutdown all components immediately
-    ShutdownAll,
-    /// Shutdown a specific downstream connection by ID
-    DownstreamShutdown(DownstreamId),
-    /// Reset channel manager state and shutdown downstreams due to upstream reconnection
-    UpstreamFallback { tx: mpsc::Sender<()> },
-}
-
 #[derive(Debug)]
 pub struct UpstreamEntry {
     pub addr: SocketAddr,
@@ -163,8 +148,6 @@ pub struct UpstreamEntry {
 
 #[cfg(test)]
 mod tests {
-    use tokio::sync::mpsc;
-
     use super::*;
 
     #[test]
@@ -172,35 +155,5 @@ mod tests {
         assert_eq!(proxy_extranonce_prefix_len(8, 4), 4);
         assert_eq!(proxy_extranonce_prefix_len(10, 6), 4);
         assert_eq!(proxy_extranonce_prefix_len(4, 4), 0);
-    }
-
-    #[test]
-    fn test_shutdown_message_debug() {
-        let msg1 = ShutdownMessage::ShutdownAll;
-        let msg2 = ShutdownMessage::DownstreamShutdown(123);
-        let (tx, _rx) = mpsc::channel(1);
-        let msg3 = ShutdownMessage::UpstreamFallback { tx };
-
-        // Test Debug implementation
-        assert!(format!("{:?}", msg1).contains("ShutdownAll"));
-        assert!(format!("{:?}", msg2).contains("DownstreamShutdown"));
-        assert!(format!("{:?}", msg2).contains("123"));
-        assert!(format!("{:?}", msg3).contains("UpstreamFallback"));
-    }
-
-    #[test]
-    fn test_shutdown_message_clone() {
-        let msg = ShutdownMessage::DownstreamShutdown(456);
-        let cloned = msg.clone();
-
-        match (msg, cloned) {
-            (
-                ShutdownMessage::DownstreamShutdown(id1),
-                ShutdownMessage::DownstreamShutdown(id2),
-            ) => {
-                assert_eq!(id1, id2);
-            }
-            _ => panic!("Clone failed"),
-        }
     }
 }

@@ -2,15 +2,14 @@ use std::sync::Arc;
 
 use async_channel::{Receiver, Sender};
 use stratum_apps::{
+    fallback_coordinator::FallbackCoordinator,
     network_helpers::noise_stream::{NoiseTcpReadHalf, NoiseTcpWriteHalf},
     stratum_core::framing_sv2::framing::Frame,
     task_manager::TaskManager,
     utils::types::{Message, Sv2Frame},
 };
-use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, trace, warn, Instrument as _};
-
-use crate::utils::ShutdownMessage;
 
 #[cfg_attr(not(test), hotpath::measure)]
 #[track_caller]
@@ -21,24 +20,37 @@ pub fn spawn_io_tasks(
     mut writer: NoiseTcpWriteHalf<Message>,
     outbound_rx: Receiver<Sv2Frame>,
     inbound_tx: Sender<Sv2Frame>,
-    notify_shutdown: broadcast::Sender<ShutdownMessage>,
+    cancellation_token: CancellationToken,
+    fallback_coordinator: FallbackCoordinator,
 ) {
     let caller = std::panic::Location::caller();
     let inbound_tx_clone = inbound_tx.clone();
     let outbound_rx_clone = outbound_rx.clone();
+
     {
-        let mut shutdown_rx = notify_shutdown.subscribe();
+        let cancellation_token_clone = cancellation_token.clone();
+        let fallback_coordinator_clone = fallback_coordinator.clone();
         task_manager.spawn(
             async move {
+                // we just spawned a new task that's relevant to fallback coordination
+                // so register it with the fallback coordinator
+                let fallback_handler = fallback_coordinator_clone.register();
+
+                // get the cancellation token that signals fallback
+                let fallback_token = fallback_coordinator_clone.token();
+
                 trace!("Reader task started");
                 loop {
                     tokio::select! {
-                        message = shutdown_rx.recv() => {
-                            if let Ok(ShutdownMessage::ShutdownAll) = message {
-                                trace!("Received global shutdown");
-                                inbound_tx.close();
-                                break;
-                            }
+                        _ = cancellation_token_clone.cancelled() => {
+                            trace!("Received app shutdown signal");
+                            inbound_tx.close();
+                            break;
+                        }
+                        _ = fallback_token.cancelled() => {
+                            trace!("Received fallback signal");
+                            inbound_tx.close();
+                            break;
                         }
                         res = reader.read_frame() => {
                             match res {
@@ -72,6 +84,9 @@ pub fn spawn_io_tasks(
                 outbound_rx_clone.close();
                 drop(inbound_tx);
                 drop(outbound_rx_clone);
+
+                // signal fallback coordinator that this task has completed its cleanup
+                fallback_handler.done();
                 warn!("Reader task exited.");
             }
             .instrument(tracing::trace_span!(
@@ -82,19 +97,28 @@ pub fn spawn_io_tasks(
     }
 
     {
-        let mut shutdown_rx = notify_shutdown.subscribe();
-
+        let fallback_coordinator_clone = fallback_coordinator.clone();
         task_manager.spawn(
             async move {
+                // we just spawned a new task that's relevant to fallback coordination
+                // so register it with the fallback coordinator
+                let fallback_handler = fallback_coordinator_clone.register();
+
+                // get the cancellation token that signals fallback
+                let fallback_token = fallback_coordinator_clone.token();
+
                 trace!("Writer task started");
                 loop {
                     tokio::select! {
-                        message = shutdown_rx.recv() => {
-                            if let Ok(ShutdownMessage::ShutdownAll) = message {
-                                trace!("Received global shutdown");
-                                inbound_tx_clone.close();
-                                break;
-                            }
+                        _ = cancellation_token.cancelled() => {
+                            trace!("Received app shutdown signal");
+                            inbound_tx_clone.close();
+                            break;
+                        }
+                        _ = fallback_token.cancelled() => {
+                            trace!("Received fallback signal");
+                            inbound_tx_clone.close();
+                            break;
                         }
                         res = outbound_rx.recv() => {
                             match res {
@@ -119,6 +143,9 @@ pub fn spawn_io_tasks(
                 inbound_tx_clone.close();
                 drop(outbound_rx);
                 drop(inbound_tx_clone);
+
+                // signal fallback coordinator that this task has completed its cleanup
+                fallback_handler.done();
                 warn!("Writer task exited.");
             }
             .instrument(tracing::trace_span!(

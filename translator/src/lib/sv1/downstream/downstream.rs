@@ -2,7 +2,7 @@ use crate::{
     error::{self, TproxyError, TproxyErrorKind, TproxyResult},
     status::{handle_error, StatusSender},
     sv1::downstream::{channel::DownstreamChannelState, data::DownstreamData},
-    utils::{ShutdownMessage, AGGREGATED_CHANNEL_ID},
+    utils::AGGREGATED_CHANNEL_ID,
 };
 use async_channel::{Receiver, Sender};
 use std::{
@@ -14,6 +14,7 @@ use std::{
 };
 use stratum_apps::{
     custom_mutex::Mutex,
+    fallback_coordinator::FallbackCoordinator,
     stratum_core::{
         bitcoin::Target,
         sv1_api::{
@@ -25,6 +26,7 @@ use stratum_apps::{
     utils::types::{ChannelId, DownstreamId, Hashrate},
 };
 use tokio::sync::{broadcast, mpsc};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 /// Represents a downstream SV1 miner connection.
@@ -67,6 +69,7 @@ impl Downstream {
         )>,
         target: Target,
         hashrate: Option<Hashrate>,
+        connection_token: CancellationToken,
     ) -> Self {
         let downstream_data = Arc::new(Mutex::new(DownstreamData::new(hashrate, target)));
         let downstream_channel_state = DownstreamChannelState::new(
@@ -74,6 +77,7 @@ impl Downstream {
             downstream_sv1_receiver,
             sv1_server_sender,
             sv1_server_broadcast,
+            connection_token,
         );
         Self {
             downstream_id,
@@ -88,16 +92,17 @@ impl Downstream {
     ///
     /// This method creates an async task that handles all communication for this
     /// downstream connection. The task runs a select loop that processes:
-    /// - Shutdown signals (global, targeted, or all-downstream)
+    /// - Cancellation signals (global via cancellation_token or fallback)
     /// - Messages from the miner (subscribe, authorize, submit)
     /// - Messages from the SV1 server (notify, set_difficulty, etc.)
     ///
-    /// The task will continue running until a shutdown signal is received or
+    /// The task will continue running until a cancellation signal is received or
     /// an unrecoverable error occurs. It ensures graceful cleanup of resources
     /// and proper error reporting.
     pub fn run_downstream_tasks(
         self,
-        notify_shutdown: broadcast::Sender<ShutdownMessage>,
+        cancellation_token: CancellationToken,
+        fallback_coordinator: FallbackCoordinator,
         shutdown_complete_tx: mpsc::Sender<()>,
         status_sender: StatusSender,
         task_manager: Arc<TaskManager>,
@@ -106,34 +111,24 @@ impl Downstream {
             .downstream_channel_state
             .sv1_server_broadcast
             .subscribe();
-        let mut shutdown_rx = notify_shutdown.subscribe();
         let downstream_id = self.downstream_id;
         task_manager.spawn(async move {
+            // we just spawned a new task that's relevant to fallback coordination
+            // so register it with the fallback coordinator
+            let fallback_handler = fallback_coordinator.register();
+
+            // get the cancellation token that signals fallback
+            let fallback_token = fallback_coordinator.token();
+
             loop {
                 tokio::select! {
-                    msg = shutdown_rx.recv() => {
-                        match msg {
-                            Ok(ShutdownMessage::ShutdownAll) => {
-                                info!("Downstream {downstream_id}: received global shutdown");
-                                break;
-                            }
-                            Ok(ShutdownMessage::DownstreamShutdown(id)) if id == downstream_id => {
-                                info!("Downstream {downstream_id}: received targeted shutdown");
-                                break;
-                            }
-                            Ok(ShutdownMessage::UpstreamFallback{tx}) => {
-                                info!("Upstream fallback happened, disconnecting downstream.");
-                                drop(tx);
-                                break;
-                            }
-                            Ok(_) => {
-                                // shutdown for other downstream
-                            }
-                            Err(e) => {
-                                warn!("Downstream {downstream_id}: shutdown channel closed: {e}");
-                                break;
-                            }
-                        }
+                    _ = cancellation_token.cancelled() => {
+                        info!("Downstream {downstream_id}: received app shutdown signal");
+                        break;
+                    }
+                    _ = fallback_token.cancelled() => {
+                        info!("Downstream {downstream_id}: fallback triggered");
+                        break;
                     }
 
                     // Handle downstream -> server message
@@ -166,6 +161,9 @@ impl Downstream {
             warn!("Downstream {downstream_id}: unified task shutting down");
             self.downstream_channel_state.drop();
             drop(shutdown_complete_tx);
+
+            // signal fallback coordinator that this task has completed its cleanup
+            fallback_handler.done();
         });
     }
 

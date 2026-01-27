@@ -18,9 +18,10 @@ use std::{
     time::Duration,
 };
 use stratum_apps::{
-    task_manager::TaskManager, utils::types::Sv2Frame, SHUTDOWN_BROADCAST_CAPACITY,
+    fallback_coordinator::FallbackCoordinator, task_manager::TaskManager, utils::types::Sv2Frame,
 };
-use tokio::sync::{broadcast, mpsc};
+use tokio::{select, sync::mpsc};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 pub use stratum_apps::stratum_core::sv1_api::server_to_client;
@@ -32,7 +33,7 @@ use crate::{
     status::{State, Status},
     sv1::sv1_server::sv1_server::Sv1Server,
     sv2::{ChannelManager, Upstream},
-    utils::{ShutdownMessage, UpstreamEntry},
+    utils::UpstreamEntry,
 };
 
 pub mod config;
@@ -75,8 +76,9 @@ impl TranslatorSv2 {
             .set(self.config.downstream_difficulty_config.enable_vardiff)
             .expect("VARDIFF_ENABLED initialized more than once");
 
-        let (notify_shutdown, _) =
-            broadcast::channel::<ShutdownMessage>(SHUTDOWN_BROADCAST_CAPACITY);
+        let cancellation_token = CancellationToken::new();
+        let mut fallback_coordinator = FallbackCoordinator::new();
+
         let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel::<()>(1);
         let task_manager = Arc::new(TaskManager::new());
         let (status_sender, status_receiver) = async_channel::unbounded::<Status>();
@@ -108,7 +110,7 @@ impl TranslatorSv2 {
             self.config.downstream_port,
         );
 
-        let sv1_server = Arc::new(Sv1Server::new(
+        let mut sv1_server = Arc::new(Sv1Server::new(
             downstream_addr,
             channel_manager_to_sv1_server_receiver,
             sv1_server_to_channel_manager_sender,
@@ -122,7 +124,8 @@ impl TranslatorSv2 {
                 &mut upstream_addresses,
                 channel_manager_to_upstream_receiver.clone(),
                 upstream_to_channel_manager_sender.clone(),
-                notify_shutdown.clone(),
+                cancellation_token.clone(),
+                fallback_coordinator.clone(),
                 status_sender.clone(),
                 shutdown_complete_tx.clone(),
                 task_manager.clone(),
@@ -135,7 +138,7 @@ impl TranslatorSv2 {
             return;
         }
 
-        let channel_manager: Arc<ChannelManager> = Arc::new(ChannelManager::new(
+        let mut channel_manager: Arc<ChannelManager> = Arc::new(ChannelManager::new(
             channel_manager_to_upstream_sender,
             upstream_to_channel_manager_receiver,
             channel_manager_to_sv1_server_sender.clone(),
@@ -146,15 +149,15 @@ impl TranslatorSv2 {
         ));
 
         info!("Launching ChannelManager tasks...");
-        channel_manager
-            .clone()
-            .run_channel_manager_tasks(
-                notify_shutdown.clone(),
-                shutdown_complete_tx.clone(),
-                status_sender.clone(),
-                task_manager.clone(),
-            )
-            .await;
+        ChannelManager::run_channel_manager_tasks(
+            channel_manager.clone(),
+            cancellation_token.clone(),
+            fallback_coordinator.clone(),
+            shutdown_complete_tx.clone(),
+            status_sender.clone(),
+            task_manager.clone(),
+        )
+        .await;
 
         // Start monitoring server if configured
         if let Some(monitoring_addr) = self.config.monitoring_address() {
@@ -174,22 +177,33 @@ impl TranslatorSv2 {
             .with_sv1_monitoring(sv1_server.clone()) // SV1 client connections
             .expect("Failed to add SV1 monitoring");
 
-            // Create shutdown signal that waits for ShutdownAll
-            let mut notify_shutdown_monitoring = notify_shutdown.subscribe();
+            // Create shutdown signal using cancellation token
+            let cancellation_token_clone = cancellation_token.clone();
+            let fallback_coordinator_token = fallback_coordinator.token();
             let shutdown_signal = async move {
-                loop {
-                    match notify_shutdown_monitoring.recv().await {
-                        Ok(ShutdownMessage::ShutdownAll) => break,
-                        Ok(_) => continue, // Ignore other shutdown messages
-                        Err(_) => break,
+                select! {
+                    _ = cancellation_token_clone.cancelled() => {
+                        info!("Monitoring server: received shutdown signal.");
+                    }
+                    _ = fallback_coordinator_token.cancelled() => {
+                        info!("Monitoring server: fallback triggered.");
                     }
                 }
             };
 
+            let fallback_coordinator_clone = fallback_coordinator.clone();
             task_manager.spawn(async move {
+                // we just spawned a new task that's relevant to fallback coordination
+                // so register it with the fallback coordinator
+                let fallback_handler = fallback_coordinator_clone.register();
+
                 if let Err(e) = monitoring_server.run(shutdown_signal).await {
                     error!("Monitoring server error: {:?}", e);
                 }
+
+                // signal fallback coordinator that this task has completed its cleanup
+                fallback_handler.done();
+                info!("Monitoring server task exited and signaled fallback coordinator");
             });
         }
 
@@ -197,39 +211,65 @@ impl TranslatorSv2 {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {
                     info!("Ctrl+C received — initiating graceful shutdown...");
-                    let _ = notify_shutdown.send(ShutdownMessage::ShutdownAll);
+                    cancellation_token.cancel();
                     break;
                 }
                 message = status_receiver.recv() => {
                     if let Ok(status) = message {
                         match status.state {
                             State::DownstreamShutdown{downstream_id,..} => {
-                                warn!("Downstream {downstream_id:?} disconnected — notifying SV1 server.");
-                                let _ = notify_shutdown.send(ShutdownMessage::DownstreamShutdown(downstream_id));
+                                warn!("Downstream {downstream_id:?} disconnected — cleaning up sv1_server state.");
+                                // clean up sv1_server state
+                                sv1_server.handle_downstream_disconnect(downstream_id).await;
                             }
                             State::Sv1ServerShutdown(_) => {
                                 warn!("SV1 Server shutdown requested — initiating full shutdown.");
-                                let _ = notify_shutdown.send(ShutdownMessage::ShutdownAll);
+                                cancellation_token.cancel();
                                 break;
                             }
                             State::ChannelManagerShutdown(_) => {
                                 warn!("Channel Manager shutdown requested — initiating full shutdown.");
-                                let _ = notify_shutdown.send(ShutdownMessage::ShutdownAll);
+                                cancellation_token.cancel();
                                 break;
                             }
                             State::UpstreamShutdown(msg) => {
                                 warn!("Upstream connection dropped: {msg:?} — attempting reconnection...");
-                                let (tx, mut rx) = mpsc::channel(1);
-                                let _ = notify_shutdown.send(ShutdownMessage::UpstreamFallback{tx});
-                                // via this we wait for all subsystem to acknowledge the fallback
-                                rx.recv().await;
-                                info!("Fallback signal acknowledged");
+
+                                // Trigger fallback and wait for all components to finish cleanup
+                                fallback_coordinator.trigger_fallback_and_wait().await;
+                                info!("All components finished fallback cleanup");
+
+                                // Drain any buffered status messages from old components
+                                while let Ok(old_status) = status_receiver.try_recv() {
+                                    debug!("Draining buffered status message: {:?}", old_status.state);
+                                }
+
+                                // Create a fresh FallbackCoordinator for the reconnection attempt
+                                fallback_coordinator = FallbackCoordinator::new();
+
+                                // Recreate channels and components (old ones were closed during fallback)
+                                let (channel_manager_to_upstream_sender, channel_manager_to_upstream_receiver) =
+                                    unbounded();
+                                let (upstream_to_channel_manager_sender, upstream_to_channel_manager_receiver) =
+                                    unbounded();
+                                let (channel_manager_to_sv1_server_sender, channel_manager_to_sv1_server_receiver) =
+                                    unbounded();
+                                let (sv1_server_to_channel_manager_sender, sv1_server_to_channel_manager_receiver) =
+                                    unbounded();
+
+                                sv1_server = Arc::new(Sv1Server::new(
+                                    downstream_addr,
+                                    channel_manager_to_sv1_server_receiver,
+                                    sv1_server_to_channel_manager_sender,
+                                    self.config.clone(),
+                                ));
 
                                 if let Err(e) = self.initialize_upstream(
                                     &mut upstream_addresses,
-                                    channel_manager_to_upstream_receiver.clone(),
-                                    upstream_to_channel_manager_sender.clone(),
-                                    notify_shutdown.clone(),
+                                    channel_manager_to_upstream_receiver,
+                                    upstream_to_channel_manager_sender,
+                                    cancellation_token.clone(),
+                                    fallback_coordinator.clone(),
                                     status_sender.clone(),
                                     shutdown_complete_tx.clone(),
                                     task_manager.clone(),
@@ -237,11 +277,76 @@ impl TranslatorSv2 {
                                     self.config.required_extensions.clone(),
                                 ).await {
                                     error!("Couldn't perform fallback, shutting system down: {e:?}");
-                                    let _ = notify_shutdown.send(ShutdownMessage::ShutdownAll);
+                                    cancellation_token.cancel();
                                     break;
-                                } else {
-                                    info!("Upstream restarted successfully.");
                                 }
+
+                                channel_manager = Arc::new(ChannelManager::new(
+                                    channel_manager_to_upstream_sender,
+                                    upstream_to_channel_manager_receiver,
+                                    channel_manager_to_sv1_server_sender,
+                                    sv1_server_to_channel_manager_receiver,
+                                    status_sender.clone(),
+                                    self.config.supported_extensions.clone(),
+                                    self.config.required_extensions.clone(),
+                                ));
+
+                                info!("Launching ChannelManager tasks...");
+                                ChannelManager::run_channel_manager_tasks(
+                                    channel_manager.clone(),
+                                    cancellation_token.clone(),
+                                    fallback_coordinator.clone(),
+                                    shutdown_complete_tx.clone(),
+                                    status_sender.clone(),
+                                    task_manager.clone(),
+                                )
+                                .await;
+
+                                // Recreate monitoring server with new components
+                                if let Some(monitoring_addr) = self.config.monitoring_address() {
+                                    info!(
+                                        "Reinitializing monitoring server on http://{}",
+                                        monitoring_addr
+                                    );
+
+                                    let monitoring_server = stratum_apps::monitoring::MonitoringServer::new(
+                                        monitoring_addr,
+                                        Some(channel_manager.clone()),
+                                        None,
+                                        std::time::Duration::from_secs(self.config.monitoring_cache_refresh_secs())
+                                    )
+                                    .expect("Failed to initialize monitoring server")
+                                    .with_sv1_monitoring(sv1_server.clone())
+                                    .expect("Failed to add SV1 monitoring");
+
+                                    let cancellation_token_clone = cancellation_token.clone();
+                                    let fallback_coordinator_token = fallback_coordinator.token();
+                                    let shutdown_signal = async move {
+                                        select! {
+                                            _ = cancellation_token_clone.cancelled() => {
+                                                info!("Monitoring server: received shutdown signal.");
+                                            }
+                                            _ = fallback_coordinator_token.cancelled() => {
+                                                info!("Monitoring server: fallback triggered.");
+                                            }
+                                        }
+                                    };
+
+                                    let monitoring_fallback = fallback_coordinator.clone();
+                                    task_manager.spawn(async move {
+                                        let fallback_handler = monitoring_fallback.register();
+
+                                        if let Err(e) = monitoring_server.run(shutdown_signal).await {
+                                            error!("Monitoring server error: {:?}", e);
+                                        }
+
+                                        // signal fallback coordinator that this task has completed its cleanup
+                                        fallback_handler.done();
+                                        info!("Monitoring server task exited and signaled fallback coordinator");
+                                    });
+                                }
+
+                                info!("Upstream and ChannelManager restarted successfully.");
                             }
                         }
                     }
@@ -282,7 +387,8 @@ impl TranslatorSv2 {
         upstreams: &mut [UpstreamEntry],
         channel_manager_to_upstream_receiver: Receiver<Sv2Frame>,
         upstream_to_channel_manager_sender: Sender<Sv2Frame>,
-        notify_shutdown: broadcast::Sender<ShutdownMessage>,
+        cancellation_token: CancellationToken,
+        fallback_coordinator: FallbackCoordinator,
         status_sender: Sender<Status>,
         shutdown_complete_tx: mpsc::Sender<()>,
         task_manager: Arc<TaskManager>,
@@ -315,7 +421,8 @@ impl TranslatorSv2 {
                     upstream_entry,
                     upstream_to_channel_manager_sender.clone(),
                     channel_manager_to_upstream_receiver.clone(),
-                    notify_shutdown.clone(),
+                    cancellation_token.clone(),
+                    fallback_coordinator.clone(),
                     status_sender.clone(),
                     shutdown_complete_tx.clone(),
                     task_manager.clone(),
@@ -323,11 +430,13 @@ impl TranslatorSv2 {
                 )
                 .await
                 {
-                    Ok(pair) => {
+                    Ok(()) => {
                         // starting sv1 server instance
                         if let Err(e) = sv1_server_instance
+                            .clone()
                             .start(
-                                notify_shutdown.clone(),
+                                cancellation_token.clone(),
+                                fallback_coordinator.clone(),
                                 shutdown_complete_tx.clone(),
                                 status_sender.clone(),
                                 task_manager.clone(),
@@ -339,7 +448,7 @@ impl TranslatorSv2 {
                         }
 
                         upstream_entry.tried_or_flagged = true;
-                        return Ok(pair);
+                        return Ok(());
                     }
                     Err(e) => {
                         warn!(
@@ -370,7 +479,8 @@ async fn try_initialize_upstream(
     upstream_addr: &UpstreamEntry,
     upstream_to_channel_manager_sender: Sender<Sv2Frame>,
     channel_manager_to_upstream_receiver: Receiver<Sv2Frame>,
-    notify_shutdown: broadcast::Sender<ShutdownMessage>,
+    cancellation_token: CancellationToken,
+    fallback_coordinator: FallbackCoordinator,
     status_sender: Sender<Status>,
     shutdown_complete_tx: mpsc::Sender<()>,
     task_manager: Arc<TaskManager>,
@@ -380,7 +490,8 @@ async fn try_initialize_upstream(
         upstream_addr,
         upstream_to_channel_manager_sender,
         channel_manager_to_upstream_receiver,
-        notify_shutdown.clone(),
+        cancellation_token.clone(),
+        fallback_coordinator.clone(),
         shutdown_complete_tx.clone(),
         task_manager.clone(),
         required_extensions,
@@ -389,7 +500,8 @@ async fn try_initialize_upstream(
 
     upstream
         .start(
-            notify_shutdown,
+            cancellation_token,
+            fallback_coordinator,
             shutdown_complete_tx,
             status_sender,
             task_manager,
