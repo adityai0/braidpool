@@ -902,6 +902,19 @@ impl Sv1Server {
                 "No downstream found for channel {} when vardiff is disabled",
                 channel_id
             );
+            info!("Sending CloseChannel message: Channel id {channel_id}");
+            let reason_code = Str0255::try_from("downstream disconnected".to_string()).unwrap();
+            self.sv1_server_channel_state
+                .channel_manager_sender
+                .send((
+                    Mining::CloseChannel(CloseChannel {
+                        channel_id,
+                        reason_code,
+                    }),
+                    None,
+                ))
+                .await
+                .map_err(|_| TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender))?;
             return Err(TproxyError::log(
                 TproxyErrorKind::DownstreamNotFoundWithChannelId(channel_id),
             ));
