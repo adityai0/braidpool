@@ -1,6 +1,7 @@
 use std::{net::SocketAddr, sync::Arc};
 mod common_message_handler;
 use async_channel::{unbounded, Receiver, Sender};
+use bitcoin_core_sv2::CancellationToken;
 use stratum_apps::{
     key_utils::Secp256k1PublicKey,
     network_helpers::noise_stream::NoiseTcpStream,
@@ -17,14 +18,14 @@ use stratum_apps::{
         types::{Message, Sv2Frame},
     },
 };
-use tokio::{net::TcpStream, sync::broadcast};
+use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn};
 
 use crate::{
     error::{self, PoolError, PoolErrorKind, PoolResult},
     io_task::spawn_io_tasks,
     status::{handle_error, Status, StatusSender},
-    utils::{get_setup_connection_message_tp, ShutdownMessage},
+    utils::get_setup_connection_message_tp,
 };
 
 #[derive(Clone)]
@@ -54,9 +55,8 @@ impl Sv2Tp {
         public_key: Option<Secp256k1PublicKey>,
         channel_manager_receiver: Receiver<TemplateDistribution<'static>>,
         channel_manager_sender: Sender<TemplateDistribution<'static>>,
-        notify_shutdown: broadcast::Sender<ShutdownMessage>,
+        cancellation_token: CancellationToken,
         task_manager: Arc<TaskManager>,
-        status_sender: Sender<Status>,
     ) -> PoolResult<Sv2Tp, error::TemplateProvider> {
         const MAX_RETRIES: usize = 3;
 
@@ -94,19 +94,18 @@ impl Sv2Tp {
                             let (noise_stream_reader, noise_stream_writer) =
                                 noise_stream.into_split();
 
-                            let status_sender = StatusSender::TemplateReceiver(status_sender);
                             let (inbound_tx, inbound_rx) = unbounded::<Sv2Frame>();
                             let (outbound_tx, outbound_rx) = unbounded::<Sv2Frame>();
 
                             info!(attempt, "Spawning IO tasks for template receiver");
+
                             spawn_io_tasks(
                                 task_manager.clone(),
                                 noise_stream_reader,
                                 noise_stream_writer,
                                 outbound_rx,
                                 inbound_tx,
-                                notify_shutdown,
-                                status_sender,
+                                cancellation_token.clone(),
                             );
 
                             let template_receiver_channel = Sv2TpChannel {
@@ -152,57 +151,45 @@ impl Sv2Tp {
     pub async fn start(
         mut self,
         socket_address: String,
-        notify_shutdown: broadcast::Sender<ShutdownMessage>,
+        cancellation_token: CancellationToken,
         status_sender: Sender<Status>,
         task_manager: Arc<TaskManager>,
     ) -> PoolResult<(), error::TemplateProvider> {
         let status_sender = StatusSender::TemplateReceiver(status_sender);
-        let mut shutdown_rx = notify_shutdown.subscribe();
 
         info!("Initialized state for starting template receiver");
         self.setup_connection(socket_address).await?;
 
         info!("Setup Connection done. connection with template receiver is now done");
-        task_manager.spawn(
-            async move {
-                loop {
-                    let mut self_clone_1 = self.clone();
-                    let self_clone_2 = self.clone();
-                    tokio::select! {
-                        message = shutdown_rx.recv() => {
-                            match message {
-                                Ok(ShutdownMessage::ShutdownAll) => {
-                                    info!("Template Receiver: received shutdown signal");
-                                    break;
-                                },
-                                Err(e) => {
-                                    warn!(error = ?e, "Template Receiver: shutdown channel closed unexpectedly");
-                                    break;
-                                }
-                                _ => {}
-                            }
-                        }
-                        res = self_clone_1.handle_template_provider_message() => {
-                            if let Err(e) = res {
-                                error!("TemplateReceiver template provider handler failed: {e:?}");
-                                if handle_error(&status_sender, e).await {
-                                    break;
-                                }
-                            }
-                        }
-                        res = self_clone_2.handle_channel_manager_message() => {
-                            if let Err(e) = res {
-                                error!("TemplateReceiver channel manager handler failed: {e:?}");
-                                if handle_error(&status_sender, e).await {
-                                    break;
-                                }
-                            }
-                        },
+        task_manager.spawn(async move {
+            loop {
+                let mut self_clone_1 = self.clone();
+                let self_clone_2 = self.clone();
+                tokio::select! {
+                    _ = cancellation_token.cancelled() => {
+                        info!("Template Receiver: received shutdown signal");
+                        break;
                     }
+                    res = self_clone_1.handle_template_provider_message() => {
+                        if let Err(e) = res {
+                            error!("TemplateReceiver template provider handler failed: {e:?}");
+                            if handle_error(&status_sender, e).await {
+                                break;
+                            }
+                        }
+                    }
+                    res = self_clone_2.handle_channel_manager_message() => {
+                        if let Err(e) = res {
+                            error!("TemplateReceiver channel manager handler failed: {e:?}");
+                            if handle_error(&status_sender, e).await {
+                                break;
+                            }
+                        }
+                    },
                 }
-                warn!("TemplateReceiver: unified message loop exited.");
-            },
-        );
+            }
+            warn!("TemplateReceiver: unified message loop exited.");
+        });
         Ok(())
     }
 

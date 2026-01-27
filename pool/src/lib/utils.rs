@@ -5,21 +5,10 @@ use stratum_apps::{
         common_messages_sv2::{Protocol, SetupConnection},
         mining_sv2::CloseChannel,
     },
-    utils::types::{ChannelId, DownstreamId},
+    utils::types::ChannelId,
 };
 
 use crate::error::PoolErrorKind;
-
-/// Represents a message that can trigger shutdown of various system components.
-#[derive(Debug, Clone)]
-pub enum ShutdownMessage {
-    /// Shutdown all components immediately
-    ShutdownAll,
-    /// Shutdown all downstream connections
-    DownstreamShutdownAll,
-    /// Shutdown a specific downstream connection by ID
-    DownstreamShutdown(DownstreamId),
-}
 
 /// Constructs a `SetupConnection` message for the mining protocol.
 #[allow(clippy::result_large_err)]

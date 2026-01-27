@@ -5,7 +5,7 @@ use async_channel::unbounded;
 use bitcoin_core_sv2::CancellationToken;
 use stratum_apps::{
     stratum_core::bitcoin::consensus::Encodable, task_manager::TaskManager,
-    tp_type::TemplateProviderType, SHUTDOWN_BROADCAST_CAPACITY,
+    tp_type::TemplateProviderType,
 };
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
@@ -19,7 +19,6 @@ use crate::{
         bitcoin_core::{connect_to_bitcoin_core, BitcoinCoreSv2Config},
         sv2_tp::Sv2Tp,
     },
-    utils::ShutdownMessage,
 };
 
 pub mod channel_manager;
@@ -35,17 +34,15 @@ pub mod utils;
 #[derive(Debug, Clone)]
 pub struct PoolSv2 {
     config: PoolConfig,
-    notify_shutdown: broadcast::Sender<ShutdownMessage>,
+    cancellation_token: CancellationToken,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
 impl PoolSv2 {
     pub fn new(config: PoolConfig) -> Self {
-        let (notify_shutdown, _) =
-            tokio::sync::broadcast::channel::<ShutdownMessage>(SHUTDOWN_BROADCAST_CAPACITY);
         Self {
             config,
-            notify_shutdown,
+            cancellation_token: CancellationToken::new(),
         }
     }
 
@@ -58,7 +55,7 @@ impl PoolSv2 {
             .consensus_encode(&mut encoded_outputs)
             .expect("Invalid coinbase output in config");
 
-        let notify_shutdown = self.notify_shutdown.clone();
+        let cancellation_token = self.cancellation_token.clone();
 
         let task_manager = Arc::new(TaskManager::new());
 
@@ -99,16 +96,9 @@ impl PoolSv2 {
             )
             .expect("Failed to initialize monitoring server");
 
-            // Create shutdown signal that waits for ShutdownAll
-            let mut notify_shutdown_monitoring = notify_shutdown.subscribe();
+            let cancellation_token_clone = cancellation_token.clone();
             let shutdown_signal = async move {
-                loop {
-                    match notify_shutdown_monitoring.recv().await {
-                        Ok(ShutdownMessage::ShutdownAll) => break,
-                        Ok(_) => continue, // Ignore other shutdown messages
-                        Err(_) => break,
-                    }
-                }
+                cancellation_token_clone.cancelled().await;
             };
 
             task_manager.spawn(async move {
@@ -119,6 +109,7 @@ impl PoolSv2 {
         }
 
         let channel_manager_clone = channel_manager.clone();
+        let channel_manager_for_cleanup = channel_manager.clone();
         let mut bitcoin_core_sv2_join_handle: Option<JoinHandle<()>> = None;
 
         match self.config.template_provider_type().clone() {
@@ -131,16 +122,15 @@ impl PoolSv2 {
                     public_key,
                     channel_manager_to_tp_receiver,
                     tp_to_channel_manager_sender,
-                    notify_shutdown.clone(),
+                    cancellation_token.clone(),
                     task_manager.clone(),
-                    status_sender.clone(),
                 )
                 .await?;
 
                 sv2_tp
                     .start(
                         address,
-                        notify_shutdown.clone(),
+                        cancellation_token.clone(),
                         status_sender.clone(),
                         task_manager.clone(),
                     )
@@ -181,7 +171,7 @@ impl PoolSv2 {
                 bitcoin_core_sv2_join_handle = Some(
                     connect_to_bitcoin_core(
                         bitcoin_core_config,
-                        notify_shutdown.clone(),
+                        cancellation_token.clone(),
                         task_manager.clone(),
                         status_sender.clone(),
                     )
@@ -192,7 +182,7 @@ impl PoolSv2 {
 
         channel_manager
             .start(
-                notify_shutdown.clone(),
+                cancellation_token.clone(),
                 status_sender.clone(),
                 task_manager.clone(),
                 coinbase_outputs,
@@ -206,7 +196,7 @@ impl PoolSv2 {
                 self.config.cert_validity_sec(),
                 *self.config.listen_address(),
                 task_manager.clone(),
-                notify_shutdown.clone(),
+                cancellation_token.clone(),
                 status_sender,
                 downstream_to_channel_manager_sender,
                 channel_manager_to_downstream_sender,
@@ -218,24 +208,29 @@ impl PoolSv2 {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {
                     info!("Ctrl+C received — initiating graceful shutdown...");
-                    let _ = notify_shutdown.send(ShutdownMessage::ShutdownAll);
+                    cancellation_token.cancel();
                     break;
                 }
                 message = status_receiver.recv() => {
                     if let Ok(status) = message {
                         match status.state {
                             State::DownstreamShutdown{downstream_id,..} => {
-                                warn!("Downstream {downstream_id:?} disconnected — Channel manager.");
-                                let _ = notify_shutdown.send(ShutdownMessage::DownstreamShutdown(downstream_id));
+                                warn!("Downstream {downstream_id:?} disconnected — cleaning up channel manager.");
+                                // Remove downstream from channel manager to prevent memory leak
+                                if let Err(e) = channel_manager_for_cleanup.remove_downstream(downstream_id) {
+                                    error!("Failed to remove downstream {downstream_id:?}: {e:?}");
+                                    cancellation_token.cancel();
+                                    break;
+                                }
                             }
                             State::TemplateReceiverShutdown(_) => {
                                 warn!("Template Receiver shutdown requested — initiating full shutdown.");
-                                let _ = notify_shutdown.send(ShutdownMessage::ShutdownAll);
+                                cancellation_token.cancel();
                                 break;
                             }
                             State::ChannelManagerShutdown(_) => {
                                 warn!("Channel Manager shutdown requested — initiating full shutdown.");
-                                let _ = notify_shutdown.send(ShutdownMessage::ShutdownAll);
+                                cancellation_token.cancel();
                                 break;
                             }
                         }
@@ -264,6 +259,6 @@ impl PoolSv2 {
 impl Drop for PoolSv2 {
     fn drop(&mut self) {
         info!("PoolSv2 dropped");
-        let _ = self.notify_shutdown.send(ShutdownMessage::ShutdownAll);
+        self.cancellation_token.cancel();
     }
 }

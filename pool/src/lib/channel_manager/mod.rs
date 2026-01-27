@@ -8,6 +8,7 @@ use std::{
 };
 
 use async_channel::{Receiver, Sender};
+use bitcoin_core_sv2::CancellationToken;
 use core::sync::atomic::Ordering;
 use stratum_apps::{
     coinbase_output_constraints::coinbase_output_constraints_message,
@@ -46,7 +47,6 @@ use crate::{
     downstream::Downstream,
     error::{self, PoolError, PoolErrorKind, PoolResult},
     status::{handle_error, Status, StatusSender},
-    utils::ShutdownMessage,
 };
 
 mod mining_message_handler;
@@ -229,7 +229,7 @@ impl ChannelManager {
         cert_validity_sec: u64,
         listening_address: SocketAddr,
         task_manager: Arc<TaskManager>,
-        notify_shutdown: broadcast::Sender<ShutdownMessage>,
+        cancellation_token: CancellationToken,
         status_sender: Sender<Status>,
         channel_manager_sender: Sender<(DownstreamId, Mining<'static>, Option<Vec<Tlv>>)>,
         channel_manager_receiver: broadcast::Sender<(
@@ -238,8 +238,6 @@ impl ChannelManager {
             Option<Vec<Tlv>>,
         )>,
     ) -> PoolResult<(), error::ChannelManager> {
-        let mut shutdown_rx = notify_shutdown.subscribe();
-
         // Wait for initial template and prevhash before accepting connections
         loop {
             let has_required_data = self.channel_manager_data.super_safe_lock(|data| {
@@ -253,18 +251,9 @@ impl ChannelManager {
 
             warn!("Waiting for initial template and prevhash from Template Provider...");
             select! {
-                message = shutdown_rx.recv() => {
-                    match message {
-                        Ok(ShutdownMessage::ShutdownAll) => {
-                            info!("Channel Manager: received shutdown while waiting for templates");
-                            return Ok(());
-                        }
-                        Err(e) => {
-                            warn!(error = ?e, "shutdown channel closed unexpectedly");
-                            return Ok(());
-                        }
-                        _ => {}
-                    }
+                _ = cancellation_token.cancelled() => {
+                    info!("Channel Manager: received shutdown while waiting for templates");
+                    return Ok(());
                 }
                 _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
             }
@@ -280,22 +269,14 @@ impl ChannelManager {
             .map_err(PoolError::shutdown)?;
 
         let task_manager_clone = task_manager.clone();
+        let cancellation_token_clone = cancellation_token.clone();
         task_manager.spawn(async move {
 
             loop {
                 select! {
-                    message = shutdown_rx.recv() => {
-                        match message {
-                            Ok(ShutdownMessage::ShutdownAll) => {
-                                info!("Channel Manager: received shutdown signal");
-                                break;
-                            }
-                            Err(e) => {
-                                warn!(error = ?e, "shutdown channel closed unexpectedly");
-                                break;
-                            }
-                            _ => {}
-                        }
+                    _ = cancellation_token_clone.cancelled() => {
+                        info!("Channel Manager: received shutdown signal");
+                        break;
                     }
                     res = server.accept() => {
                         match res {
@@ -348,9 +329,8 @@ impl ChannelManager {
                                     channel_manager_sender.clone(),
                                     channel_manager_receiver.clone(),
                                     noise_stream,
-                                    notify_shutdown.clone(),
+                                    cancellation_token.clone(),
                                     task_manager_clone.clone(),
-                                    status_sender.clone(),
                                     self.supported_extensions.clone(),
                                     self.required_extensions.clone(),
                                 );
@@ -361,7 +341,7 @@ impl ChannelManager {
 
                                 downstream
                                     .start(
-                                        notify_shutdown.clone(),
+                                        cancellation_token.clone(),
                                         status_sender.clone(),
                                         task_manager_clone.clone(),
                                     )
@@ -387,13 +367,12 @@ impl ChannelManager {
     /// the internal state of the Channel Manager as needed.
     pub async fn start(
         self,
-        notify_shutdown: broadcast::Sender<ShutdownMessage>,
+        cancellation_token: CancellationToken,
         status_sender: Sender<Status>,
         task_manager: Arc<TaskManager>,
         coinbase_outputs: Vec<TxOut>,
     ) -> PoolResult<(), error::ChannelManager> {
         let status_sender = StatusSender::ChannelManager(status_sender);
-        let mut shutdown_rx = notify_shutdown.subscribe();
 
         self.coinbase_output_constraints(coinbase_outputs).await?;
 
@@ -405,24 +384,9 @@ impl ChannelManager {
                 let mut cm_template = cm.clone();
                 let mut cm_downstreams = cm.clone();
                 tokio::select! {
-                    message = shutdown_rx.recv() => {
-                        match message {
-                            Ok(ShutdownMessage::ShutdownAll) => {
-                                info!("Channel Manager: received shutdown signal");
-                                break;
-                            }
-                            Ok(ShutdownMessage::DownstreamShutdown(downstream_id)) => {
-                                info!(%downstream_id, "Channel Manager: removing downstream after shutdown");
-                                if let Err(e) = self.remove_downstream(downstream_id) {
-                                    tracing::error!(%downstream_id, error = ?e, "Failed to remove downstream");
-                                }
-                            }
-                            Err(e) => {
-                                warn!(error = ?e, "shutdown channel closed unexpectedly");
-                                break;
-                            }
-                            _ => {}
-                        }
+                    _ = cancellation_token.cancelled() => {
+                        info!("Channel Manager: received shutdown signal");
+                        break;
                     }
                     res = &mut vardiff_future => {
                         info!("Vardiff loop completed with: {res:?}");
@@ -455,7 +419,7 @@ impl ChannelManager {
     // 1. Removes the corresponding Downstream from the `downstream` map.
     // 2. Removes the channels of the corresponding Downstream from `vardiff` map.
     #[allow(clippy::result_large_err)]
-    fn remove_downstream(
+    pub fn remove_downstream(
         &self,
         downstream_id: DownstreamId,
     ) -> PoolResult<(), error::ChannelManager> {

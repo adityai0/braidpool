@@ -1,13 +1,11 @@
 use crate::{
     error::{self, PoolError, PoolErrorKind},
     status::{handle_error, State, Status, StatusSender},
-    utils::ShutdownMessage,
 };
 use async_channel::{Receiver, Sender};
 use bitcoin_core_sv2::{BitcoinCoreSv2, CancellationToken};
 use std::{path::PathBuf, sync::Arc, thread::JoinHandle};
 use stratum_apps::{stratum_core::parsers_sv2::TemplateDistribution, task_manager::TaskManager};
-use tokio::sync::broadcast;
 
 #[derive(Clone)]
 pub struct BitcoinCoreSv2Config {
@@ -22,35 +20,28 @@ pub struct BitcoinCoreSv2Config {
 #[cfg_attr(not(test), hotpath::measure)]
 pub async fn connect_to_bitcoin_core(
     bitcoin_core_config: BitcoinCoreSv2Config,
-    notify_shutdown: broadcast::Sender<ShutdownMessage>,
+    cancellation_token: CancellationToken,
     task_manager: Arc<TaskManager>,
     status_sender: Sender<Status>,
 ) -> JoinHandle<()> {
-    let mut shutdown_rx = notify_shutdown.subscribe();
-    let cancellation_token_clone = bitcoin_core_config.cancellation_token.clone();
+    let bitcoin_core_canc_token = bitcoin_core_config.cancellation_token.clone();
     let status_sender_clone = status_sender.clone();
 
     // spawn a task to handle shutdown signals and cancellation token activations
     task_manager.spawn(async move {
-        loop {
-            tokio::select! {
-                message = shutdown_rx.recv() => {
-                    if let Ok(ShutdownMessage::ShutdownAll) = message {
-                        cancellation_token_clone.cancel();
-                        break;
-                    }
-                }
-                _ = cancellation_token_clone.cancelled() => {
-                    // turn status_sender into a StatusSender::TemplateReceiver
-                    let status_sender = StatusSender::TemplateReceiver(status_sender_clone);
+        tokio::select! {
+            _ = cancellation_token.cancelled() => {
+                bitcoin_core_canc_token.cancel();
+            }
+            _ = bitcoin_core_canc_token.cancelled() => {
+                // turn status_sender into a StatusSender::TemplateReceiver
+                let status_sender = StatusSender::TemplateReceiver(status_sender_clone);
 
-                    handle_error::<error::TemplateProvider>(
-                        &status_sender,
-                        PoolError::shutdown(PoolErrorKind::BitcoinCoreSv2CancellationTokenActivated),
-                    )
-                    .await;
-                    break;
-                }
+                handle_error::<error::TemplateProvider>(
+                    &status_sender,
+                    PoolError::shutdown(PoolErrorKind::BitcoinCoreSv2CancellationTokenActivated),
+                )
+                .await;
             }
         }
     });

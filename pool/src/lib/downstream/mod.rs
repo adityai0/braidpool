@@ -7,6 +7,7 @@ use std::{
 };
 
 use async_channel::{unbounded, Receiver, Sender};
+use bitcoin_core_sv2::CancellationToken;
 use stratum_apps::{
     custom_mutex::Mutex,
     network_helpers::noise_stream::NoiseTcpStream,
@@ -35,7 +36,6 @@ use crate::{
     error::{self, PoolError, PoolErrorKind, PoolResult},
     io_task::spawn_io_tasks,
     status::{handle_error, Status, StatusSender},
-    utils::ShutdownMessage,
 };
 
 mod common_message_handler;
@@ -74,6 +74,10 @@ pub struct DownstreamChannel {
     channel_manager_receiver: broadcast::Sender<(DownstreamId, Mining<'static>, Option<Vec<Tlv>>)>,
     downstream_sender: Sender<Sv2Frame>,
     downstream_receiver: Receiver<Sv2Frame>,
+    /// Per-connection cancellation token (child of the global token).
+    /// Cancelled when this downstream's message loop exits, causing
+    /// the associated I/O tasks to shut down.
+    connection_token: CancellationToken,
 }
 
 /// Represents a downstream client connected to this node.
@@ -105,27 +109,25 @@ impl Downstream {
             Option<Vec<Tlv>>,
         )>,
         noise_stream: NoiseTcpStream<Message>,
-        notify_shutdown: broadcast::Sender<ShutdownMessage>,
+        cancellation_token: CancellationToken,
         task_manager: Arc<TaskManager>,
-        status_sender: Sender<Status>,
         supported_extensions: Vec<u16>,
         required_extensions: Vec<u16>,
     ) -> Self {
         let (noise_stream_reader, noise_stream_writer) = noise_stream.into_split();
-        let status_sender = StatusSender::Downstream {
-            downstream_id,
-            tx: status_sender,
-        };
         let (inbound_tx, inbound_rx) = unbounded::<Sv2Frame>();
         let (outbound_tx, outbound_rx) = unbounded::<Sv2Frame>();
+
+        // Create a per-connection child token so we can cancel this
+        // connection's I/O tasks independently of the global shutdown.
+        let connection_token = cancellation_token.child_token();
         spawn_io_tasks(
             task_manager,
             noise_stream_reader,
             noise_stream_writer,
             outbound_rx,
             inbound_tx,
-            notify_shutdown,
-            status_sender,
+            connection_token.clone(),
         );
 
         let downstream_channel = DownstreamChannel {
@@ -133,6 +135,7 @@ impl Downstream {
             channel_manager_sender,
             downstream_sender: outbound_tx,
             downstream_receiver: inbound_rx,
+            connection_token,
         };
 
         let downstream_data = Arc::new(Mutex::new(DownstreamData {
@@ -162,7 +165,7 @@ impl Downstream {
     /// - Forwards channel manager messages back to the downstream peer.
     pub async fn start(
         mut self,
-        notify_shutdown: broadcast::Sender<ShutdownMessage>,
+        cancellation_token: CancellationToken,
         status_sender: Sender<Status>,
         task_manager: Arc<TaskManager>,
     ) {
@@ -170,8 +173,6 @@ impl Downstream {
             downstream_id: self.downstream_id,
             tx: status_sender,
         };
-
-        let mut shutdown_rx = notify_shutdown.subscribe();
 
         // Setup initial connection
         if let Err(e) = self.setup_connection_with_downstream().await {
@@ -192,18 +193,9 @@ impl Downstream {
                 let downstream_id = self_clone_1.downstream_id;
                 let self_clone_2 = self.clone();
                 tokio::select! {
-                    message = shutdown_rx.recv() => {
-                        match message {
-                            Ok(ShutdownMessage::ShutdownAll) => {
-                                debug!("Downstream {downstream_id}: Received global shutdown");
-                                break;
-                            }
-                            Ok(ShutdownMessage::DownstreamShutdown(id)) if downstream_id == id => {
-                                debug!("Downstream {downstream_id}: Received downstream {id} shutdown");
-                                break;
-                            }
-                            _ => {}
-                        }
+                    _ = cancellation_token.cancelled() => {
+                        debug!("Downstream {downstream_id}: received shutdown signal");
+                        break;
                     }
                     res = self_clone_1.handle_downstream_message() => {
                         if let Err(e) = res {
@@ -224,6 +216,8 @@ impl Downstream {
 
                 }
             }
+
+            self.downstream_channel.connection_token.cancel();
             warn!("Downstream: unified message loop exited.");
         });
     }
