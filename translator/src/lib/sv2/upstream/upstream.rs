@@ -25,7 +25,8 @@ use stratum_apps::{
         types::{Message, Sv2Frame},
     },
 };
-use tokio::{net::TcpStream, sync::mpsc};
+
+use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -68,7 +69,6 @@ impl Upstream {
     /// * `channel_manager_receiver` - Channel to receive messages from the channel manager
     /// * `cancellation_token` - Global application cancellation token
     /// * `fallback_coordinator` - Coordinator for upstream fallback
-    /// * `shutdown_complete_tx` - Channel to signal shutdown completion
     ///
     /// # Returns
     /// * `Ok(Upstream)` - Successfully connected to an upstream server
@@ -80,7 +80,6 @@ impl Upstream {
         channel_manager_receiver: Receiver<Sv2Frame>,
         cancellation_token: CancellationToken,
         fallback_coordinator: FallbackCoordinator,
-        shutdown_complete_tx: mpsc::Sender<()>,
         task_manager: Arc<TaskManager>,
         required_extensions: Vec<u16>,
     ) -> TproxyResult<Self, error::Upstream> {
@@ -88,7 +87,6 @@ impl Upstream {
 
         if cancellation_token.is_cancelled() {
             info!("Shutdown signal received during upstream connection attempt. Aborting.");
-            drop(shutdown_complete_tx);
             return Err(TproxyError::shutdown(
                 TproxyErrorKind::CouldNotInitiateSystem,
             ));
@@ -148,7 +146,6 @@ impl Upstream {
         }
 
         error!("Failed to connect to any configured upstream.");
-        drop(shutdown_complete_tx);
         Err(TproxyError::shutdown(
             TproxyErrorKind::CouldNotInitiateSystem,
         ))
@@ -168,7 +165,6 @@ impl Upstream {
         mut self,
         cancellation_token: CancellationToken,
         fallback_coordinator: FallbackCoordinator,
-        shutdown_complete_tx: mpsc::Sender<()>,
         status_sender: Sender<Status>,
         task_manager: Arc<TaskManager>,
     ) -> TproxyResult<(), error::Upstream> {
@@ -179,18 +175,15 @@ impl Upstream {
             result = self.setup_connection() => {
                 if let Err(e) = result {
                     error!("Upstream: failed to set up SV2 connection: {e:?}");
-                    drop(shutdown_complete_tx);
                     return Err(e);
                 }
             }
             _ = cancellation_token.cancelled() => {
                 info!("Upstream: shutdown signal received during connection setup.");
-                drop(shutdown_complete_tx);
                 return Ok(());
             }
             _ = fallback_token.cancelled() => {
                 info!("Upstream: fallback signal received during connection setup.");
-                drop(shutdown_complete_tx);
                 return Ok(());
             }
         }
@@ -201,7 +194,6 @@ impl Upstream {
         self.run_upstream_task(
             cancellation_token,
             fallback_coordinator,
-            shutdown_complete_tx,
             wrapped_status_sender,
             task_manager,
         )?;
@@ -353,12 +345,9 @@ impl Upstream {
         mut self,
         cancellation_token: CancellationToken,
         fallback_coordinator: FallbackCoordinator,
-        shutdown_complete_tx: mpsc::Sender<()>,
         status_sender: StatusSender,
         task_manager: Arc<TaskManager>,
     ) -> TproxyResult<(), error::Upstream> {
-        let shutdown_complete_tx = shutdown_complete_tx.clone();
-
         task_manager.spawn(async move {
             // we just spawned a new task that's relevant to fallback coordination
             // so register it with the fallback coordinator
@@ -429,7 +418,6 @@ impl Upstream {
 
             self.upstream_channel_state.drop();
             warn!("Upstream: task shutting down cleanly.");
-            drop(shutdown_complete_tx);
 
             // signal fallback coordinator that this task has completed its cleanup
             fallback_handler.done();

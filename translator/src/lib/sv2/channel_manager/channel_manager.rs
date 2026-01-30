@@ -26,7 +26,7 @@ use stratum_apps::{
         types::{ChannelId, DownstreamId, Hashrate, Sv2Frame},
     },
 };
-use tokio::sync::mpsc;
+
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -140,14 +140,12 @@ impl ChannelManager {
     /// # Arguments
     /// * `cancellation_token` - Global application cancellation token
     /// * `fallback_coordinator` - Fallback coordinator
-    /// * `shutdown_complete_tx` - Channel to signal when shutdown is complete
     /// * `status_sender` - Channel for sending status updates and errors
     /// * `task_manager` - Manager for tracking spawned tasks
     pub async fn run_channel_manager_tasks(
         self: Arc<Self>,
         cancellation_token: CancellationToken,
         fallback_coordinator: FallbackCoordinator,
-        shutdown_complete_tx: mpsc::Sender<()>,
         status_sender: Sender<Status>,
         task_manager: Arc<TaskManager>,
     ) {
@@ -199,7 +197,6 @@ impl ChannelManager {
             }
 
             self.channel_state.drop();
-            drop(shutdown_complete_tx);
             warn!("ChannelManager: unified message loop exited.");
 
             // signal fallback coordinator that this task has completed its cleanup

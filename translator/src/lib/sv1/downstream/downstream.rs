@@ -25,7 +25,7 @@ use stratum_apps::{
     task_manager::TaskManager,
     utils::types::{ChannelId, DownstreamId, Hashrate},
 };
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -103,7 +103,6 @@ impl Downstream {
         self,
         cancellation_token: CancellationToken,
         fallback_coordinator: FallbackCoordinator,
-        shutdown_complete_tx: mpsc::Sender<()>,
         status_sender: StatusSender,
         task_manager: Arc<TaskManager>,
     ) {
@@ -160,7 +159,6 @@ impl Downstream {
 
             warn!("Downstream {downstream_id}: unified task shutting down");
             self.downstream_channel_state.drop();
-            drop(shutdown_complete_tx);
 
             // signal fallback coordinator that this task has completed its cleanup
             fallback_handler.done();

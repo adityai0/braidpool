@@ -20,7 +20,7 @@ use std::{
 use stratum_apps::{
     fallback_coordinator::FallbackCoordinator, task_manager::TaskManager, utils::types::Sv2Frame,
 };
-use tokio::{select, sync::mpsc};
+use tokio::select;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -79,7 +79,6 @@ impl TranslatorSv2 {
         let cancellation_token = CancellationToken::new();
         let mut fallback_coordinator = FallbackCoordinator::new();
 
-        let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel::<()>(1);
         let task_manager = Arc::new(TaskManager::new());
         let (status_sender, status_receiver) = async_channel::unbounded::<Status>();
 
@@ -127,7 +126,6 @@ impl TranslatorSv2 {
                 cancellation_token.clone(),
                 fallback_coordinator.clone(),
                 status_sender.clone(),
-                shutdown_complete_tx.clone(),
                 task_manager.clone(),
                 sv1_server.clone(),
                 self.config.required_extensions.clone(),
@@ -153,7 +151,6 @@ impl TranslatorSv2 {
             channel_manager.clone(),
             cancellation_token.clone(),
             fallback_coordinator.clone(),
-            shutdown_complete_tx.clone(),
             status_sender.clone(),
             task_manager.clone(),
         )
@@ -271,7 +268,6 @@ impl TranslatorSv2 {
                                     cancellation_token.clone(),
                                     fallback_coordinator.clone(),
                                     status_sender.clone(),
-                                    shutdown_complete_tx.clone(),
                                     task_manager.clone(),
                                     sv1_server.clone(),
                                     self.config.required_extensions.clone(),
@@ -296,7 +292,6 @@ impl TranslatorSv2 {
                                     channel_manager.clone(),
                                     cancellation_token.clone(),
                                     fallback_coordinator.clone(),
-                                    shutdown_complete_tx.clone(),
                                     status_sender.clone(),
                                     task_manager.clone(),
                                 )
@@ -354,18 +349,8 @@ impl TranslatorSv2 {
             }
         }
 
-        drop(shutdown_complete_tx);
-        info!("Waiting for shutdown completion signals from subsystems...");
-        let shutdown_timeout = tokio::time::Duration::from_secs(5);
-        tokio::select! {
-            _ = shutdown_complete_rx.recv() => {
-                info!("All subsystems reported shutdown complete.");
-            }
-            _ = tokio::time::sleep(shutdown_timeout) => {
-                warn!("Graceful shutdown timed out after {shutdown_timeout:?} — forcing shutdown.");
-                task_manager.abort_all().await;
-            }
-        }
+        warn!("Graceful shutdown");
+        task_manager.abort_all().await;
         info!("Joining remaining tasks...");
         task_manager.join_all().await;
         info!("TranslatorSv2 shutdown complete.");
@@ -390,7 +375,6 @@ impl TranslatorSv2 {
         cancellation_token: CancellationToken,
         fallback_coordinator: FallbackCoordinator,
         status_sender: Sender<Status>,
-        shutdown_complete_tx: mpsc::Sender<()>,
         task_manager: Arc<TaskManager>,
         sv1_server_instance: Arc<Sv1Server>,
         required_extensions: Vec<u16>,
@@ -424,7 +408,6 @@ impl TranslatorSv2 {
                     cancellation_token.clone(),
                     fallback_coordinator.clone(),
                     status_sender.clone(),
-                    shutdown_complete_tx.clone(),
                     task_manager.clone(),
                     required_extensions.clone(),
                 )
@@ -437,7 +420,6 @@ impl TranslatorSv2 {
                             .start(
                                 cancellation_token.clone(),
                                 fallback_coordinator.clone(),
-                                shutdown_complete_tx.clone(),
                                 status_sender.clone(),
                                 task_manager.clone(),
                             )
@@ -482,7 +464,6 @@ async fn try_initialize_upstream(
     cancellation_token: CancellationToken,
     fallback_coordinator: FallbackCoordinator,
     status_sender: Sender<Status>,
-    shutdown_complete_tx: mpsc::Sender<()>,
     task_manager: Arc<TaskManager>,
     required_extensions: Vec<u16>,
 ) -> Result<(), TproxyErrorKind> {
@@ -492,7 +473,6 @@ async fn try_initialize_upstream(
         channel_manager_to_upstream_receiver,
         cancellation_token.clone(),
         fallback_coordinator.clone(),
-        shutdown_complete_tx.clone(),
         task_manager.clone(),
         required_extensions,
     )
@@ -502,7 +482,6 @@ async fn try_initialize_upstream(
         .start(
             cancellation_token,
             fallback_coordinator,
-            shutdown_complete_tx,
             status_sender,
             task_manager,
         )

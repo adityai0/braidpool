@@ -43,7 +43,7 @@ use stratum_apps::{
     task_manager::TaskManager,
     utils::types::{ChannelId, DownstreamId, Hashrate, RequestId, SharesPerMinute},
 };
-use tokio::{net::TcpListener, sync::mpsc};
+use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
@@ -142,7 +142,6 @@ impl Sv1Server {
     /// # Arguments
     /// * `cancellation_token` - Global application cancellation token
     /// * `fallback_coordinator` - Fallback coordinator
-    /// * `shutdown_complete_tx` - Channel to signal shutdown completion
     /// * `status_sender` - Channel for sending status updates
     /// * `task_manager` - Manager for spawned async tasks
     ///
@@ -153,7 +152,6 @@ impl Sv1Server {
         self: Arc<Self>,
         cancellation_token: CancellationToken,
         fallback_coordinator: FallbackCoordinator,
-        shutdown_complete_tx: mpsc::Sender<()>,
         status_sender: Sender<Status>,
         task_manager: Arc<TaskManager>,
     ) -> TproxyResult<(), error::Sv1Server> {
@@ -254,7 +252,6 @@ impl Sv1Server {
                                     downstream,
                                     cancellation_token.clone(),
                                     fallback_coordinator.clone(),
-                                    shutdown_complete_tx.clone(),
                                     status_sender,
                                     task_manager.clone(),
                                 );
@@ -286,7 +283,6 @@ impl Sv1Server {
                     _ = &mut keepalive_future, if keepalive_enabled => {}
                 }
             }
-            drop(shutdown_complete_tx);
             debug!("SV1 Server main listener loop exited.");
 
             // signal fallback coordinator that this task has completed its cleanup
@@ -516,10 +512,6 @@ impl Sv1Server {
     ///
     /// # Arguments
     /// * `first_target` - Initial difficulty target for new connections
-    /// * `notify_shutdown` - Broadcast channel for shutdown coordination
-    /// * `shutdown_complete_tx` - Channel to signal shutdown completion
-    /// * `status_sender` - Channel for sending status updates
-    /// * `task_manager` - Manager for spawned async tasks
     ///
     /// # Returns
     /// * `Ok(())` - Message processed successfully
