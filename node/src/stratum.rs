@@ -7,7 +7,9 @@ use bitcoin::block::HeaderExt;
 use bitcoin::consensus::serialize;
 use bitcoin::io::Cursor;
 use bitcoin::{absolute::Decodable, Transaction};
-use bitcoin::{BlockHash, BlockHeader, BlockTime, Target, TxMerkleNode, Txid, Witness};
+use bitcoin::{
+    BlockHash, BlockHeader, BlockTime, Network, Params, Target, TxMerkleNode, Txid, Witness,
+};
 use futures::{lock::Mutex, FutureExt};
 use num::ToPrimitive;
 use rand::RngCore;
@@ -134,7 +136,7 @@ impl Default for StratumServerConfig {
 /// Covers common methods such as:
 /// - `mining.authorize`
 /// - `mining.configure`
-/// - `mining.set_difficulty`
+/// - `mining.suggest_difficulty`
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct StandardRequest {
     pub id: u64,
@@ -173,7 +175,7 @@ impl StandardResponse {
         }
     }
 }
-///`Notfication` method responses specific to `mining.notify` and `mining.set_difficulty` responses
+///`Notfication` method responses specific to `mining.notify` and `mining.suggest_difficulty` responses
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobNotificationResponse {
     pub method: String,
@@ -230,7 +232,7 @@ impl DownstreamClient {
     /// - `mining.subscribe`
     /// - `mining.authorize`
     /// - `mining.submit`
-    /// - `mining.set_difficulty`
+    /// - `mining.suggest_difficulty`
     ///
     /// Sends the corresponding response back to the client and, if the client
     /// has been both authorized and subscribed, triggers sending the latest
@@ -879,7 +881,7 @@ impl DownstreamClient {
             std_response: StandardResponse::new_ok(Some(client_request_id), json!(false)),
         });
     }
-    /// Processes a `mining.set_difficulty` request from the client.
+    /// Processes a `mining.suggest_difficulty` request from the client.
     ///
     /// Attempts to read a new difficulty value from the first element of the
     /// provided `suggest_difficulty_params` JSON array. The value must be a valid `u64`.
@@ -907,13 +909,13 @@ impl DownstreamClient {
             self.suggest_difficulty_done = true;
             Ok(StratumResponses::SuggestDifficultyResponse {
                 suggest_difficulty_resp: SuggestDifficultyResponse {
-                    method: "mining.set_difficulty".to_string(),
-                    params: vec![difficulty_u64],
+                    method: "mining.suggest_difficulty".to_string(),
+                    params: vec![difficulty.as_u64().unwrap()],
                 },
             })
         } else {
             return Err(StratumErrors::InvalidMethodParams {
-                method: "mining.set_difficulty".to_string(),
+                method: "mining.suggest_difficulty".to_string(),
             });
         }
     }
@@ -1235,6 +1237,7 @@ pub enum NotifyCmd {
     SendLatestTemplateToNewDownstream {
         new_downstream_addr: String,
     },
+    SetExtranonceNotification {},
 }
 /// Represents a `mining.notify` job message in the Stratum protocol.
 ///
@@ -1525,6 +1528,52 @@ where
             coinbase_witness_commitment: Some(coinbase_witness_commitment),
         })
     }
+    /// Constructs a Stratum `mining.set_difficulty` notification.
+    ///
+    /// This function computes the Stratum difficulty from the given minimum
+    /// target and network parameters .
+    ///
+    /// The returned message is a **notification** (not a request or response),
+    /// so the `id` field is always `null`.
+    ///
+    /// ## Stratum Semantics
+    /// - Must be sent **before** `mining.notify`
+    /// - Informs miners how to scale their share target
+    /// - `params` contains a single floating-point difficulty value
+    ///
+    /// ## Returns
+    /// A JSON-encoded `String` representing a `mining.set_difficulty`
+    /// notification.
+    ///
+    /// ## Example
+    /// ```json
+    /// {
+    ///   "method": "mining.set_difficulty",
+    ///   "params": [1024.0],
+    ///   "id": null
+    /// }
+    /// ```
+    #[allow(unused)]
+    pub fn set_difficulty(adjusted_min_target: Target, configured_network: Network) -> String {
+        let network_params = match configured_network {
+            Network::Bitcoin => Params::BITCOIN,
+            Network::CPUNet => Params::CPUNET,
+            Network::Regtest => Params::REGTEST,
+            Network::Signet => Params::SIGNET,
+            Network::Testnet(bitcoin::TestnetVersion::V4) => Params::TESTNET4,
+            Network::Testnet(bitcoin::TestnetVersion::V3) => Params::TESTNET3,
+            _ => Params::MAINNET,
+        };
+        let difficulty = adjusted_min_target.difficulty_float(network_params);
+        //Constructing set_difficulty response
+        let resp = json!({
+            "method": "mining.set_difficulty",
+            "params": [difficulty],
+            "id": null
+        });
+
+        resp.to_string()
+    }
     /// Runs the Stratum notifier task that handles broadcasting mining jobs to downstream miners.
     ///
     /// This asynchronous function continuously listens for notification commands and performs
@@ -1548,6 +1597,7 @@ where
         latest_template_arc: &mut Arc<Mutex<BlockTemplate>>,
         latest_template_merkle_branch_arc: &mut Arc<Mutex<Vec<Vec<u8>>>>,
         latest_template_id: Arc<Mutex<TemplateId>>,
+        _network: Network,
     ) -> Result<(), StratumErrors> {
         debug!("Stratum notifier task started");
         while let Some(notification_command) = self.notification_receiver.recv().await {
@@ -1891,6 +1941,7 @@ where
                         }
                     };
                 }
+                NotifyCmd::SetExtranonceNotification {} => {}
             }
         }
         Ok(())
@@ -2426,7 +2477,7 @@ mod test {
         assert_eq!(response["result"], true);
     }
     #[tokio::test]
-    async fn test_mining_set_difficulty_response() {
+    async fn test_mining_suggest_difficulty_response() {
         let ibd_or_not: AtomicBool = AtomicBool::new(false);
         let ibd_spinlock = Arc::new(ibd_or_not);
         let connection_mapping = Arc::new(Mutex::new(ConnectionMapping::new()));
@@ -2469,7 +2520,7 @@ mod test {
         let mut line = String::new();
         reader.read_line(&mut line).await.unwrap();
         let response: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-        assert_eq!(response["method"], "mining.set_difficulty");
+        assert_eq!(response["method"], "mining.suggest_difficulty");
     }
     #[tokio::test]
     async fn test_invalid_json() {
