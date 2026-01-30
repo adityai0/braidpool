@@ -571,34 +571,12 @@ impl DownstreamClient {
 
             // Mask set during mining.configure
             let mut mask_bytes = [0u8; 4];
-            let version_rolling_mask_str = match self.version_rolling_mask.clone() {
-                Some(mask) => mask,
-                None => {
-                    error!(connection_id = %connection_id_hex, "Version rolling mask not set");
-                    return Err(StratumErrors::ParsingVersionMask {
-                        error: "Version rolling mask not configured".to_string(),
-                    });
-                }
-            };
-            let version_rolling_mask = match version_rolling_mask_str.parse::<u32>() {
-                Ok(version_mask) => version_mask,
-                Err(error) => {
-                    return Err(StratumErrors::ParsingVersionMask {
-                        error: error.to_string(),
-                    });
-                }
-            };
-
-            let version_rolling_mask_bytes = version_rolling_mask.to_be_bytes();
-            let version_rolling_mask_hex = hex::encode(version_rolling_mask_bytes);
-
-            info!(
-                connection_id = %connection_id_hex,
-                version_mask = ?version_rolling_mask_hex,
-                "Converted version mask"
-            );
-
-            match hex::decode_to_slice(version_rolling_mask_hex, &mut mask_bytes) {
+            match hex::decode_to_slice(
+                self.version_rolling_mask
+                    .clone()
+                    .unwrap_or_else(|| "00000000".to_string()),
+                &mut mask_bytes,
+            ) {
                 Ok(_) => (),
                 Err(e) => {
                     error!(
@@ -1031,8 +1009,8 @@ impl DownstreamClient {
             };
             //Intersecting with the bits provided by the pool and miner's suggested one
             let final_rollable_version_bits = u32::from_be_bytes(mask_bytes) & 0x1FFFE000;
-            // `0x1FFFE000` is a reasonable default as it allows all 16 version bits to be used
-            let hex_str = u32::to_string(&final_rollable_version_bits);
+            // `0x1FFFE000` is a reasonable default as it allows all 16 version bits to be used in `hex`
+            let hex_str = hex::encode(final_rollable_version_bits.to_be_bytes());
             self.version_rolling_mask = Some(hex_str);
         }
         if let Some(min_bit_count_value) = version_rolling_min_bit_count {
