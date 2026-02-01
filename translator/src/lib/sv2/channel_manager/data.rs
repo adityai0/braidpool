@@ -18,6 +18,8 @@ pub struct ChannelManagerData {
     pub upstream_extended_channel: Option<ExtendedChannel<'static>>,
     /// Extranonce prefix factory for allocating unique prefixes in aggregated mode
     pub extranonce_prefix_factory: Option<ExtendedExtranonce>,
+    /// Current operational mode
+    pub mode: ChannelMode,
     /// Share sequence number counter for tracking valid shares forwarded upstream.
     /// In aggregated mode: single counter for all shares going to the upstream channel.
     /// In non-aggregated mode: one counter per downstream channel.
@@ -60,22 +62,9 @@ impl ChannelManagerData {
     pub fn reset_for_upstream_reconnection(&mut self) {
         self.upstream_extended_channel = None;
         self.extranonce_prefix_factory = None;
-        self.share_sequence_counters.clear();
         self.extranonce_factories = None;
         self.negotiated_extensions.clear();
         // Note: we intentionally preserve `mode`, `supported_extensions`, and `required_extensions`
         // as they are configuration settings
-    }
-
-    /// Gets the next sequence number for a valid share and increments the counter.
-    ///
-    /// The counter_key determines which counter to use:
-    /// - In aggregated mode: use upstream channel ID (single counter for all shares)
-    /// - In non-aggregated mode: use downstream channel ID (one counter per channel)
-    pub fn next_share_sequence_number(&mut self, counter_key: u32) -> u32 {
-        let counter = self.share_sequence_counters.entry(counter_key).or_insert(1);
-        let current = *counter;
-        *counter += 1;
-        current
     }
 }

@@ -64,6 +64,10 @@ pub struct ChannelManager {
     pub extended_channels: Arc<DashMap<ChannelId, Arc<RwLock<ExtendedChannel<'static>>>>>,
     /// Map of active group channels by group channel ID
     pub group_channels: Arc<DashMap<ChannelId, Arc<RwLock<GroupChannel<'static>>>>>,
+    /// Share sequence number counter for tracking valid shares forwarded upstream.
+    /// In aggregated mode: single counter for all shares going to the upstream channel.
+    /// In non-aggregated mode: one counter per downstream channel.
+    pub share_sequence_counters: Arc<DashMap<u32, u32>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -109,6 +113,7 @@ impl ChannelManager {
             pending_channels: Arc::new(DashMap::new()),
             extended_channels: Arc::new(DashMap::new()),
             group_channels: Arc::new(DashMap::new()),
+            share_sequence_counters: Arc::new(DashMap::new()),
         }
     }
 
@@ -149,6 +154,9 @@ impl ChannelManager {
                             }
                             Ok(ShutdownMessage::UpstreamFallback{tx}) => {
                                 self.pending_channels.clear();
+                                self.extended_channels.clear();
+                                self.group_channels.clear();
+                                self.share_sequence_counters.clear();
                                 self.channel_manager_data.super_safe_lock(|data| {
                                     data.reset_for_upstream_reconnection();
                                 });
@@ -502,9 +510,8 @@ impl ChannelManager {
                             });
 
                         // In aggregated mode, use a single sequence counter for all valid shares
-                        m.sequence_number = self.channel_manager_data.super_safe_lock(|c| {
-                            c.next_share_sequence_number(upstream_extended_channel_id)
-                        });
+                        m.sequence_number =
+                            self.next_share_sequence_number(upstream_extended_channel_id);
                         // Get the downstream channel's extranonce prefix (contains
                         // upstream prefix + translator proxy prefix)
                         let downstream_extranonce_prefix = self
@@ -537,9 +544,7 @@ impl ChannelManager {
                     } else {
                         // In non-aggregated mode, each downstream channel has its own sequence
                         // counter
-                        m.sequence_number = self
-                            .channel_manager_data
-                            .super_safe_lock(|c| c.next_share_sequence_number(m.channel_id));
+                        m.sequence_number = self.next_share_sequence_number(m.channel_id);
 
                         // Check if we have a per-channel factory for extranonce adjustment
                         let channel_factory = self.channel_manager_data.super_safe_lock(|c| {
@@ -721,7 +726,22 @@ impl ChannelManager {
             pending_channels: self.pending_channels.clone(),
             extended_channels: self.extended_channels.clone(),
             group_channels: self.group_channels.clone(),
+            share_sequence_counters: self.share_sequence_counters.clone(),
         }
+    }
+
+    /// Gets the next sequence number for a valid share and increments the counter.
+    ///
+    /// The counter_key determines which counter to use:
+    /// - In aggregated mode: use upstream channel ID (single counter for all shares)
+    /// - In non-aggregated mode: use downstream channel ID (one counter per channel)
+    pub fn next_share_sequence_number(&self, counter_key: u32) -> u32 {
+        let mut counter = self.share_sequence_counters.entry(counter_key).or_insert(1);
+        let counter = counter.value_mut();
+
+        let current = *counter;
+        *counter += 1;
+        current
     }
 }
 
