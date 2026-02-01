@@ -1,12 +1,8 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
-};
+use std::{collections::HashMap, sync::Arc};
 use stratum_apps::{
     custom_mutex::Mutex,
     stratum_core::{
-        channels_sv2::client::{extended::ExtendedChannel, group::GroupChannel},
-        mining_sv2::ExtendedExtranonce,
+        channels_sv2::client::extended::ExtendedChannel, mining_sv2::ExtendedExtranonce,
     },
     utils::types::ChannelId,
 };
@@ -18,8 +14,6 @@ use stratum_apps::{
 /// data structures like extranonce factories for aggregated mode.
 #[derive(Debug, Clone, Default)]
 pub struct ChannelManagerData {
-    /// Map of active group channels by group channel ID
-    pub group_channels: HashMap<ChannelId, Arc<RwLock<GroupChannel<'static>>>>,
     /// The upstream extended channel used in aggregated mode
     pub upstream_extended_channel: Option<ExtendedChannel<'static>>,
     /// Extranonce prefix factory for allocating unique prefixes in aggregated mode

@@ -11,7 +11,7 @@ use std::sync::{Arc, RwLock};
 use stratum_apps::{
     custom_mutex::Mutex,
     stratum_core::{
-        channels_sv2::client::extended::ExtendedChannel,
+        channels_sv2::client::{extended::ExtendedChannel, group::GroupChannel},
         codec_sv2::StandardSv2Frame,
         extensions_sv2::{EXTENSION_TYPE_WORKER_HASHRATE_TRACKING, TLV_FIELD_TYPE_USER_IDENTITY},
         framing_sv2,
@@ -62,6 +62,8 @@ pub struct ChannelManager {
     pub pending_channels: Arc<DashMap<DownstreamId, (String, Hashrate, usize)>>,
     /// Map of active extended channels by channel ID
     pub extended_channels: Arc<DashMap<ChannelId, Arc<RwLock<ExtendedChannel<'static>>>>>,
+    /// Map of active group channels by group channel ID
+    pub group_channels: Arc<DashMap<ChannelId, Arc<RwLock<GroupChannel<'static>>>>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -106,6 +108,7 @@ impl ChannelManager {
             required_extensions,
             pending_channels: Arc::new(DashMap::new()),
             extended_channels: Arc::new(DashMap::new()),
+            group_channels: Arc::new(DashMap::new()),
         }
     }
 
@@ -717,6 +720,7 @@ impl ChannelManager {
             required_extensions: self.required_extensions.clone(),
             pending_channels: self.pending_channels.clone(),
             extended_channels: self.extended_channels.clone(),
+            group_channels: self.group_channels.clone(),
         }
     }
 }

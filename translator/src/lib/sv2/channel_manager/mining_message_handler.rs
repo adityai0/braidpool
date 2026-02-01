@@ -88,7 +88,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                 let full_extranonce_size = m.extranonce_size as usize + m.extranonce_prefix.len();
 
                 // add the channel to the group channel
-                match channel_manager_data.group_channels.get(&m.group_channel_id) {
+                match self.group_channels.get(&m.group_channel_id) {
                     Some(group_channel_arc) => {
                         let mut group_channel = group_channel_arc.write().map_err(|e| {
                             error!("Failed to write group channel: {:?}", e);
@@ -105,7 +105,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                             error!("Failed to add channel id to group channel: {:?}", e);
                             TproxyError::fallback(TproxyErrorKind::FailedToAddChannelIdToGroupChannel(e))
                         })?;
-                        channel_manager_data.group_channels.insert(m.group_channel_id, Arc::new(RwLock::new(group_channel)));
+                        self.group_channels.insert(m.group_channel_id, Arc::new(RwLock::new(group_channel)));
                     }
                 }
 
@@ -315,9 +315,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                     ));
                 // we're not in aggregated mode
                 // was the message sent to a group channel?
-                } else if let Some(group_channel_arc) =
-                    channel_data_manager.group_channels.get(&m.channel_id)
-                {
+                } else if let Some(group_channel_arc) = self.group_channels.get(&m.channel_id) {
                     let group_channel = group_channel_arc.read().map_err(|e| {
                         error!("Failed to read group channel: {:?}", e);
                         TproxyError::shutdown(TproxyErrorKind::PoisonLock)
@@ -328,7 +326,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                     }
 
                     drop(group_channel);
-                    channel_data_manager.group_channels.remove(&m.channel_id);
+                    self.group_channels.remove(&m.channel_id);
                 // if the message was not sent to a group channel, and we're not working in
                 // aggregated mode,
                 } else if self.extended_channels.contains_key(&m.channel_id) {
@@ -336,7 +334,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                     self.extended_channels.remove(&m.channel_id);
 
                     // remove the channel from any group channels that contain it
-                    for group_channel in channel_data_manager.group_channels.values() {
+                    for group_channel in self.group_channels.iter() {
                         let mut group_channel = group_channel.write().map_err(|e| {
                             error!("Failed to write group channel: {:?}", e);
                             TproxyError::shutdown(TproxyErrorKind::PoisonLock)
@@ -425,7 +423,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                     // here, we are assuming that since we are in aggregated mode, there should be
                     // only one single group channel and the aggregated channel
                     // must belong to it
-                    let group_channel = channel_manager_data.group_channels.values().next();
+                    let group_channel = self.group_channels.iter().next();
                     let Some(group_channel) = group_channel else {
                         error!("Aggregated channel does not belong to any group channel");
                         return Err(TproxyError::fallback(TproxyErrorKind::ChannelNotFound));
@@ -487,9 +485,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                     }
                 // we're not in aggregated mode
                 // was the message sent to a group channel?
-                } else if let Some(group_channel_arc) =
-                    channel_manager_data.group_channels.get(&m.channel_id)
-                {
+                } else if let Some(group_channel_arc) = self.group_channels.get(&m.channel_id) {
                     let mut group_channel = group_channel_arc.write().map_err(|e| {
                         error!("Failed to read group channel: {:?}", e);
                         TproxyError::shutdown(TproxyErrorKind::PoisonLock)
@@ -607,7 +603,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                         // here, we are assuming that since we are in aggregated mode, there should
                         // be only one single group channle and the
                         // aggregated channel must belong to it
-                        let group_channel = channel_manager_data.group_channels.values().next();
+                        let group_channel = self.group_channels.iter().next();
                         let Some(group_channel) = group_channel else {
                             error!("Aggregated channel does not belong to any group channel");
                             return Err(TproxyError::fallback(TproxyErrorKind::ChannelNotFound));
@@ -675,9 +671,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                             return Err(TproxyError::log(TproxyErrorKind::ChannelNotFound));
                         }
                     // we are not in aggregated mode.. was the message sent to a group channel?
-                    } else if let Some(group_channel_arc) =
-                        channel_manager_data.group_channels.get(&m.channel_id)
-                    {
+                    } else if let Some(group_channel_arc) = self.group_channels.get(&m.channel_id) {
                         let mut group_channel = group_channel_arc.write().map_err(|e| {
                             error!("Failed to read group channel: {:?}", e);
                             TproxyError::shutdown(TproxyErrorKind::PoisonLock)
@@ -861,7 +855,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                         // here, we are assuming that since we are in aggregated mode, there should
                         // be only one single group channle and the
                         // aggregated channel must belong to it
-                        let group_channel = channel_manager_data.group_channels.values().next();
+                        let group_channel = self.group_channels.iter().next();
                         let Some(group_channel) = group_channel else {
                             error!("Aggregated channel does not belong to any group channel");
                             return Err(TproxyError::fallback(TproxyErrorKind::ChannelNotFound));
@@ -909,9 +903,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                             return Err(TproxyError::log(TproxyErrorKind::ChannelNotFound));
                         }
                     // we are not in aggregated mode... was the message sent to a group channel?
-                    } else if let Some(group_channel_arc) =
-                        channel_manager_data.group_channels.get(&m.channel_id)
-                    {
+                    } else if let Some(group_channel_arc) = self.group_channels.get(&m.channel_id) {
                         let group_channel = group_channel_arc.read().map_err(|e| {
                             error!("Failed to read group channel: {:?}", e);
                             TproxyError::shutdown(TproxyErrorKind::PoisonLock)
@@ -990,119 +982,112 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
     ) -> Result<(), Self::Error> {
         info!("Received: {}", m);
 
-        self.channel_manager_data
-            .super_safe_lock(|channel_manager_data| {
-                // remove every channel from any group channels that end up empty
-                let mut group_channels_to_remove = Vec::new();
+        // remove every channel from any group channels that end up empty
+        let mut group_channels_to_remove = Vec::new();
 
-                // check every group channel if it contains any of the channels in the new group
-                // channel
-                for (group_channel_id, group_channel) in channel_manager_data.group_channels.iter()
-                {
-                    let mut group_channel = group_channel.write().map_err(|e| {
-                        error!("Failed to write group channel: {:?}", e);
-                        TproxyError::shutdown(TproxyErrorKind::PoisonLock)
-                    })?;
-                    let channel_ids_to_remove = m.channel_ids.clone().into_inner();
-                    for channel_id in channel_ids_to_remove {
-                        group_channel.remove_channel_id(channel_id);
-                    }
-
-                    if group_channel.get_channel_ids().is_empty() {
-                        group_channels_to_remove.push(*group_channel_id);
-                    }
-                }
-
-                // Now remove the empty group channels
-                for group_channel_id in group_channels_to_remove {
-                    channel_manager_data
-                        .group_channels
-                        .remove(&group_channel_id);
-                }
-
-                // does the group channel already exist?
-                match channel_manager_data.group_channels.get(&m.group_channel_id) {
-                    // if yes, clean up any channels that are no longer in the new group channel
-                    Some(group_channel_arc) => {
-                        let mut group_channel = group_channel_arc.write().map_err(|e| {
-                            error!("Failed to write group channel: {:?}", e);
-                            TproxyError::shutdown(TproxyErrorKind::PoisonLock)
-                        })?;
-                        let current_channel_ids = group_channel.get_channel_ids().clone();
-                        let new_channel_ids = m.channel_ids.clone().into_inner();
-
-                        // Remove channels that are no longer in the new list
-                        for channel_id in &current_channel_ids {
-                            if !new_channel_ids.contains(channel_id) {
-                                group_channel.remove_channel_id(*channel_id);
-                            }
-                        }
-
-                        // Add all channels from the message (inner HashSet ingores duplicates)
-                        for channel_id in new_channel_ids {
-                            let extended_channel =
-                                self.extended_channels.get(&channel_id).ok_or_else(|| {
-                                    TproxyError::fallback(TproxyErrorKind::ChannelNotFound)
-                                })?;
-
-                            let channel = extended_channel.value().clone();
-
-                            let full_extranonce_size = channel
-                                .read()
-                                .map_err(|e| {
-                                    error!("Failed to read extended channel: {:?}", e);
-                                    TproxyError::shutdown(TproxyErrorKind::PoisonLock)
-                                })?
-                                .get_full_extranonce_size();
-                            group_channel
-                                .add_channel_id(channel_id, full_extranonce_size)
-                                .map_err(|e| {
-                                    error!("Failed to add channel id to group channel: {:?}", e);
-                                    TproxyError::fallback(
-                                        TproxyErrorKind::FailedToAddChannelIdToGroupChannel(e),
-                                    )
-                                })?;
-                        }
-                    }
-                    // if no, create a new group channel, and add all the channels to it
-                    None => {
-                        let mut group_channel = GroupChannel::new(m.group_channel_id);
-
-                        // Add all channels to the newly created group channel
-                        for channel_id in m.channel_ids.clone().into_inner() {
-                            let extended_channel =
-                                self.extended_channels.get(&channel_id).ok_or_else(|| {
-                                    TproxyError::fallback(TproxyErrorKind::ChannelNotFound)
-                                })?;
-
-                            let channel = extended_channel.value().clone();
-
-                            let full_extranonce_size = channel
-                                .read()
-                                .map_err(|e| {
-                                    error!("Failed to read extended channel: {:?}", e);
-                                    TproxyError::shutdown(TproxyErrorKind::PoisonLock)
-                                })?
-                                .get_full_extranonce_size();
-
-                            group_channel
-                                .add_channel_id(channel_id, full_extranonce_size)
-                                .map_err(|e| {
-                                    error!("Failed to add channel id to group channel: {:?}", e);
-                                    TproxyError::fallback(
-                                        TproxyErrorKind::FailedToAddChannelIdToGroupChannel(e),
-                                    )
-                                })?;
-                        }
-
-                        channel_manager_data
-                            .group_channels
-                            .insert(m.group_channel_id, Arc::new(RwLock::new(group_channel)));
-                    }
-                }
-
-                Ok::<(), Self::Error>(())
+        // check every group channel if it contains any of the channels in the new group
+        // channel
+        for channel in self.group_channels.iter() {
+            let group_channel_id = channel.key();
+            let group_channel = channel.value();
+            let mut group_channel = group_channel.write().map_err(|e| {
+                error!("Failed to write group channel: {:?}", e);
+                TproxyError::shutdown(TproxyErrorKind::PoisonLock)
             })?;
+            let channel_ids_to_remove = m.channel_ids.clone().into_inner();
+            for channel_id in channel_ids_to_remove {
+                group_channel.remove_channel_id(channel_id);
+            }
+
+            if group_channel.get_channel_ids().is_empty() {
+                group_channels_to_remove.push(*group_channel_id);
+            }
+        }
+
+        // Now remove the empty group channels
+        for group_channel_id in group_channels_to_remove {
+            self.group_channels.remove(&group_channel_id);
+        }
+
+        // does the group channel already exist?
+        match self.group_channels.get(&m.group_channel_id) {
+            // if yes, clean up any channels that are no longer in the new group channel
+            Some(group_channel_arc) => {
+                let mut group_channel = group_channel_arc.write().map_err(|e| {
+                    error!("Failed to write group channel: {:?}", e);
+                    TproxyError::shutdown(TproxyErrorKind::PoisonLock)
+                })?;
+                let current_channel_ids = group_channel.get_channel_ids().clone();
+                let new_channel_ids = m.channel_ids.clone().into_inner();
+
+                // Remove channels that are no longer in the new list
+                for channel_id in &current_channel_ids {
+                    if !new_channel_ids.contains(channel_id) {
+                        group_channel.remove_channel_id(*channel_id);
+                    }
+                }
+
+                // Add all channels from the message (inner HashSet ingores duplicates)
+                for channel_id in new_channel_ids {
+                    let extended_channel = self
+                        .extended_channels
+                        .get(&channel_id)
+                        .ok_or_else(|| TproxyError::fallback(TproxyErrorKind::ChannelNotFound))?;
+
+                    let channel = extended_channel.value().clone();
+
+                    let full_extranonce_size = channel
+                        .read()
+                        .map_err(|e| {
+                            error!("Failed to read extended channel: {:?}", e);
+                            TproxyError::shutdown(TproxyErrorKind::PoisonLock)
+                        })?
+                        .get_full_extranonce_size();
+                    group_channel
+                        .add_channel_id(channel_id, full_extranonce_size)
+                        .map_err(|e| {
+                            error!("Failed to add channel id to group channel: {:?}", e);
+                            TproxyError::fallback(
+                                TproxyErrorKind::FailedToAddChannelIdToGroupChannel(e),
+                            )
+                        })?;
+                }
+            }
+            // if no, create a new group channel, and add all the channels to it
+            None => {
+                let mut group_channel = GroupChannel::new(m.group_channel_id);
+
+                // Add all channels to the newly created group channel
+                for channel_id in m.channel_ids.clone().into_inner() {
+                    let extended_channel = self
+                        .extended_channels
+                        .get(&channel_id)
+                        .ok_or_else(|| TproxyError::fallback(TproxyErrorKind::ChannelNotFound))?;
+
+                    let channel = extended_channel.value().clone();
+
+                    let full_extranonce_size = channel
+                        .read()
+                        .map_err(|e| {
+                            error!("Failed to read extended channel: {:?}", e);
+                            TproxyError::shutdown(TproxyErrorKind::PoisonLock)
+                        })?
+                        .get_full_extranonce_size();
+
+                    group_channel
+                        .add_channel_id(channel_id, full_extranonce_size)
+                        .map_err(|e| {
+                            error!("Failed to add channel id to group channel: {:?}", e);
+                            TproxyError::fallback(
+                                TproxyErrorKind::FailedToAddChannelIdToGroupChannel(e),
+                            )
+                        })?;
+                }
+
+                self.group_channels
+                    .insert(m.group_channel_id, Arc::new(RwLock::new(group_channel)));
+            }
+        }
 
         Ok(())
     }
