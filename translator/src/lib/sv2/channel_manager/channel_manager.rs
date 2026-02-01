@@ -22,7 +22,7 @@ use stratum_apps::{
     task_manager::TaskManager,
     utils::{
         protocol_message_type::{protocol_message_type, MessageType},
-        types::{DownstreamId, Hashrate, Sv2Frame},
+        types::{ChannelId, DownstreamId, Hashrate, Sv2Frame},
     },
 };
 use tokio::sync::{broadcast, mpsc};
@@ -60,6 +60,8 @@ pub struct ChannelManager {
     /// Store pending channel info by downstream_id: (user_identity, hashrate,
     /// downstream_extranonce_len)
     pub pending_channels: Arc<DashMap<DownstreamId, (String, Hashrate, usize)>>,
+    /// Map of active extended channels by channel ID
+    pub extended_channels: Arc<DashMap<ChannelId, Arc<RwLock<ExtendedChannel<'static>>>>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -103,6 +105,7 @@ impl ChannelManager {
             supported_extensions,
             required_extensions,
             pending_channels: Arc::new(DashMap::new()),
+            extended_channels: Arc::new(DashMap::new()),
         }
     }
 
@@ -305,10 +308,11 @@ impl ChannelManager {
                         if let Some(new_extranonce_prefix) = new_extranonce_prefix {
                             if new_extranonce_size >= open_channel_msg.min_extranonce_size as usize
                             {
-                                let next_channel_id =
-                                    self.channel_manager_data.super_safe_lock(|c| {
-                                        c.extended_channels.keys().max().unwrap_or(&0) + 1
-                                    });
+                                let channel_id = self
+                                    .extended_channels
+                                    .iter()
+                                    .fold(0, |acc, x| std::cmp::max(acc, *x.key()));
+                                let next_channel_id = channel_id + 1;
                                 let new_downstream_extended_channel = ExtendedChannel::new(
                                     next_channel_id,
                                     user_identity.clone(),
@@ -322,12 +326,10 @@ impl ChannelManager {
                                     true,
                                     new_extranonce_size as u16,
                                 );
-                                self.channel_manager_data.super_safe_lock(|c| {
-                                    c.extended_channels.insert(
-                                        next_channel_id,
-                                        Arc::new(RwLock::new(new_downstream_extended_channel)),
-                                    );
-                                });
+                                self.extended_channels.insert(
+                                    next_channel_id,
+                                    Arc::new(RwLock::new(new_downstream_extended_channel)),
+                                );
                                 let success_message = Mining::OpenExtendedMiningChannelSuccess(
                                     OpenExtendedMiningChannelSuccess {
                                         request_id: open_channel_msg.request_id,
@@ -464,19 +466,19 @@ impl ChannelManager {
                     })?;
             }
             Mining::SubmitSharesExtended(mut m) => {
-                let value = self.channel_manager_data.super_safe_lock(|c| {
-                    let extended_channel = c.extended_channels.get(&m.channel_id);
+                let mut value = None;
+                {
+                    let extended_channel = self.extended_channels.get(&m.channel_id);
                     if let Some(extended_channel) = extended_channel {
                         let channel = extended_channel.write();
                         if let Ok(mut channel) = channel {
-                            return Some((
+                            value = Some((
                                 channel.validate_share(m.clone()),
                                 channel.get_share_accounting().clone(),
                             ));
                         }
                     }
-                    None
-                });
+                };
                 if let Some((Ok(_result), _share_accounting)) = value {
                     info!(
                         "SubmitSharesExtended: valid share, forwarding it to upstream | channel_id: {}, sequence_number: {} ☑️",
@@ -502,12 +504,10 @@ impl ChannelManager {
                         });
                         // Get the downstream channel's extranonce prefix (contains
                         // upstream prefix + translator proxy prefix)
-                        let downstream_extranonce_prefix =
-                            self.channel_manager_data.super_safe_lock(|c| {
-                                c.extended_channels.get(&m.channel_id).map(|channel| {
-                                    channel.read().unwrap().get_extranonce_prefix().clone()
-                                })
-                            });
+                        let downstream_extranonce_prefix = self
+                            .extended_channels
+                            .get(&m.channel_id)
+                            .map(|channel| channel.read().unwrap().get_extranonce_prefix().clone());
                         // Get the length of the upstream prefix (range0)
                         let range0_len = self.channel_manager_data.super_safe_lock(|c| {
                             c.extranonce_prefix_factory
@@ -548,10 +548,8 @@ impl ChannelManager {
                         if let Some(factory) = channel_factory {
                             // We need to adjust the extranonce for this channel
                             let downstream_extranonce_prefix =
-                                self.channel_manager_data.super_safe_lock(|c| {
-                                    c.extended_channels.get(&m.channel_id).map(|channel| {
-                                        channel.read().unwrap().get_extranonce_prefix().clone()
-                                    })
+                                self.extended_channels.get(&m.channel_id).map(|channel| {
+                                    channel.read().unwrap().get_extranonce_prefix().clone()
                                 });
                             let range0_len = factory
                                 .safe_lock(|e| e.get_range0_len())
@@ -718,6 +716,7 @@ impl ChannelManager {
             supported_extensions: self.supported_extensions.clone(),
             required_extensions: self.required_extensions.clone(),
             pending_channels: self.pending_channels.clone(),
+            extended_channels: self.extended_channels.clone(),
         }
     }
 }

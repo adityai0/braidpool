@@ -46,7 +46,8 @@ impl ServerMonitoring for ChannelManager {
                     TproxyMode::NonAggregated => {
                         // In NonAggregated mode: each downstream Sv1 miner has its own upstream Sv2
                         // channel to the server
-                        for (_channel_id, extended_channel) in d.extended_channels.iter() {
+                        for channel in self.extended_channels.iter() {
+                            let extended_channel = channel.value();
                             if let Ok(channel_lock) = extended_channel.read() {
                                 let channel_id = channel_lock.get_channel_id();
                                 let target = channel_lock.get_target();

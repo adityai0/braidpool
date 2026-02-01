@@ -18,8 +18,6 @@ use stratum_apps::{
 /// data structures like extranonce factories for aggregated mode.
 #[derive(Debug, Clone, Default)]
 pub struct ChannelManagerData {
-    /// Map of active extended channels by channel ID
-    pub extended_channels: HashMap<ChannelId, Arc<RwLock<ExtendedChannel<'static>>>>,
     /// Map of active group channels by group channel ID
     pub group_channels: HashMap<ChannelId, Arc<RwLock<GroupChannel<'static>>>>,
     /// The upstream extended channel used in aggregated mode
@@ -66,7 +64,6 @@ impl ChannelManagerData {
     /// This ensures that new channels will be properly opened with the
     /// newly connected upstream server.
     pub fn reset_for_upstream_reconnection(&mut self) {
-        self.extended_channels.clear();
         self.upstream_extended_channel = None;
         self.extranonce_prefix_factory = None;
         self.share_sequence_counters.clear();
