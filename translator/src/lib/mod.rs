@@ -143,14 +143,15 @@ impl TranslatorSv2 {
         ));
 
         info!("Launching ChannelManager tasks...");
-        ChannelManager::run_channel_manager_tasks(
-            channel_manager.clone(),
-            notify_shutdown.clone(),
-            shutdown_complete_tx.clone(),
-            status_sender.clone(),
-            task_manager.clone(),
-        )
-        .await;
+        channel_manager
+            .clone()
+            .run_channel_manager_tasks(
+                notify_shutdown.clone(),
+                shutdown_complete_tx.clone(),
+                status_sender.clone(),
+                task_manager.clone(),
+            )
+            .await;
 
         // Start monitoring server if configured
         if let Some(monitoring_addr) = self.config.monitoring_address() {
