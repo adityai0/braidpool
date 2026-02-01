@@ -105,12 +105,12 @@ impl TranslatorSv2 {
             self.config.downstream_port,
         );
 
-        let sv1_server = Sv1Server::new(
+        let sv1_server = Arc::new(Sv1Server::new(
             downstream_addr,
             channel_manager_to_sv1_server_receiver,
             sv1_server_to_channel_manager_sender,
             self.config.clone(),
-        );
+        ));
 
         info!("Initializing upstream connection...");
 
@@ -167,7 +167,7 @@ impl TranslatorSv2 {
                                                 * handled separately) */
             )
             .expect("Failed to initialize monitoring server")
-            .with_sv1_monitoring(Arc::new(sv1_server.clone())) // SV1 client connections
+            .with_sv1_monitoring(sv1_server.clone()) // SV1 client connections
             .expect("Failed to add SV1 monitoring");
 
             // Create shutdown signal that waits for ShutdownAll
@@ -282,7 +282,7 @@ impl TranslatorSv2 {
         status_sender: Sender<Status>,
         shutdown_complete_tx: mpsc::Sender<()>,
         task_manager: Arc<TaskManager>,
-        sv1_server_instance: Sv1Server,
+        sv1_server_instance: Arc<Sv1Server>,
         required_extensions: Vec<u16>,
     ) -> Result<(), TproxyErrorKind> {
         const MAX_RETRIES: usize = 3;

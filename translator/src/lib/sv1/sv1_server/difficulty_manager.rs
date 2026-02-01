@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{is_aggregated, is_non_aggregated, sv1::sv1_server::data::PendingTargetUpdate};
 
 use stratum_apps::{
@@ -27,7 +29,7 @@ impl Sv1Server {
     ///
     /// This method implements the SV1 server's variable difficulty logic for all downstreams.
     /// Every 60 seconds, this method updates the difficulty state for each downstream.
-    pub async fn spawn_vardiff_loop(self) {
+    pub async fn spawn_vardiff_loop(self: Arc<Self>) {
         info!("Variable difficulty adjustment enabled - starting vardiff loop");
 
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));

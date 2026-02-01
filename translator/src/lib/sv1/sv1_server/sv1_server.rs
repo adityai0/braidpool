@@ -145,7 +145,7 @@ impl Sv1Server {
     /// * `Ok(())` - Server shut down gracefully
     /// * `Err(TproxyError)` - Server encountered an error
     pub async fn start(
-        self,
+        self: Arc<Self>,
         notify_shutdown: broadcast::Sender<ShutdownMessage>,
         shutdown_complete_tx: mpsc::Sender<()>,
         status_sender: Sender<Status>,
@@ -949,7 +949,7 @@ impl Sv1Server {
     ///
     /// This prevents SV1 miners from timing out when there are no new jobs received from the
     /// upstream for a while.
-    pub async fn spawn_job_keepalive_loop(self) {
+    pub async fn spawn_job_keepalive_loop(self: Arc<Self>) {
         let keepalive_interval_secs = self
             .config
             .downstream_difficulty_config
