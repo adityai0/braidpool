@@ -28,7 +28,7 @@ pub struct ChannelManagerData {
     /// The upstream extended channel used in aggregated mode
     pub upstream_extended_channel: Option<Arc<RwLock<ExtendedChannel<'static>>>>,
     /// Extranonce prefix factory for allocating unique prefixes in aggregated mode
-    pub extranonce_prefix_factory: Option<Arc<Mutex<ExtendedExtranonce>>>,
+    pub extranonce_prefix_factory: Option<ExtendedExtranonce>,
     /// Share sequence number counter for tracking valid shares forwarded upstream.
     /// In aggregated mode: single counter for all shares going to the upstream channel.
     /// In non-aggregated mode: one counter per downstream channel.

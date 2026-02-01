@@ -157,19 +157,14 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                     )
                     .expect("Failed to create ExtendedExtranonce from upstream extranonce");
                     channel_manager_data.extranonce_prefix_factory =
-                        Some(Arc::new(Mutex::new(extended_extranonce_factory)));
+                        Some(extended_extranonce_factory);
 
                     let factory = channel_manager_data
                         .extranonce_prefix_factory
-                        .as_ref()
+                        .as_mut()
                         .expect("extranonce_prefix_factory should be set after creation");
-                    let new_extranonce_size = factory
-                        .safe_lock(|f| f.get_range2_len())
-                        .expect("extranonce_prefix_factory mutex should not be poisoned")
-                        as u16;
-                    let new_extranonce_prefix = factory
-                        .safe_lock(|f| f.next_prefix_extended(new_extranonce_size as usize))
-                        .expect("extranonce_prefix_factory mutex should not be poisoned")
+                    let new_extranonce_size = factory.get_range2_len() as u16;
+                    let new_extranonce_prefix = factory.next_prefix_extended(new_extranonce_size as usize)
                         .expect("next_prefix_extended should return a value for valid input")
                         .into_b032();
                     let new_downstream_extended_channel = ExtendedChannel::new(

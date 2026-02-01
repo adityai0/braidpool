@@ -288,22 +288,18 @@ impl ChannelManager {
                         let new_extranonce_prefix =
                             self.channel_manager_data.super_safe_lock(|c| {
                                 c.extranonce_prefix_factory
-                                    .as_ref()
+                                    .as_mut()
                                     .unwrap()
-                                    .safe_lock(|e| {
-                                        e.next_prefix_extended(
-                                            open_channel_msg.min_extranonce_size.into(),
-                                        )
-                                    })
+                                    .next_prefix_extended(
+                                        open_channel_msg.min_extranonce_size.into(),
+                                    )
                                     .ok()
-                                    .and_then(|r| r.ok())
                             });
                         let new_extranonce_size = self.channel_manager_data.super_safe_lock(|c| {
                             c.extranonce_prefix_factory
                                 .as_ref()
                                 .unwrap()
-                                .safe_lock(|e| e.get_range2_len())
-                                .unwrap()
+                                .get_range2_len()
                         });
                         if let Some(new_extranonce_prefix) = new_extranonce_prefix {
                             if new_extranonce_size >= open_channel_msg.min_extranonce_size as usize
@@ -521,8 +517,7 @@ impl ChannelManager {
                             c.extranonce_prefix_factory
                                 .as_ref()
                                 .unwrap()
-                                .safe_lock(|e| e.get_range0_len())
-                                .unwrap()
+                                .get_range0_len()
                         });
                         if let Some(downstream_extranonce_prefix) = downstream_extranonce_prefix {
                             // Skip the upstream prefix (range0) and take the remaining
