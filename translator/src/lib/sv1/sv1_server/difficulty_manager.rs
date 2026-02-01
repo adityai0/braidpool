@@ -96,9 +96,9 @@ impl Sv1Server {
                     };
                 // Always update the downstream's pending target and hashrate
                 if let Some(d) = self.downstreams.get(downstream_id) {
-                    _ = d.downstream_data.safe_lock(|d| {
-                        d.set_pending_target(new_target);
-                        d.set_pending_hashrate(Some(new_hashrate));
+                    _ = d.downstream_data.safe_lock(|data| {
+                        data.set_pending_target(new_target, d.downstream_id);
+                        data.set_pending_hashrate(Some(new_hashrate), d.downstream_id);
                     });
                 }
                 // All updates will be sent as UpdateChannel messages
@@ -320,7 +320,7 @@ impl Sv1Server {
         for downstream in self.downstreams.iter() {
             let downstream = downstream.value();
             downstream.downstream_data.super_safe_lock(|d| {
-                d.set_upstream_target(new_upstream_target);
+                d.set_upstream_target(new_upstream_target, downstream.downstream_id);
             });
         }
 
@@ -355,12 +355,10 @@ impl Sv1Server {
             return;
         };
 
-        let downstream_id = downstream
-            .downstream_data
-            .super_safe_lock(|d| d.downstream_id);
+        let downstream_id = downstream.downstream_id;
 
         downstream.downstream_data.super_safe_lock(|d| {
-            d.set_upstream_target(new_upstream_target);
+            d.set_upstream_target(new_upstream_target, downstream_id);
         });
 
         trace!("Updated upstream target for downstream {}", downstream_id);

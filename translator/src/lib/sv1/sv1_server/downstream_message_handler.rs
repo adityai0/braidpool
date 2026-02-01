@@ -164,7 +164,7 @@ impl IsServer<'static> for Sv1Server {
 
             data.pending_share.replace(Some(SubmitShareWithChannelId {
                 channel_id,
-                downstream_id: data.downstream_id,
+                downstream_id,
                 share: request.clone(),
                 extranonce: data.extranonce1.clone().into(),
                 extranonce2_len: data.extranonce2_len,

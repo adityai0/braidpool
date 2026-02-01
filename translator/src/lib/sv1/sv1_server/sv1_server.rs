@@ -572,7 +572,7 @@ impl Sv1Server {
                             d.extranonce2_len = m.extranonce_size.into();
                             d.channel_id = Some(m.channel_id);
                             // Set the initial upstream target from OpenExtendedMiningChannelSuccess
-                            d.set_upstream_target(initial_target);
+                            d.set_upstream_target(initial_target, downstream_id);
                         })
                         .map_err(TproxyError::shutdown)?;
 
@@ -590,10 +590,9 @@ impl Sv1Server {
                             );
 
                             // Set flag to indicate we're processing queued responses
-                            downstream.downstream_data.super_safe_lock(|data| {
-                                data.processing_queued_sv1_handshake_responses
-                                    .store(true, std::sync::atomic::Ordering::SeqCst);
-                            });
+                            downstream
+                                .processing_queued_sv1_handshake_responses
+                                .store(true, Ordering::SeqCst);
 
                             for message in queued_messages {
                                 if let Ok(Some(response_msg)) =
@@ -786,19 +785,6 @@ impl Sv1Server {
         downstream.get(&downstream_id).cloned()
     }
 
-    /// Extracts the downstream ID from a Downstream instance.
-    ///
-    /// # Arguments
-    /// * `downstream` - The downstream connection to get the ID from
-    ///
-    /// # Returns
-    /// The downstream ID as a u32
-    pub fn get_downstream_id(downstream: Downstream) -> DownstreamId {
-        downstream
-            .downstream_data
-            .super_safe_lock(|s| s.downstream_id)
-    }
-
     /// Handles SetTarget messages when vardiff is disabled.
     ///
     /// This method forwards difficulty changes from upstream directly to downstream miners
@@ -839,8 +825,8 @@ impl Sv1Server {
             let channel_id = downstream.downstream_data.super_safe_lock(|d| {
                 let channel_id = d.channel_id?;
 
-                d.set_upstream_target(target);
-                d.set_pending_target(target);
+                d.set_upstream_target(target, *downstream_id);
+                d.set_pending_target(target, *downstream_id);
 
                 Some(channel_id)
             });
@@ -925,8 +911,8 @@ impl Sv1Server {
         let downstream = downstream.value();
 
         downstream.downstream_data.super_safe_lock(|d| {
-            d.set_upstream_target(target);
-            d.set_pending_target(target);
+            d.set_upstream_target(target, *downstream_id);
+            d.set_pending_target(target, *downstream_id);
         });
 
         let set_difficulty_msg = match build_sv1_set_difficulty_from_sv2_target(target) {
@@ -989,7 +975,8 @@ impl Sv1Server {
                         // Only send keepalive if:
                         // 1. Handshake is complete
                         // 2. Enough time has passed since last job
-                        let handshake_complete = d.sv1_handshake_complete.load(Ordering::SeqCst);
+                        let handshake_complete =
+                            downstream.sv1_handshake_complete.load(Ordering::SeqCst);
 
                         if !handshake_complete {
                             return None;
