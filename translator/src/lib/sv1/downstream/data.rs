@@ -1,4 +1,4 @@
-use std::{cell::RefCell, time::Instant};
+use std::time::Instant;
 use stratum_apps::{
     stratum_core::{
         bitcoin::Target,
@@ -32,7 +32,7 @@ pub struct DownstreamData {
     // Queue of Sv1 handshake messages received while waiting for SV2 channel to open
     pub queued_sv1_handshake_messages: Vec<json_rpc::Message>,
     // Stores pending shares to be sent to the sv1_server
-    pub pending_share: RefCell<Option<SubmitShareWithChannelId>>,
+    pub pending_share: Option<SubmitShareWithChannelId>,
     // Tracks the upstream target for this downstream, used for vardiff target comparison
     pub upstream_target: Option<Target>,
     // Timestamp of when the last job was received by this downstream, used for keepalive check
@@ -59,7 +59,7 @@ impl DownstreamData {
             pending_target: None,
             pending_hashrate: None,
             queued_sv1_handshake_messages: Vec::new(),
-            pending_share: RefCell::new(None),
+            pending_share: None,
             upstream_target: None,
             last_job_received_time: None,
         }

@@ -162,7 +162,7 @@ impl IsServer<'static> for Sv1Server {
                 return false;
             }
 
-            data.pending_share.replace(Some(SubmitShareWithChannelId {
+            data.pending_share = Some(SubmitShareWithChannelId {
                 channel_id,
                 downstream_id,
                 share: request.clone(),
@@ -170,7 +170,7 @@ impl IsServer<'static> for Sv1Server {
                 extranonce2_len: data.extranonce2_len,
                 version_rolling_mask: data.version_rolling_mask.clone(),
                 job_version: data.last_job_version_field,
-            }));
+            });
 
             true
         })
