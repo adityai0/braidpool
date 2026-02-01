@@ -26,7 +26,7 @@ pub struct ChannelManagerData {
     /// Map of active group channels by group channel ID
     pub group_channels: HashMap<ChannelId, Arc<RwLock<GroupChannel<'static>>>>,
     /// The upstream extended channel used in aggregated mode
-    pub upstream_extended_channel: Option<Arc<RwLock<ExtendedChannel<'static>>>>,
+    pub upstream_extended_channel: Option<ExtendedChannel<'static>>,
     /// Extranonce prefix factory for allocating unique prefixes in aggregated mode
     pub extranonce_prefix_factory: Option<ExtendedExtranonce>,
     /// Share sequence number counter for tracking valid shares forwarded upstream.

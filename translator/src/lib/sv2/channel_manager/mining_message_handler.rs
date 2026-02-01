@@ -133,7 +133,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                 // insert the extended channel into the map
                 if is_aggregated() {
                     channel_manager_data.upstream_extended_channel =
-                        Some(Arc::new(RwLock::new(extended_channel.clone())));
+                        Some(extended_channel.clone());
 
                     let upstream_extranonce_prefix: Extranonce = m.extranonce_prefix.clone().into();
                     let translator_proxy_extranonce_prefix_len = proxy_extranonce_prefix_len(
@@ -427,15 +427,10 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
 
                 // are we in aggregated mode?
                 if is_aggregated() {
-                    let mut aggregated_channel = channel_manager_data
+                    let aggregated_channel = channel_manager_data
                         .upstream_extended_channel
-                        .as_ref()
-                        .ok_or(TproxyError::fallback(TproxyErrorKind::ChannelNotFound))?
-                        .write()
-                        .map_err(|e| {
-                            error!("Failed to write upstream channel: {:?}", e);
-                            TproxyError::shutdown(TproxyErrorKind::PoisonLock)
-                        })?;
+                        .as_mut()
+                        .ok_or(TproxyError::fallback(TproxyErrorKind::ChannelNotFound))?;
 
                     // here, we are assuming that since we are in aggregated mode, there should be
                     // only one single group channel and the aggregated channel
@@ -615,15 +610,10 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                     let mut new_extended_mining_job_messages = Vec::new();
 
                     if is_aggregated() {
-                        let aggregated_channel_guard = channel_manager_data
+                        let aggregated_channel = channel_manager_data
                             .upstream_extended_channel
-                            .as_ref()
+                            .as_mut()
                             .ok_or(TproxyError::fallback(TproxyErrorKind::ChannelNotFound))?;
-                        let mut aggregated_channel =
-                            aggregated_channel_guard.write().map_err(|e| {
-                                error!("Failed to read upstream channel: {:?}", e);
-                                TproxyError::shutdown(TproxyErrorKind::PoisonLock)
-                            })?;
 
                         // does aggregated channel belong to some group channel?
                         // here, we are assuming that since we are in aggregated mode, there should
@@ -875,15 +865,10 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
 
                     // are in aggregated mode?
                     if is_aggregated() {
-                        let aggregated_channel = channel_manager_data
+                        let aggregated_extended_channel = channel_manager_data
                             .upstream_extended_channel
-                            .as_ref()
+                            .as_mut()
                             .ok_or(TproxyError::fallback(TproxyErrorKind::ChannelNotFound))?;
-                        let mut aggregated_extended_channel =
-                            aggregated_channel.write().map_err(|e| {
-                                error!("Failed to write upstream channel: {:?}", e);
-                                TproxyError::shutdown(TproxyErrorKind::PoisonLock)
-                            })?;
 
                         // does aggregated channel belong to some group channel?
                         // here, we are assuming that since we are in aggregated mode, there should

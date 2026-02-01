@@ -278,12 +278,7 @@ impl ChannelManager {
                         // OpenExtendedMiningChannelSuccess message directly to the sv1
                         // server
                         let target = self.channel_manager_data.super_safe_lock(|c| {
-                            *c.upstream_extended_channel
-                                .as_ref()
-                                .unwrap()
-                                .read()
-                                .unwrap()
-                                .get_target()
+                            *c.upstream_extended_channel.as_ref().unwrap().get_target()
                         });
                         let new_extranonce_prefix =
                             self.channel_manager_data.super_safe_lock(|c| {
@@ -491,13 +486,10 @@ impl ChannelManager {
                     {
                         let upstream_extended_channel_id =
                             self.channel_manager_data.super_safe_lock(|c| {
-                                let upstream_extended_channel = c
-                                    .upstream_extended_channel
+                                c.upstream_extended_channel
                                     .as_ref()
                                     .unwrap()
-                                    .read()
-                                    .unwrap();
-                                upstream_extended_channel.get_channel_id()
+                                    .get_channel_id()
                             });
 
                         // In aggregated mode, use a single sequence counter for all valid shares
