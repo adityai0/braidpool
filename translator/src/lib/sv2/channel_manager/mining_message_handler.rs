@@ -69,20 +69,13 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
     ) -> Result<(), Self::Error> {
         // Check if we have the pending channel data, return error if not
         let (user_identity, nominal_hashrate, downstream_extranonce_len) = self
-            .channel_manager_data
-            .safe_lock(|channel_manager_data| {
-                channel_manager_data
-                    .pending_channels
-                    .remove(&(m.request_id as DownstreamId))
-            })
-            .map_err(|e| {
-                error!("Failed to lock channel manager data: {:?}", e);
-                TproxyError::shutdown(TproxyErrorKind::PoisonLock)
-            })?
+            .pending_channels
+            .remove(&(m.request_id as DownstreamId))
             .ok_or_else(|| {
                 error!("No pending channel found for request_id: {}", m.request_id);
                 TproxyError::log(TproxyErrorKind::PendingChannelNotFound(m.request_id))
-            })?;
+            })?
+            .1;
 
         let success = self
             .channel_manager_data

@@ -6,6 +6,7 @@ use crate::{
     utils::{ShutdownMessage, AGGREGATED_CHANNEL_ID},
 };
 use async_channel::{Receiver, Sender};
+use dashmap::DashMap;
 use std::sync::{Arc, RwLock};
 use stratum_apps::{
     custom_mutex::Mutex,
@@ -21,7 +22,7 @@ use stratum_apps::{
     task_manager::TaskManager,
     utils::{
         protocol_message_type::{protocol_message_type, MessageType},
-        types::{DownstreamId, Sv2Frame},
+        types::{DownstreamId, Hashrate, Sv2Frame},
     },
 };
 use tokio::sync::{broadcast, mpsc};
@@ -56,6 +57,9 @@ pub struct ChannelManager {
     pub supported_extensions: Vec<u16>,
     /// Extensions that the translator requires (must be supported by server)
     pub required_extensions: Vec<u16>,
+    /// Store pending channel info by downstream_id: (user_identity, hashrate,
+    /// downstream_extranonce_len)
+    pub pending_channels: Arc<DashMap<DownstreamId, (String, Hashrate, usize)>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -98,6 +102,7 @@ impl ChannelManager {
             channel_manager_data,
             supported_extensions,
             required_extensions,
+            pending_channels: Arc::new(DashMap::new()),
         }
     }
 
@@ -137,6 +142,7 @@ impl ChannelManager {
                                 break;
                             }
                             Ok(ShutdownMessage::UpstreamFallback{tx}) => {
+                                self.pending_channels.clear();
                                 self.channel_manager_data.super_safe_lock(|data| {
                                     data.reset_for_upstream_reconnection();
                                 });
@@ -434,12 +440,10 @@ impl ChannelManager {
                 open_channel_msg.min_extranonce_size = upstream_min_extranonce_size as u16;
 
                 // Store the user identity, hashrate, and original downstream extranonce size
-                self.channel_manager_data.super_safe_lock(|c| {
-                    c.pending_channels.insert(
-                        open_channel_msg.request_id as DownstreamId,
-                        (user_identity, hashrate, min_extranonce_size),
-                    );
-                });
+                self.pending_channels.insert(
+                    open_channel_msg.request_id as DownstreamId,
+                    (user_identity, hashrate, min_extranonce_size),
+                );
 
                 info!(
                     "Sending OpenExtendedMiningChannel message to upstream: {:?}",
@@ -713,6 +717,7 @@ impl ChannelManager {
             channel_state: self.channel_state.clone(),
             supported_extensions: self.supported_extensions.clone(),
             required_extensions: self.required_extensions.clone(),
+            pending_channels: self.pending_channels.clone(),
         }
     }
 }
@@ -757,10 +762,9 @@ mod tests {
         };
 
         // Store the pending channel information
-        manager.channel_manager_data.super_safe_lock(|data| {
-            data.pending_channels
-                .insert(1, ("test_user".to_string(), 1000.0, 4));
-        });
+        manager
+            .pending_channels
+            .insert(1, ("test_user".to_string(), 1000.0, 4));
 
         // Test that the message can be handled without panicking
         // In a real test environment, we would need to mock the upstream sender
@@ -844,17 +848,11 @@ mod tests {
     #[test]
     fn test_channel_manager_data_access() {
         let manager = create_test_channel_manager();
-
         // Test that we can access and modify channel manager data
-        manager.channel_manager_data.super_safe_lock(|data| {
-            // Add a pending channel
-            data.pending_channels
-                .insert(1, ("test".to_string(), 100.0, 4));
-        });
-
-        let has_pending = manager
-            .channel_manager_data
-            .super_safe_lock(|data| data.pending_channels.contains_key(&1));
+        manager
+            .pending_channels
+            .insert(1, ("test".to_string(), 100.0, 4));
+        let has_pending = manager.pending_channels.contains_key(&1);
 
         assert!(has_pending);
     }
