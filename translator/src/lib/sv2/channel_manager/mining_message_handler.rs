@@ -303,30 +303,29 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
         _tlv_fields: Option<&[Tlv]>,
     ) -> Result<(), Self::Error> {
         info!("Received: {}", m);
-        self.channel_manager_data
-            .super_safe_lock(|channel_data_manager| {
-                // are we working in aggregated mode?
-                if is_aggregated() {
-                    // even if aggregated channel_id != m.channel_id, we should trigger fallback
-                    // because why would a sane server send a CloseChannel message to a different
-                    // channel?
-                    return Err(TproxyError::fallback(
-                        TproxyErrorKind::AggregatedChannelClosed,
-                    ));
-                // we're not in aggregated mode
-                // was the message sent to a group channel?
-                } else if let Some(group_channel_arc) = self.group_channels.get(&m.channel_id) {
-                    let group_channel = group_channel_arc.read().map_err(|e| {
-                        error!("Failed to read group channel: {:?}", e);
-                        TproxyError::shutdown(TproxyErrorKind::PoisonLock)
-                    })?;
+        // are we working in aggregated mode?
+        if self.mode == ChannelMode::Aggregated {
+            // even if aggregated channel_id != m.channel_id, we should trigger fallback
+            // because why would a sane server send a CloseChannel message to a different
+            // channel?
+            return Err(TproxyError::fallback(
+                TproxyErrorKind::AggregatedChannelClosed,
+            ));
+        }
+
+        let group_channel = self.group_channels.remove(&m.channel_id);
+
+        // we're not in aggregated mode
+        // was the message sent to a group channel?
+        if let Some((_, group_channel_arc)) = group_channel {
+            let group_channel = group_channel_arc.read().map_err(|e| {
+                error!("Failed to read group channel: {:?}", e);
+                TproxyError::shutdown(TproxyErrorKind::PoisonLock)
+            })?;
 
             for channel_id in group_channel.get_channel_ids() {
                 self.extended_channels.remove(channel_id);
             }
-
-            drop(group_channel);
-            self.group_channels.remove(&m.channel_id);
         // if the message was not sent to a group channel, and we're not working in
         // aggregated mode,
         } else if self.extended_channels.contains_key(&m.channel_id) {
@@ -350,6 +349,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
             );
             return Err(TproxyError::log(TproxyErrorKind::ChannelNotFound));
         }
+
         Ok(())
     }
 
