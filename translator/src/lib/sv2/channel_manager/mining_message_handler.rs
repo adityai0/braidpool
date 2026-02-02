@@ -321,37 +321,35 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                         TproxyError::shutdown(TproxyErrorKind::PoisonLock)
                     })?;
 
-                    for channel_id in group_channel.get_channel_ids() {
-                        self.extended_channels.remove(channel_id);
-                    }
+            for channel_id in group_channel.get_channel_ids() {
+                self.extended_channels.remove(channel_id);
+            }
 
-                    drop(group_channel);
-                    self.group_channels.remove(&m.channel_id);
-                // if the message was not sent to a group channel, and we're not working in
-                // aggregated mode,
-                } else if self.extended_channels.contains_key(&m.channel_id) {
-                    // remove the channel from the extended channels map
-                    self.extended_channels.remove(&m.channel_id);
+            drop(group_channel);
+            self.group_channels.remove(&m.channel_id);
+        // if the message was not sent to a group channel, and we're not working in
+        // aggregated mode,
+        } else if self.extended_channels.contains_key(&m.channel_id) {
+            // remove the channel from the extended channels map
+            self.extended_channels.remove(&m.channel_id);
 
-                    // remove the channel from any group channels that contain it
-                    for group_channel in self.group_channels.iter() {
-                        let mut group_channel = group_channel.write().map_err(|e| {
-                            error!("Failed to write group channel: {:?}", e);
-                            TproxyError::shutdown(TproxyErrorKind::PoisonLock)
-                        })?;
-                        if group_channel.get_channel_ids().contains(&m.channel_id) {
-                            group_channel.remove_channel_id(m.channel_id);
-                        }
-                    }
-                } else {
-                    error!(
-                        "Channel Id not found: {}, ignoring CloseChannel message",
-                        m.channel_id
-                    );
-                    return Err(TproxyError::log(TproxyErrorKind::ChannelNotFound));
+            // remove the channel from any group channels that contain it
+            for group_channel in self.group_channels.iter() {
+                let mut group_channel = group_channel.write().map_err(|e| {
+                    error!("Failed to write group channel: {:?}", e);
+                    TproxyError::shutdown(TproxyErrorKind::PoisonLock)
+                })?;
+                if group_channel.get_channel_ids().contains(&m.channel_id) {
+                    group_channel.remove_channel_id(m.channel_id);
                 }
-                Ok::<(), Self::Error>(())
-            })?;
+            }
+        } else {
+            error!(
+                "Channel Id not found: {}, ignoring CloseChannel message",
+                m.channel_id
+            );
+            return Err(TproxyError::log(TproxyErrorKind::ChannelNotFound));
+        }
         Ok(())
     }
 

@@ -68,6 +68,8 @@ pub struct ChannelManager {
     /// In aggregated mode: single counter for all shares going to the upstream channel.
     /// In non-aggregated mode: one counter per downstream channel.
     pub share_sequence_counters: Arc<DashMap<u32, u32>>,
+    /// Current operational mode
+    pub mode: ChannelMode,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -114,6 +116,7 @@ impl ChannelManager {
             extended_channels: Arc::new(DashMap::new()),
             group_channels: Arc::new(DashMap::new()),
             share_sequence_counters: Arc::new(DashMap::new()),
+            mode,
         }
     }
 
@@ -718,16 +721,7 @@ impl ChannelManager {
     }
 
     pub fn get_channel_manager(&self) -> ChannelManager {
-        ChannelManager {
-            channel_manager_data: self.channel_manager_data.clone(),
-            channel_state: self.channel_state.clone(),
-            supported_extensions: self.supported_extensions.clone(),
-            required_extensions: self.required_extensions.clone(),
-            pending_channels: self.pending_channels.clone(),
-            extended_channels: self.extended_channels.clone(),
-            group_channels: self.group_channels.clone(),
-            share_sequence_counters: self.share_sequence_counters.clone(),
-        }
+        self.clone()
     }
 
     /// Gets the next sequence number for a valid share and increments the counter.
