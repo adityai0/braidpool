@@ -1,10 +1,8 @@
 use crate::{
     error::{self, TproxyError, TproxyErrorKind, TproxyResult},
+    is_aggregated,
     status::{handle_error, Status, StatusSender},
-    sv2::channel_manager::{
-        channel::ChannelState,
-        data::{ChannelManagerData, ChannelMode},
-    },
+    sv2::channel_manager::{channel::ChannelState, data::ChannelManagerData},
     utils::{ShutdownMessage, AGGREGATED_CHANNEL_ID},
 };
 use async_channel::{Receiver, Sender};
@@ -84,7 +82,6 @@ impl ChannelManager {
         sv1_server_sender: Sender<(Mining<'static>, Option<Vec<Tlv>>)>,
         sv1_server_receiver: Receiver<(Mining<'static>, Option<Vec<Tlv>>)>,
         status_sender: Sender<Status>,
-        mode: ChannelMode,
         supported_extensions: Vec<u16>,
         required_extensions: Vec<u16>,
     ) -> Self {
@@ -95,7 +92,7 @@ impl ChannelManager {
             sv1_server_receiver,
             status_sender,
         );
-        let channel_manager_data = Arc::new(Mutex::new(ChannelManagerData::new(mode)));
+        let channel_manager_data = Arc::new(Mutex::new(ChannelManagerData::new()));
         Self {
             channel_state,
             channel_manager_data,
@@ -270,11 +267,8 @@ impl ChannelManager {
                 let mut user_identity = m.user_identity.as_utf8_or_hex();
                 let hashrate = m.nominal_hash_rate;
                 let min_extranonce_size = m.min_extranonce_size as usize;
-                let mode = self
-                    .channel_manager_data
-                    .super_safe_lock(|c| c.mode.clone());
 
-                if mode == ChannelMode::Aggregated {
+                if is_aggregated() {
                     if self
                         .channel_manager_data
                         .super_safe_lock(|c| c.upstream_extended_channel.is_some())
@@ -439,13 +433,11 @@ impl ChannelManager {
                     }
                 }
                 // In aggregated mode, add extra bytes for translator search space allocation
-                let upstream_min_extranonce_size = self.channel_manager_data.super_safe_lock(|c| {
-                    if c.mode == ChannelMode::Aggregated {
-                        min_extranonce_size + AGGREGATED_MODE_TRANSLATOR_SEARCH_SPACE_BYTES
-                    } else {
-                        min_extranonce_size
-                    }
-                });
+                let upstream_min_extranonce_size = if is_aggregated() {
+                    min_extranonce_size + AGGREGATED_MODE_TRANSLATOR_SEARCH_SPACE_BYTES
+                } else {
+                    min_extranonce_size
+                };
 
                 // Update the message with the adjusted extranonce size for upstream
                 open_channel_msg.min_extranonce_size = upstream_min_extranonce_size as u16;
@@ -495,11 +487,8 @@ impl ChannelManager {
                         "SubmitSharesExtended: valid share, forwarding it to upstream | channel_id: {}, sequence_number: {} ☑️",
                         m.channel_id, m.sequence_number
                     );
-                    let mode = self
-                        .channel_manager_data
-                        .super_safe_lock(|c| c.mode.clone());
 
-                    if mode == ChannelMode::Aggregated
+                    if is_aggregated()
                         && self
                             .channel_manager_data
                             .super_safe_lock(|c| c.upstream_extended_channel.is_some())
@@ -664,11 +653,8 @@ impl ChannelManager {
             }
             Mining::UpdateChannel(mut m) => {
                 debug!("Received UpdateChannel from SV1Server: {:?}", m);
-                let mode = self
-                    .channel_manager_data
-                    .super_safe_lock(|c| c.mode.clone());
 
-                if mode == ChannelMode::Aggregated {
+                if is_aggregated() {
                     let upstream_extended_channel_id =
                         self.channel_manager_data.super_safe_lock(|c| {
                             c.upstream_extended_channel
@@ -738,13 +724,12 @@ impl ChannelManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sv2::channel_manager::data::ChannelMode;
     use async_channel::unbounded;
     use stratum_apps::stratum_core::mining_sv2::{
         OpenExtendedMiningChannel, SubmitSharesExtended, UpdateChannel,
     };
 
-    fn create_test_channel_manager(mode: ChannelMode) -> ChannelManager {
+    fn create_test_channel_manager() -> ChannelManager {
         let (upstream_sender, _upstream_receiver) = unbounded();
         let (_upstream_sender2, upstream_receiver) = unbounded();
         let (sv1_server_sender, _sv1_server_receiver) = unbounded();
@@ -757,51 +742,14 @@ mod tests {
             sv1_server_sender,
             sv1_server_receiver,
             status_sender,
-            mode,
             vec![],
             vec![],
         )
     }
 
-    #[test]
-    fn test_channel_manager_creation_aggregated() {
-        let manager = create_test_channel_manager(ChannelMode::Aggregated);
-
-        let mode = manager
-            .channel_manager_data
-            .super_safe_lock(|data| data.mode.clone());
-        assert_eq!(mode, ChannelMode::Aggregated);
-    }
-
-    #[test]
-    fn test_channel_manager_creation_non_aggregated() {
-        let manager = create_test_channel_manager(ChannelMode::NonAggregated);
-
-        let mode = manager
-            .channel_manager_data
-            .super_safe_lock(|data| data.mode.clone());
-        assert_eq!(mode, ChannelMode::NonAggregated);
-    }
-
-    #[test]
-    fn test_get_channel_manager() {
-        let manager = create_test_channel_manager(ChannelMode::Aggregated);
-        let cloned_manager = manager.get_channel_manager();
-
-        // Should be a different instance but share the same data
-        let original_mode = manager
-            .channel_manager_data
-            .super_safe_lock(|data| data.mode.clone());
-        let cloned_mode = cloned_manager
-            .channel_manager_data
-            .super_safe_lock(|data| data.mode.clone());
-
-        assert_eq!(original_mode, cloned_mode);
-    }
-
     #[tokio::test]
     async fn test_handle_downstream_open_channel_message() {
-        let manager = create_test_channel_manager(ChannelMode::NonAggregated);
+        let manager = create_test_channel_manager();
 
         // Create an OpenExtendedMiningChannel message
         let open_channel = OpenExtendedMiningChannel {
@@ -836,7 +784,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_downstream_submit_shares_message() {
-        let _manager = create_test_channel_manager(ChannelMode::NonAggregated);
+        let _manager = create_test_channel_manager();
 
         // Create a SubmitSharesExtended message
         let submit_shares = SubmitSharesExtended {
@@ -866,7 +814,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_downstream_update_channel_message() {
-        let _manager = create_test_channel_manager(ChannelMode::Aggregated);
+        let _manager = create_test_channel_manager();
 
         // Create an UpdateChannel message
         let update_channel = UpdateChannel {
@@ -890,7 +838,7 @@ mod tests {
 
     #[test]
     fn test_channel_manager_debug() {
-        let manager = create_test_channel_manager(ChannelMode::Aggregated);
+        let manager = create_test_channel_manager();
 
         // Test that Debug trait is implemented
         let debug_str = format!("{:?}", manager);
@@ -898,24 +846,8 @@ mod tests {
     }
 
     #[test]
-    fn test_channel_manager_clone() {
-        let manager = create_test_channel_manager(ChannelMode::Aggregated);
-        let cloned = manager.clone();
-
-        // Verify that both managers share the same underlying data
-        let original_mode = manager
-            .channel_manager_data
-            .super_safe_lock(|data| data.mode.clone());
-        let cloned_mode = cloned
-            .channel_manager_data
-            .super_safe_lock(|data| data.mode.clone());
-
-        assert_eq!(original_mode, cloned_mode);
-    }
-
-    #[test]
     fn test_channel_manager_data_access() {
-        let manager = create_test_channel_manager(ChannelMode::NonAggregated);
+        let manager = create_test_channel_manager();
 
         // Test that we can access and modify channel manager data
         manager.channel_manager_data.super_safe_lock(|data| {
@@ -929,22 +861,5 @@ mod tests {
             .super_safe_lock(|data| data.pending_channels.contains_key(&1));
 
         assert!(has_pending);
-    }
-
-    #[test]
-    fn test_channel_manager_mode_consistency() {
-        let aggregated_manager = create_test_channel_manager(ChannelMode::Aggregated);
-        let non_aggregated_manager = create_test_channel_manager(ChannelMode::NonAggregated);
-
-        let agg_mode = aggregated_manager
-            .channel_manager_data
-            .super_safe_lock(|data| data.mode.clone());
-        let non_agg_mode = non_aggregated_manager
-            .channel_manager_data
-            .super_safe_lock(|data| data.mode.clone());
-
-        assert_eq!(agg_mode, ChannelMode::Aggregated);
-        assert_eq!(non_agg_mode, ChannelMode::NonAggregated);
-        assert_ne!(agg_mode, non_agg_mode);
     }
 }
