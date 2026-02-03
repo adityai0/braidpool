@@ -360,60 +360,62 @@ impl ChannelManager {
                                         );
                                         TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender)
                                     })?;
-                                // get the last active job from the upstream extended channel
-                                let last_active_job =
+                                // Initialize the new downstream channel with state from upstream:
+                                // chain tip, active job, and any pending future jobs.
+                                let active_job_for_sv1_server =
                                     self.channel_manager_data.super_safe_lock(|c| {
-                                        c.upstream_extended_channel
+                                        let (last_active_job, future_jobs, last_chain_tip) = c
+                                            .upstream_extended_channel
                                             .as_ref()
                                             .and_then(|ch| ch.read().ok())
-                                            .and_then(|ch| ch.get_active_job().map(|j| j.0.clone()))
-                                    });
+                                            .map(|ch| {
+                                                let active =
+                                                    ch.get_active_job().map(|j| j.0.clone());
+                                                let futures = ch
+                                                    .get_future_jobs()
+                                                    .values()
+                                                    .map(|j| j.0.clone())
+                                                    .collect::<Vec<_>>();
+                                                let chain_tip = ch.get_chain_tip().cloned();
+                                                (active, futures, chain_tip)
+                                            })?;
 
-                                // get the last chain tip from the upstream extended channel
-                                let last_chain_tip =
-                                    self.channel_manager_data.super_safe_lock(|c| {
-                                        c.upstream_extended_channel
-                                            .as_ref()
-                                            .and_then(|ch| ch.read().ok())
-                                            .and_then(|ch| ch.get_chain_tip().cloned())
-                                    });
-                                // update the downstream channel with the active job and the chain
-                                // tip
-                                if let Some(mut job) = last_active_job {
-                                    if let Some(last_chain_tip) = last_chain_tip {
-                                        // update the downstream channel with the active chain tip
-                                        self.channel_manager_data.super_safe_lock(|c| {
-                                            if let Some(ch) =
-                                                c.extended_channels.get(&next_channel_id)
-                                            {
-                                                ch.write()
-                                                    .unwrap()
-                                                    .set_chain_tip(last_chain_tip.clone());
-                                            }
-                                        });
-                                    }
-                                    job.channel_id = next_channel_id;
-                                    // update the downstream channel with the active job
-                                    self.channel_manager_data.super_safe_lock(|c| {
-                                        if let Some(ch) = c.extended_channels.get(&next_channel_id)
-                                        {
-                                            let _ = ch
-                                                .write()
-                                                .unwrap()
-                                                .on_new_extended_mining_job(job.clone());
+                                        let channel = c.extended_channels.get(&next_channel_id)?;
+                                        let mut channel = channel.write().ok()?;
+
+                                        if let Some(chain_tip) = last_chain_tip {
+                                            channel.set_chain_tip(chain_tip);
                                         }
+
+                                        if let Some(mut job) = last_active_job.clone() {
+                                            job.channel_id = next_channel_id;
+                                            let _ = channel.on_new_extended_mining_job(job);
+                                        }
+
+                                        // Also add any future jobs so SetNewPrevHash won't fail
+                                        for mut future_job in future_jobs {
+                                            future_job.channel_id = next_channel_id;
+                                            let _ = channel.on_new_extended_mining_job(future_job);
+                                        }
+
+                                        // set the channel id to the aggregated channel id
+                                        // before sending the message to the Sv1Server
+                                        last_active_job.map(|mut job| {
+                                            job.channel_id = AGGREGATED_CHANNEL_ID;
+                                            job
+                                        })
                                     });
 
-                                    // set the channel id to the aggregated channel id
-                                    // before sending the message to the SV1Server
-                                    job.channel_id = AGGREGATED_CHANNEL_ID;
-
+                                if let Some(job) = active_job_for_sv1_server {
                                     self.channel_state
                                         .sv1_server_sender
-                                        .send((Mining::NewExtendedMiningJob(job.clone()), None))
+                                        .send((Mining::NewExtendedMiningJob(job), None))
                                         .await
                                         .map_err(|e| {
-                                            error!("Failed to send last new extended mining job to SV1Server: {:?}", e);
+                                            error!(
+                                                "Failed to send active extended mining job to Sv1Server: {:?}",
+                                                e
+                                            );
                                             TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender)
                                         })?;
                                 }
