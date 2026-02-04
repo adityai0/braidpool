@@ -176,14 +176,14 @@ impl ChannelManager {
                             }
                         }
                     }
-                    res = Self::handle_upstream_frame(self.clone()) => {
+                    res = self.clone().handle_upstream_frame() => {
                         if let Err(e) = res {
                             if handle_error(&status_sender, e).await {
                                 break;
                             }
                         }
                     },
-                    res = Self::handle_downstream_message(self.clone()) => {
+                    res = self.clone().handle_downstream_message() => {
                         if let Err(e) = res {
                             if handle_error(&status_sender, e).await {
                                 break;
@@ -218,13 +218,14 @@ impl ChannelManager {
     /// * `Ok(())` - Message processed successfully
     /// * `Err(TproxyError)` - Error processing the message
     pub async fn handle_upstream_frame(self: Arc<Self>) -> TproxyResult<(), error::ChannelManager> {
-        let mut channel_manager = self.get_channel_manager();
         let mut sv2_frame = self
             .channel_state
             .upstream_receiver
             .recv()
             .await
             .map_err(TproxyError::fallback)?;
+
+        let mut channel_manager: ChannelManager = (*self).clone();
         let header = sv2_frame.get_header().ok_or_else(|| {
             error!("SV2 frame missing header");
             TproxyError::fallback(framing_sv2::Error::MissingHeader)
@@ -713,10 +714,6 @@ impl ChannelManager {
         }
 
         Ok(())
-    }
-
-    pub fn get_channel_manager(&self) -> ChannelManager {
-        self.clone()
     }
 
     /// Gets the next sequence number for a valid share and increments the counter.

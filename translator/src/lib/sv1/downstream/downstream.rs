@@ -42,9 +42,9 @@ use tracing::{debug, error, info, warn};
 /// handling connection-specific state.
 #[derive(Clone, Debug)]
 pub struct Downstream {
+    pub downstream_id: DownstreamId,
     pub downstream_data: Arc<Mutex<DownstreamData>>,
     pub downstream_channel_state: DownstreamChannelState,
-    pub downstream_id: DownstreamId,
     // Flag to track if SV1 handshake is complete (subscribe + authorize)
     pub sv1_handshake_complete: Arc<AtomicBool>,
     // Flag to indicate we're processing queued Sv1 handshake message responses
@@ -76,9 +76,9 @@ impl Downstream {
             sv1_server_broadcast,
         );
         Self {
+            downstream_id,
             downstream_data,
             downstream_channel_state,
-            downstream_id,
             sv1_handshake_complete: Arc::new(AtomicBool::new(false)),
             processing_queued_sv1_handshake_responses: Arc::new(AtomicBool::new(false)),
         }
