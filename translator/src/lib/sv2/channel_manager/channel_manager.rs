@@ -68,8 +68,6 @@ pub struct ChannelManager {
     /// In aggregated mode: single counter for all shares going to the upstream channel.
     /// In non-aggregated mode: one counter per downstream channel.
     pub share_sequence_counters: Arc<DashMap<u32, u32>>,
-    /// Current operational mode
-    pub mode: ChannelMode,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -116,7 +114,6 @@ impl ChannelManager {
             extended_channels: Arc::new(DashMap::new()),
             group_channels: Arc::new(DashMap::new()),
             share_sequence_counters: Arc::new(DashMap::new()),
-            mode,
         }
     }
 
@@ -371,11 +368,8 @@ impl ChannelManager {
                                 // chain tip, active job, and any pending future jobs.
                                 let active_job_for_sv1_server =
                                     self.channel_manager_data.super_safe_lock(|c| {
-                                        let (last_active_job, future_jobs, last_chain_tip) = c
-                                            .upstream_extended_channel
-                                            .as_ref()
-                                            .and_then(|ch| ch.read().ok())
-                                            .map(|ch| {
+                                        let (last_active_job, future_jobs, last_chain_tip) =
+                                            c.upstream_extended_channel.as_ref().map(|ch| {
                                                 let active =
                                                     ch.get_active_job().map(|j| j.0.clone());
                                                 let futures = ch
@@ -387,7 +381,8 @@ impl ChannelManager {
                                                 (active, futures, chain_tip)
                                             })?;
 
-                                        let channel = c.extended_channels.get(&next_channel_id)?;
+                                        let channel =
+                                            self.extended_channels.get(&next_channel_id)?;
                                         let mut channel = channel.write().ok()?;
 
                                         if let Some(chain_tip) = last_chain_tip {

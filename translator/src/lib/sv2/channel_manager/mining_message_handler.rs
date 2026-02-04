@@ -304,7 +304,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
     ) -> Result<(), Self::Error> {
         info!("Received: {}", m);
         // are we working in aggregated mode?
-        if self.mode == ChannelMode::Aggregated {
+        if is_aggregated() {
             // even if aggregated channel_id != m.channel_id, we should trigger fallback
             // because why would a sane server send a CloseChannel message to a different
             // channel?
