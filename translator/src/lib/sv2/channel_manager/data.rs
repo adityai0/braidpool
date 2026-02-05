@@ -1,5 +1,3 @@
-use stratum_apps::stratum_core::mining_sv2::ExtendedExtranonce;
-
 /// Internal data structure for the ChannelManager.
 ///
 /// This struct maintains all the state needed for SV2 channel management,
@@ -7,8 +5,8 @@ use stratum_apps::stratum_core::mining_sv2::ExtendedExtranonce;
 /// data structures like extranonce factories for aggregated mode.
 #[derive(Debug, Clone, Default)]
 pub struct ChannelManagerData {
-    /// Extranonce prefix factory for allocating unique prefixes in aggregated mode
-    pub extranonce_prefix_factory: Option<ExtendedExtranonce>,
+    // Extranonce prefix factory for allocating unique prefixes in aggregated mode
+    // pub extranonce_prefix_factory: Option<ExtendedExtranonce>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -40,7 +38,7 @@ impl ChannelManagerData {
     /// This ensures that new channels will be properly opened with the
     /// newly connected upstream server.
     pub fn reset_for_upstream_reconnection(&mut self) {
-        self.extranonce_prefix_factory = None;
+        // self.extranonce_prefix_factory = None;
         // Note: we intentionally preserve `mode`, `supported_extensions`, and `required_extensions`
         // as they are configuration settings
     }

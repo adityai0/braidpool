@@ -314,22 +314,17 @@ impl ChannelManager {
                         let target = self
                             .upstream_extended_channel
                             .super_safe_lock(|data| *data.as_ref().unwrap().get_target());
-                        let new_extranonce_prefix =
-                            self.channel_manager_data.super_safe_lock(|c| {
-                                c.extranonce_prefix_factory
-                                    .as_mut()
-                                    .unwrap()
-                                    .next_prefix_extended(
-                                        open_channel_msg.min_extranonce_size.into(),
-                                    )
-                                    .ok()
-                            });
-                        let new_extranonce_size = self.channel_manager_data.super_safe_lock(|c| {
-                            c.extranonce_prefix_factory
-                                .as_ref()
-                                .unwrap()
-                                .get_range2_len()
-                        });
+                        let new_extranonce_prefix = self
+                            .extranonce_factories
+                            .get_mut(&AGGREGATED_CHANNEL_ID)
+                            .unwrap()
+                            .next_prefix_extended(open_channel_msg.min_extranonce_size.into())
+                            .ok();
+                        let new_extranonce_size = self
+                            .extranonce_factories
+                            .get_mut(&AGGREGATED_CHANNEL_ID)
+                            .unwrap()
+                            .get_range2_len();
                         if let Some(new_extranonce_prefix) = new_extranonce_prefix {
                             if new_extranonce_size >= open_channel_msg.min_extranonce_size as usize
                             {
@@ -527,12 +522,11 @@ impl ChannelManager {
                             .get(&m.channel_id)
                             .map(|channel| channel.read().unwrap().get_extranonce_prefix().clone());
                         // Get the length of the upstream prefix (range0)
-                        let range0_len = self.channel_manager_data.super_safe_lock(|c| {
-                            c.extranonce_prefix_factory
-                                .as_ref()
-                                .unwrap()
-                                .get_range0_len()
-                        });
+                        let range0_len = self
+                            .extranonce_factories
+                            .get(&AGGREGATED_CHANNEL_ID)
+                            .unwrap()
+                            .get_range0_len();
                         if let Some(downstream_extranonce_prefix) = downstream_extranonce_prefix {
                             // Skip the upstream prefix (range0) and take the remaining
                             // bytes (translator proxy prefix)
