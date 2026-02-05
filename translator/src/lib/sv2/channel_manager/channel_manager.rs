@@ -2,7 +2,7 @@ use crate::{
     error::{self, TproxyError, TproxyErrorKind, TproxyResult},
     is_aggregated,
     status::{handle_error, Status, StatusSender},
-    sv2::channel_manager::{channel::ChannelState, data::ChannelManagerData},
+    sv2::channel_manager::channel::ChannelState,
     utils::{ShutdownMessage, AGGREGATED_CHANNEL_ID},
 };
 use async_channel::{Receiver, Sender};
@@ -52,7 +52,6 @@ const AGGREGATED_MODE_TRANSLATOR_SEARCH_SPACE_BYTES: usize = 4;
 #[derive(Debug, Clone)]
 pub struct ChannelManager {
     pub channel_state: ChannelState,
-    pub channel_manager_data: Arc<Mutex<ChannelManagerData>>,
     /// Extensions that the translator supports (will request if required by server)
     pub supported_extensions: Vec<u16>,
     /// Extensions that the translator requires (must be supported by server)
@@ -111,10 +110,9 @@ impl ChannelManager {
             sv1_server_receiver,
             status_sender,
         );
-        let channel_manager_data = Arc::new(Mutex::new(ChannelManagerData::new()));
+
         Self {
             channel_state,
-            channel_manager_data,
             supported_extensions,
             required_extensions,
             pending_channels: Arc::new(DashMap::new()),
@@ -170,9 +168,6 @@ impl ChannelManager {
                                 self.negotiated_extensions.super_safe_lock(|data| data.clear());
                                 self.extranonce_factories.clear();
                                 self.upstream_extended_channel.super_safe_lock(|data| *data = None);
-                                self.channel_manager_data.super_safe_lock(|data| {
-                                    data.reset_for_upstream_reconnection();
-                                });
                                 drop(tx);
                             }
                             Ok(_) => {
