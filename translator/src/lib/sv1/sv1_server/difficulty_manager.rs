@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{is_aggregated, is_non_aggregated, sv1::sv1_server::data::PendingTargetUpdate};
+use crate::{is_aggregated, is_non_aggregated, sv1::sv1_server::sv1_server::PendingTargetUpdate};
 
 use stratum_apps::{
     stratum_core::{
@@ -123,8 +123,8 @@ impl Sv1Server {
                                 "⏳ Target comparison: new_target ({:?}) < upstream_target ({:?}) for downstream {}, will delay set_difficulty until SetTarget",
                                 new_target, upstream_target, downstream_id
                             );
-                            self.sv1_server_data.super_safe_lock(|data| {
-                                data.pending_target_updates.push(PendingTargetUpdate {
+                            self.pending_target_updates.super_safe_lock(|data| {
+                                data.push(PendingTargetUpdate {
                                     downstream_id: *downstream_id,
                                     new_target,
                                     new_hashrate,
@@ -386,8 +386,8 @@ impl Sv1Server {
     ) -> Vec<PendingTargetUpdate> {
         let mut applicable_updates = Vec::new();
 
-        self.sv1_server_data.super_safe_lock(|data| {
-            data.pending_target_updates.retain(|pending_update| {
+        self.pending_target_updates.super_safe_lock(|data| {
+            data.retain(|pending_update| {
                 // Check if we should process this update
                 let should_process = match downstream_id {
                     Some(downstream_id) => pending_update.downstream_id == downstream_id,

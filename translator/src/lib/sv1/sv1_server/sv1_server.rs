@@ -79,6 +79,8 @@ pub struct Sv1Server {
     /// HashMap to store the SetNewPrevHash for each channel
     /// Used in both aggregated and non-aggregated mode
     pub(crate) prevhashes: Arc<DashMap<ChannelId, SetNewPrevHash<'static>>>,
+    /// Tracks pending target updates that are waiting for SetTarget response from upstream
+    pub(crate) pending_target_updates: Arc<Mutex<Vec<PendingTargetUpdate>>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -123,6 +125,7 @@ impl Sv1Server {
             request_id_to_downstream_id: Arc::new(DashMap::new()),
             vardiff: Arc::new(DashMap::new()),
             prevhashes: Arc::new(DashMap::new()),
+            pending_target_updates: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -1097,6 +1100,13 @@ impl Sv1Server {
     fn is_keepalive_job_id(job_id: &str) -> bool {
         job_id.contains(KEEPALIVE_JOB_ID_DELIMITER)
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingTargetUpdate {
+    pub downstream_id: DownstreamId,
+    pub new_target: Target,
+    pub new_hashrate: Hashrate,
 }
 
 #[cfg(test)]

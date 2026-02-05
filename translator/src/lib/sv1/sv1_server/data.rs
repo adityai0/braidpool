@@ -1,17 +1,7 @@
 use std::collections::HashMap;
-use stratum_apps::{
-    stratum_core::{bitcoin::Target, sv1_api::server_to_client},
-    utils::types::{ChannelId, DownstreamId, Hashrate},
-};
+use stratum_apps::{stratum_core::sv1_api::server_to_client, utils::types::ChannelId};
 
 use crate::{is_aggregated, is_non_aggregated};
-
-#[derive(Debug, Clone)]
-pub struct PendingTargetUpdate {
-    pub downstream_id: DownstreamId,
-    pub new_target: Target,
-    pub new_hashrate: Hashrate,
-}
 
 #[derive(Debug)]
 pub struct Sv1ServerData {
@@ -20,8 +10,6 @@ pub struct Sv1ServerData {
     /// Job storage for non-aggregated mode - each Sv1 downstream has its own jobs
     pub non_aggregated_valid_jobs:
         Option<HashMap<ChannelId, Vec<server_to_client::Notify<'static>>>>,
-    /// Tracks pending target updates that are waiting for SetTarget response from upstream
-    pub pending_target_updates: Vec<PendingTargetUpdate>,
 }
 
 /// Delimiter used to separate original job ID from keepalive mutation counter.
@@ -33,7 +21,6 @@ impl Sv1ServerData {
         Self {
             aggregated_valid_jobs: is_aggregated().then(Vec::new),
             non_aggregated_valid_jobs: is_non_aggregated().then(HashMap::new),
-            pending_target_updates: Vec::new(),
         }
     }
 
