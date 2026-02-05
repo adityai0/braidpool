@@ -31,7 +31,7 @@ use stratum_apps::{
         bitcoin::Target,
         channels_sv2::{target::hash_rate_to_target, Vardiff, VardiffState},
         extensions_sv2::UserIdentity,
-        mining_sv2::{CloseChannel, SetTarget},
+        mining_sv2::{CloseChannel, SetNewPrevHash, SetTarget},
         parsers_sv2::{Mining, Tlv, TlvField},
         stratum_translation::{
             sv1_to_sv2::{
@@ -76,6 +76,9 @@ pub struct Sv1Server {
     pub(crate) downstreams: Arc<DashMap<DownstreamId, Downstream>>,
     pub(crate) request_id_to_downstream_id: Arc<DashMap<RequestId, DownstreamId>>,
     pub(crate) vardiff: Arc<DashMap<DownstreamId, Arc<Mutex<VardiffState>>>>,
+    /// HashMap to store the SetNewPrevHash for each channel
+    /// Used in both aggregated and non-aggregated mode
+    pub(crate) prevhashes: Arc<DashMap<ChannelId, SetNewPrevHash<'static>>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -119,6 +122,7 @@ impl Sv1Server {
             downstreams: Arc::new(DashMap::new()),
             request_id_to_downstream_id: Arc::new(DashMap::new()),
             vardiff: Arc::new(DashMap::new()),
+            prevhashes: Arc::new(DashMap::new()),
         }
     }
 
@@ -636,10 +640,8 @@ impl Sv1Server {
                     "Received NewExtendedMiningJob for channel id: {}",
                     m.channel_id
                 );
-                if let Some(prevhash) = self
-                    .sv1_server_data
-                    .super_safe_lock(|v| v.get_prevhash(m.channel_id))
-                {
+                if let Some(prevhash) = self.prevhashes.get(&m.channel_id) {
+                    let prevhash = prevhash.as_static();
                     let clean_jobs = m.job_id == prevhash.job_id;
                     let notify =
                         build_sv1_notify_from_sv2(prevhash, m.clone().into_static(), clean_jobs)
@@ -677,8 +679,8 @@ impl Sv1Server {
 
             Mining::SetNewPrevHash(m) => {
                 debug!("Received SetNewPrevHash for channel id: {}", m.channel_id);
-                self.sv1_server_data
-                    .super_safe_lock(|v| v.set_prevhash(m.channel_id, m.clone().into_static()));
+                self.prevhashes
+                    .insert(m.channel_id, m.clone().into_static());
             }
 
             Mining::SetTarget(m) => {

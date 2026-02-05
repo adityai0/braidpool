@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use stratum_apps::{
-    stratum_core::{bitcoin::Target, mining_sv2::SetNewPrevHash, sv1_api::server_to_client},
+    stratum_core::{bitcoin::Target, sv1_api::server_to_client},
     utils::types::{ChannelId, DownstreamId, Hashrate},
 };
 
@@ -15,9 +15,6 @@ pub struct PendingTargetUpdate {
 
 #[derive(Debug)]
 pub struct Sv1ServerData {
-    /// HashMap to store the SetNewPrevHash for each channel
-    /// Used in both aggregated and non-aggregated mode
-    pub prevhashes: HashMap<ChannelId, SetNewPrevHash<'static>>,
     /// Job storage for aggregated mode - all Sv1 downstreams share the same jobs
     pub aggregated_valid_jobs: Option<Vec<server_to_client::Notify<'static>>>,
     /// Job storage for non-aggregated mode - each Sv1 downstream has its own jobs
@@ -36,22 +33,11 @@ pub const KEEPALIVE_JOB_ID_DELIMITER: char = '#';
 impl Sv1ServerData {
     pub fn new() -> Self {
         Self {
-            prevhashes: HashMap::new(),
             aggregated_valid_jobs: is_aggregated().then(Vec::new),
             non_aggregated_valid_jobs: is_non_aggregated().then(HashMap::new),
             pending_target_updates: Vec::new(),
             initial_target: None,
         }
-    }
-
-    /// Gets the prevhash for a given channel.
-    pub fn get_prevhash(&self, channel_id: u32) -> Option<SetNewPrevHash<'static>> {
-        self.prevhashes.get(&channel_id).cloned()
-    }
-
-    /// Sets the prevhash for a given channel.
-    pub fn set_prevhash(&mut self, channel_id: u32, prevhash: SetNewPrevHash<'static>) {
-        self.prevhashes.insert(channel_id, prevhash);
     }
 
     /// Gets the last job from the jobs storage.
