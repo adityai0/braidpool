@@ -68,6 +68,8 @@ pub struct ChannelManager {
     /// In aggregated mode: single counter for all shares going to the upstream channel.
     /// In non-aggregated mode: one counter per downstream channel.
     pub share_sequence_counters: Arc<DashMap<u32, u32>>,
+    /// Extensions that have been successfully negotiated with the upstream server
+    pub negotiated_extensions: Arc<Mutex<Vec<u16>>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -114,6 +116,7 @@ impl ChannelManager {
             extended_channels: Arc::new(DashMap::new()),
             group_channels: Arc::new(DashMap::new()),
             share_sequence_counters: Arc::new(DashMap::new()),
+            negotiated_extensions: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -157,6 +160,7 @@ impl ChannelManager {
                                 self.extended_channels.clear();
                                 self.group_channels.clear();
                                 self.share_sequence_counters.clear();
+                                self.negotiated_extensions.super_safe_lock(|data| data.clear());
                                 self.channel_manager_data.super_safe_lock(|data| {
                                     data.reset_for_upstream_reconnection();
                                 });
@@ -579,14 +583,14 @@ impl ChannelManager {
                     }
 
                     // Send the share upstream (common for both aggregated and non-aggregated modes)
-                    let negotiated_extensions = self
-                        .channel_manager_data
-                        .super_safe_lock(|data| data.negotiated_extensions.clone());
+                    let contains_type_in_negotiated_extension =
+                        self.negotiated_extensions.super_safe_lock(|data| {
+                            data.contains(&EXTENSION_TYPE_WORKER_HASHRATE_TRACKING)
+                        });
 
                     // Check if we should try to include TLV fields
-                    let should_send_with_tlv = negotiated_extensions
-                        .contains(&EXTENSION_TYPE_WORKER_HASHRATE_TRACKING)
-                        && tlv_fields.is_some();
+                    let should_send_with_tlv =
+                        contains_type_in_negotiated_extension && tlv_fields.is_some();
 
                     let mut sent = false;
                     if should_send_with_tlv {

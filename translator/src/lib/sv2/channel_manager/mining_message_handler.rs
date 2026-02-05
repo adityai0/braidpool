@@ -44,8 +44,8 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
         _server_id: Option<usize>,
     ) -> Result<Vec<u16>, Self::Error> {
         Ok(self
-            .channel_manager_data
-            .super_safe_lock(|data| data.negotiated_extensions.clone()))
+            .negotiated_extensions
+            .super_safe_lock(|data| data.clone()))
     }
 
     async fn handle_open_standard_mining_channel_success(

@@ -21,8 +21,6 @@ pub struct ChannelManagerData {
     /// Per-channel extranonce factories for non-aggregated mode when extranonce adjustment is
     /// needed
     pub extranonce_factories: Option<HashMap<ChannelId, Arc<Mutex<ExtendedExtranonce>>>>,
-    /// Extensions that have been successfully negotiated with the upstream server
-    pub negotiated_extensions: Vec<u16>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -57,7 +55,6 @@ impl ChannelManagerData {
         self.upstream_extended_channel = None;
         self.extranonce_prefix_factory = None;
         self.extranonce_factories = None;
-        self.negotiated_extensions.clear();
         // Note: we intentionally preserve `mode`, `supported_extensions`, and `required_extensions`
         // as they are configuration settings
     }
