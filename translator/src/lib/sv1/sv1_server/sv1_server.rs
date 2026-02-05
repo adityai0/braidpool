@@ -5,10 +5,7 @@ use crate::{
     status::{handle_error, Status, StatusSender},
     sv1::{
         downstream::downstream::Downstream,
-        sv1_server::{
-            channel::Sv1ServerChannelState,
-            data::{Sv1ServerData, KEEPALIVE_JOB_ID_DELIMITER},
-        },
+        sv1_server::{channel::Sv1ServerChannelState, KEEPALIVE_JOB_ID_DELIMITER},
     },
     utils::ShutdownMessage,
 };
@@ -64,7 +61,6 @@ use tracing::{debug, error, info, trace, warn};
 #[derive(Clone)]
 pub struct Sv1Server {
     pub(crate) sv1_server_channel_state: Sv1ServerChannelState,
-    pub(crate) sv1_server_data: Arc<Mutex<Sv1ServerData>>,
     pub(crate) shares_per_minute: SharesPerMinute,
     pub(crate) listener_addr: SocketAddr,
     pub(crate) config: TranslatorConfig,
@@ -114,10 +110,8 @@ impl Sv1Server {
         let shares_per_minute = config.downstream_difficulty_config.shares_per_minute;
         let sv1_server_channel_state =
             Sv1ServerChannelState::new(channel_manager_receiver, channel_manager_sender);
-        let sv1_server_data = Arc::new(Mutex::new(Sv1ServerData::new()));
         Self {
             sv1_server_channel_state,
-            sv1_server_data,
             config,
             listener_addr,
             shares_per_minute,
