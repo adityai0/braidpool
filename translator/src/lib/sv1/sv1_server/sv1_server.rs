@@ -19,7 +19,7 @@ use std::{
     net::SocketAddr,
     sync::{
         atomic::{AtomicU32, AtomicUsize, Ordering},
-        Arc, OnceLock,
+        Arc,
     },
     time::{Duration, Instant},
 };
@@ -79,8 +79,6 @@ pub struct Sv1Server {
     /// HashMap to store the SetNewPrevHash for each channel
     /// Used in both aggregated and non-aggregated mode
     pub(crate) prevhashes: Arc<DashMap<ChannelId, SetNewPrevHash<'static>>>,
-    /// The initial target used when opening channels - used when no downstreams remain
-    pub initial_target: Arc<OnceLock<Target>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -125,7 +123,6 @@ impl Sv1Server {
             request_id_to_downstream_id: Arc::new(DashMap::new()),
             vardiff: Arc::new(DashMap::new()),
             prevhashes: Arc::new(DashMap::new()),
-            initial_target: Arc::new(OnceLock::new()),
         }
     }
 
@@ -739,9 +736,6 @@ impl Sv1Server {
             // so we give it more freedom by setting max_target to maximum possible value
             Target::from_le_bytes([0xff; 32])
         };
-
-        // Store the initial target for use when no downstreams remain
-        self.initial_target.get_or_init(|| max_target);
 
         let miner_id = self.miner_counter.fetch_add(1, Ordering::SeqCst) + 1;
         let user_identity = format!("{}.miner{}", self.config.user_identity, miner_id);
