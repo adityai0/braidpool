@@ -113,18 +113,17 @@ impl IsServer<'static> for Sv1Server {
             None => return false,
         };
 
-        let job = self.sv1_server_data.super_safe_lock(|data| {
-            data.aggregated_valid_jobs
-                .as_ref()
-                .and_then(|jobs| jobs.iter().find(|j| &j.job_id == job_id))
-                .or_else(|| {
-                    data.non_aggregated_valid_jobs
-                        .as_ref()
-                        .and_then(|jobs| jobs.get(&channel_id))
-                        .and_then(|jobs| jobs.iter().find(|j| &j.job_id == job_id))
-                })
-                .cloned()
+        let aggregated_job = self.aggregated_valid_jobs.as_ref().and_then(|jobs| {
+            jobs.super_safe_lock(|jobs| jobs.iter().find(|j| j.job_id == *job_id).cloned())
         });
+
+        let non_aggregated_job = self
+            .non_aggregated_valid_jobs
+            .as_ref()
+            .and_then(|jobs| jobs.get(&channel_id))
+            .and_then(|jobs| jobs.iter().find(|j| j.job_id == *job_id).cloned());
+
+        let job = aggregated_job.or(non_aggregated_job);
 
         let job = match job {
             Some(job) => job,

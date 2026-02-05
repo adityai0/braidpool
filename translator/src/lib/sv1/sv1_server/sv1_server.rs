@@ -40,7 +40,7 @@ use stratum_apps::{
             },
             sv2_to_sv1::{build_sv1_notify_from_sv2, build_sv1_set_difficulty_from_sv2_target},
         },
-        sv1_api::{json_rpc, utils::HexU32Be, IsServer},
+        sv1_api::{json_rpc, server_to_client, utils::HexU32Be, IsServer},
     },
     task_manager::TaskManager,
     utils::types::{ChannelId, DownstreamId, Hashrate, RequestId, SharesPerMinute},
@@ -81,6 +81,11 @@ pub struct Sv1Server {
     pub(crate) prevhashes: Arc<DashMap<ChannelId, SetNewPrevHash<'static>>>,
     /// Tracks pending target updates that are waiting for SetTarget response from upstream
     pub(crate) pending_target_updates: Arc<Mutex<Vec<PendingTargetUpdate>>>,
+    /// Job storage for non-aggregated mode - each Sv1 downstream has its own jobs
+    pub(crate) non_aggregated_valid_jobs:
+        Option<Arc<DashMap<ChannelId, Vec<server_to_client::Notify<'static>>>>>,
+    /// Job storage for aggregated mode - all Sv1 downstreams share the same jobs
+    pub(crate) aggregated_valid_jobs: Option<Arc<Mutex<Vec<server_to_client::Notify<'static>>>>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -126,6 +131,8 @@ impl Sv1Server {
             vardiff: Arc::new(DashMap::new()),
             prevhashes: Arc::new(DashMap::new()),
             pending_target_updates: Arc::new(Mutex::new(Vec::new())),
+            non_aggregated_valid_jobs: is_non_aggregated().then(|| Arc::new(DashMap::new())),
+            aggregated_valid_jobs: is_aggregated().then(|| Arc::new(Mutex::new(Vec::new()))),
         }
     }
 
@@ -652,26 +659,22 @@ impl Sv1Server {
 
                     // Update job storage based on the configured mode
                     let notify_parsed = notify.clone();
-                    self.sv1_server_data.super_safe_lock(|server_data| {
-                        if let Some(ref mut aggregated_jobs) = server_data.aggregated_valid_jobs {
-                            // Aggregated mode: all downstreams share the same jobs
-                            if clean_jobs {
-                                aggregated_jobs.clear();
-                            }
-                            aggregated_jobs.push(notify_parsed);
-                        } else if let Some(ref mut non_aggregated_jobs) =
-                            server_data.non_aggregated_valid_jobs
-                        {
-                            // Non-aggregated mode: per-downstream jobs
-                            let channel_jobs = non_aggregated_jobs
-                                .entry(m.channel_id)
-                                .or_insert_with(Vec::new);
-                            if clean_jobs {
-                                channel_jobs.clear();
-                            }
-                            channel_jobs.push(notify_parsed);
+                    if let Some(ref aggregated_jobs) = self.aggregated_valid_jobs {
+                        // Aggregated mode: all downstreams share the same jobs
+                        if clean_jobs {
+                            aggregated_jobs.super_safe_lock(|jobs| jobs.clear());
                         }
-                    });
+                        aggregated_jobs.super_safe_lock(|jobs| jobs.push(notify_parsed));
+                    } else if let Some(ref non_aggregated_jobs) = self.non_aggregated_valid_jobs {
+                        // Non-aggregated mode: per-downstream jobs
+                        let mut channel_jobs = non_aggregated_jobs
+                            .entry(m.channel_id)
+                            .or_insert_with(Vec::new);
+                        if clean_jobs {
+                            channel_jobs.clear();
+                        }
+                        channel_jobs.push(notify_parsed);
+                    }
 
                     let _ = self
                         .sv1_server_channel_state
@@ -997,59 +1000,56 @@ impl Sv1Server {
             // Send keepalive to each downstream that needs one
             for (downstream_id, channel_id) in keepalive_targets {
                 // Get the appropriate job for this downstream's channel and create keepalive
-                let keepalive_job = self.sv1_server_data.super_safe_lock(|data| {
-                    if let Some(last_job) = data.get_last_job(channel_id) {
-                        // Extract the original upstream job_id from the last job
-                        // If it's already a keepalive job, extract its original; otherwise use
-                        // as-is
-                        let original_job_id = Self::extract_original_job_id(&last_job.job_id)
-                            .unwrap_or_else(|| last_job.job_id.clone());
+                let keepalive_job = self.get_last_job(channel_id).and_then(|last_job| {
+                    // Extract the original upstream job_id from the last job
+                    // If it's already a keepalive job, extract its original; otherwise use
+                    // as-is
+                    let original_job_id = Self::extract_original_job_id(&last_job.job_id)
+                        .unwrap_or_else(|| last_job.job_id.clone());
 
-                        // Find the original upstream job to get its base time
-                        let original_job = data.get_original_job(&original_job_id, channel_id);
-                        let base_time = original_job
-                            .as_ref()
-                            .map(|j| j.time.0)
-                            .unwrap_or(last_job.time.0);
+                    // Find the original upstream job to get its base time
+                    let original_job = self.get_original_job(&original_job_id, channel_id);
+                    let base_time = original_job
+                        .as_ref()
+                        .map(|j| j.time.0)
+                        .unwrap_or(last_job.time.0);
 
-                        // Increment the time by the keepalive interval, but cap at
-                        // MAX_FUTURE_BLOCK_TIME from the original job's time to maintain consensus
-                        // validity (see https://github.com/bitcoin/bitcoin/blob/cd6e4c9235f763b8077cece69c2e3b2025cc8d0f/src/chain.h#L29)
-                        const MAX_FUTURE_BLOCK_TIME: u32 = 2 * 60 * 60;
-                        let new_time = last_job
-                            .time
-                            .0
-                            .saturating_add(keepalive_interval_secs as u32)
-                            .min(base_time.saturating_add(MAX_FUTURE_BLOCK_TIME));
+                    // Increment the time by the keepalive interval, but cap at
+                    // MAX_FUTURE_BLOCK_TIME from the original job's time to maintain consensus
+                    // validity (see https://github.com/bitcoin/bitcoin/blob/cd6e4c9235f763b8077cece69c2e3b2025cc8d0f/src/chain.h#L29)
+                    const MAX_FUTURE_BLOCK_TIME: u32 = 2 * 60 * 60;
+                    let new_time = last_job
+                        .time
+                        .0
+                        .saturating_add(keepalive_interval_secs as u32)
+                        .min(base_time.saturating_add(MAX_FUTURE_BLOCK_TIME));
 
-                        // If we've hit the cap, don't send another keepalive for this job
-                        if new_time == last_job.time.0 {
-                            return None;
-                        }
+                    // If we've hit the cap, don't send another keepalive for this job
+                    if new_time == last_job.time.0 {
+                        return None;
+                    }
 
-                        // Generate new keepalive job_id: {original_job_id}#{counter}
-                        let new_job_id = self.next_keepalive_job_id(&original_job_id);
+                    // Generate new keepalive job_id: {original_job_id}#{counter}
+                    let new_job_id = self.next_keepalive_job_id(&original_job_id);
 
-                        let mut keepalive_notify = last_job;
-                        keepalive_notify.job_id = new_job_id.clone();
-                        keepalive_notify.time = HexU32Be(new_time);
+                    let mut keepalive_notify = last_job;
+                    keepalive_notify.job_id = new_job_id.clone();
+                    keepalive_notify.time = HexU32Be(new_time);
 
-                        // Add the keepalive job to valid jobs so shares can be validated
-                        if let Some(ref mut aggregated_jobs) = data.aggregated_valid_jobs {
-                            aggregated_jobs.push(keepalive_notify.clone());
-                        }
-                        if let Some(ref mut non_aggregated_jobs) = data.non_aggregated_valid_jobs {
-                            if let Some(ch_id) = channel_id {
-                                if let Some(channel_jobs) = non_aggregated_jobs.get_mut(&ch_id) {
-                                    channel_jobs.push(keepalive_notify.clone());
-                                }
+                    // Add the keepalive job to valid jobs so shares can be validated
+                    if let Some(ref aggregated_jobs) = self.aggregated_valid_jobs {
+                        aggregated_jobs.super_safe_lock(|jobs| jobs.push(keepalive_notify.clone()));
+                    }
+                    if let Some(ref non_aggregated_jobs) = self.non_aggregated_valid_jobs {
+                        if let Some(ch_id) = channel_id {
+                            if let Some(ref mut channel_jobs) = non_aggregated_jobs.get_mut(&ch_id)
+                            {
+                                channel_jobs.push(keepalive_notify.clone());
                             }
                         }
-
-                        Some(keepalive_notify)
-                    } else {
-                        None
                     }
+
+                    Some(keepalive_notify)
                 });
 
                 if let Some(notify) = keepalive_job {
@@ -1099,6 +1099,40 @@ impl Sv1Server {
     #[inline]
     fn is_keepalive_job_id(job_id: &str) -> bool {
         job_id.contains(KEEPALIVE_JOB_ID_DELIMITER)
+    }
+
+    /// Gets the last job from the jobs storage.
+    /// In aggregated mode, returns the last job from the shared job list.
+    /// In non-aggregated mode, returns the last job for the specified channel.
+    pub fn get_last_job(
+        &self,
+        channel_id: Option<u32>,
+    ) -> Option<server_to_client::Notify<'static>> {
+        if let Some(jobs) = &self.aggregated_valid_jobs {
+            return jobs.super_safe_lock(|jobs| jobs.last().cloned());
+        }
+        let channel_jobs = self.non_aggregated_valid_jobs.as_ref()?;
+        let ch_id = channel_id?;
+        channel_jobs.get(&ch_id)?.last().cloned()
+    }
+
+    /// Gets the original upstream job by its job_id.
+    /// This is used to find the base time for keepalive time capping.
+    pub fn get_original_job(
+        &self,
+        job_id: &str,
+        channel_id: Option<u32>,
+    ) -> Option<server_to_client::Notify<'static>> {
+        if let Some(jobs) = &self.aggregated_valid_jobs {
+            return jobs.super_safe_lock(|jobs| jobs.iter().find(|j| j.job_id == job_id).cloned());
+        }
+        let channel_jobs = self.non_aggregated_valid_jobs.as_ref()?;
+        let ch_id = channel_id?;
+        channel_jobs
+            .get(&ch_id)?
+            .iter()
+            .find(|j| j.job_id == job_id)
+            .cloned()
     }
 }
 

@@ -1,16 +1,7 @@
-use std::collections::HashMap;
-use stratum_apps::{stratum_core::sv1_api::server_to_client, utils::types::ChannelId};
-
-use crate::{is_aggregated, is_non_aggregated};
+use stratum_apps::stratum_core::sv1_api::server_to_client;
 
 #[derive(Debug)]
-pub struct Sv1ServerData {
-    /// Job storage for aggregated mode - all Sv1 downstreams share the same jobs
-    pub aggregated_valid_jobs: Option<Vec<server_to_client::Notify<'static>>>,
-    /// Job storage for non-aggregated mode - each Sv1 downstream has its own jobs
-    pub non_aggregated_valid_jobs:
-        Option<HashMap<ChannelId, Vec<server_to_client::Notify<'static>>>>,
-}
+pub struct Sv1ServerData {}
 
 /// Delimiter used to separate original job ID from keepalive mutation counter.
 /// Format: `{original_job_id}#{counter}`
@@ -18,44 +9,7 @@ pub const KEEPALIVE_JOB_ID_DELIMITER: char = '#';
 
 impl Sv1ServerData {
     pub fn new() -> Self {
-        Self {
-            aggregated_valid_jobs: is_aggregated().then(Vec::new),
-            non_aggregated_valid_jobs: is_non_aggregated().then(HashMap::new),
-        }
-    }
-
-    /// Gets the last job from the jobs storage.
-    /// In aggregated mode, returns the last job from the shared job list.
-    /// In non-aggregated mode, returns the last job for the specified channel.
-    pub fn get_last_job(
-        &self,
-        channel_id: Option<u32>,
-    ) -> Option<server_to_client::Notify<'static>> {
-        if let Some(jobs) = &self.aggregated_valid_jobs {
-            return jobs.last().cloned();
-        }
-        let channel_jobs = self.non_aggregated_valid_jobs.as_ref()?;
-        let ch_id = channel_id?;
-        channel_jobs.get(&ch_id)?.last().cloned()
-    }
-
-    /// Gets the original upstream job by its job_id.
-    /// This is used to find the base time for keepalive time capping.
-    pub fn get_original_job(
-        &self,
-        job_id: &str,
-        channel_id: Option<u32>,
-    ) -> Option<server_to_client::Notify<'static>> {
-        if let Some(jobs) = &self.aggregated_valid_jobs {
-            return jobs.iter().find(|j| j.job_id == job_id).cloned();
-        }
-        let channel_jobs = self.non_aggregated_valid_jobs.as_ref()?;
-        let ch_id = channel_id?;
-        channel_jobs
-            .get(&ch_id)?
-            .iter()
-            .find(|j| j.job_id == job_id)
-            .cloned()
+        Self {}
     }
 }
 
