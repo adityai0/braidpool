@@ -22,8 +22,6 @@ pub struct Sv1ServerData {
         Option<HashMap<ChannelId, Vec<server_to_client::Notify<'static>>>>,
     /// Tracks pending target updates that are waiting for SetTarget response from upstream
     pub pending_target_updates: Vec<PendingTargetUpdate>,
-    /// The initial target used when opening channels - used when no downstreams remain
-    pub initial_target: Option<Target>,
 }
 
 /// Delimiter used to separate original job ID from keepalive mutation counter.
@@ -36,7 +34,6 @@ impl Sv1ServerData {
             aggregated_valid_jobs: is_aggregated().then(Vec::new),
             non_aggregated_valid_jobs: is_non_aggregated().then(HashMap::new),
             pending_target_updates: Vec::new(),
-            initial_target: None,
         }
     }
 
