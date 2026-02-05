@@ -1,10 +1,5 @@
-use std::{collections::HashMap, sync::Arc};
-use stratum_apps::{
-    custom_mutex::Mutex,
-    stratum_core::{
-        channels_sv2::client::extended::ExtendedChannel, mining_sv2::ExtendedExtranonce,
-    },
-    utils::types::ChannelId,
+use stratum_apps::stratum_core::{
+    channels_sv2::client::extended::ExtendedChannel, mining_sv2::ExtendedExtranonce,
 };
 
 /// Internal data structure for the ChannelManager.
@@ -18,9 +13,6 @@ pub struct ChannelManagerData {
     pub upstream_extended_channel: Option<ExtendedChannel<'static>>,
     /// Extranonce prefix factory for allocating unique prefixes in aggregated mode
     pub extranonce_prefix_factory: Option<ExtendedExtranonce>,
-    /// Per-channel extranonce factories for non-aggregated mode when extranonce adjustment is
-    /// needed
-    pub extranonce_factories: Option<HashMap<ChannelId, Arc<Mutex<ExtendedExtranonce>>>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -54,7 +46,6 @@ impl ChannelManagerData {
     pub fn reset_for_upstream_reconnection(&mut self) {
         self.upstream_extended_channel = None;
         self.extranonce_prefix_factory = None;
-        self.extranonce_factories = None;
         // Note: we intentionally preserve `mode`, `supported_extensions`, and `required_extensions`
         // as they are configuration settings
     }

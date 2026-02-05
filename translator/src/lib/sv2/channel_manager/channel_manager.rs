@@ -16,7 +16,7 @@ use stratum_apps::{
         extensions_sv2::{EXTENSION_TYPE_WORKER_HASHRATE_TRACKING, TLV_FIELD_TYPE_USER_IDENTITY},
         framing_sv2,
         handlers_sv2::{HandleExtensionsFromServerAsync, HandleMiningMessagesFromServerAsync},
-        mining_sv2::OpenExtendedMiningChannelSuccess,
+        mining_sv2::{ExtendedExtranonce, OpenExtendedMiningChannelSuccess},
         parsers_sv2::{AnyMessage, Mining, Tlv, TlvList},
     },
     task_manager::TaskManager,
@@ -70,6 +70,9 @@ pub struct ChannelManager {
     pub share_sequence_counters: Arc<DashMap<u32, u32>>,
     /// Extensions that have been successfully negotiated with the upstream server
     pub negotiated_extensions: Arc<Mutex<Vec<u16>>>,
+    /// Per-channel extranonce factories for non-aggregated mode when extranonce adjustment is
+    /// needed
+    pub extranonce_factories: Arc<DashMap<ChannelId, ExtendedExtranonce>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -117,6 +120,7 @@ impl ChannelManager {
             group_channels: Arc::new(DashMap::new()),
             share_sequence_counters: Arc::new(DashMap::new()),
             negotiated_extensions: Arc::new(Mutex::new(Vec::new())),
+            extranonce_factories: Arc::new(DashMap::new()),
         }
     }
 
@@ -161,6 +165,7 @@ impl ChannelManager {
                                 self.group_channels.clear();
                                 self.share_sequence_counters.clear();
                                 self.negotiated_extensions.super_safe_lock(|data| data.clear());
+                                self.extranonce_factories.clear();
                                 self.channel_manager_data.super_safe_lock(|data| {
                                     data.reset_for_upstream_reconnection();
                                 });
@@ -550,11 +555,7 @@ impl ChannelManager {
                         m.sequence_number = self.next_share_sequence_number(m.channel_id);
 
                         // Check if we have a per-channel factory for extranonce adjustment
-                        let channel_factory = self.channel_manager_data.super_safe_lock(|c| {
-                            c.extranonce_factories
-                                .as_ref()
-                                .and_then(|factories| factories.get(&m.channel_id).cloned())
-                        });
+                        let channel_factory = self.extranonce_factories.get(&m.channel_id);
 
                         if let Some(factory) = channel_factory {
                             // We need to adjust the extranonce for this channel
@@ -562,9 +563,7 @@ impl ChannelManager {
                                 self.extended_channels.get(&m.channel_id).map(|channel| {
                                     channel.read().unwrap().get_extranonce_prefix().clone()
                                 });
-                            let range0_len = factory
-                                .safe_lock(|e| e.get_range0_len())
-                                .expect("Failed to access extranonce factory range - this should not happen");
+                            let range0_len = factory.get_range0_len();
                             if let Some(downstream_extranonce_prefix) = downstream_extranonce_prefix
                             {
                                 // Skip the upstream prefix (range0) and take the remaining

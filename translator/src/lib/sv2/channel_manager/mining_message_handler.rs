@@ -7,7 +7,6 @@ use crate::{
     utils::{proxy_extranonce_prefix_len, AGGREGATED_CHANNEL_ID},
 };
 use stratum_apps::{
-    custom_mutex::Mutex,
     stratum_core::{
         bitcoin::Target,
         channels_sv2::client::{extended::ExtendedChannel, group::GroupChannel},
@@ -209,10 +208,8 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                         )
                         .expect("Failed to create ExtendedExtranonce factory - likely extranonce size configuration issue");
                         // Store the factory for this specific channel
-                        let factory = Arc::new(Mutex::new(extended_extranonce_factory));
-                        let new_extranonce_prefix = factory
-                            .safe_lock(|f| f.next_prefix_extended(downstream_extranonce_len))
-                            .expect("Failed to access extranonce factory")
+                        let mut factory = extended_extranonce_factory;
+                        let new_extranonce_prefix = factory.next_prefix_extended(downstream_extranonce_len)
                             .expect("Failed to generate extranonce prefix")
                             .into_b032();
                         // Create channel with the configured extranonce size
@@ -229,13 +226,9 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                             m.channel_id,
                             Arc::new(RwLock::new(new_downstream_extended_channel)),
                         );
-                        // Store factory for this channel (we'll need it for share processing)
-                        if channel_manager_data.extranonce_factories.is_none() {
-                            channel_manager_data.extranonce_factories = Some(std::collections::HashMap::new());
-                        }
-                        if let Some(ref mut factories) = channel_manager_data.extranonce_factories {
-                            factories.insert(m.channel_id, factory);
-                        }
+
+                        self.extranonce_factories.insert(m.channel_id, factory);
+
                         let new_open_extended_mining_channel_success = OpenExtendedMiningChannelSuccess {
                             request_id: m.request_id,
                             channel_id: m.channel_id,
