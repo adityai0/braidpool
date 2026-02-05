@@ -73,6 +73,8 @@ pub struct ChannelManager {
     /// Per-channel extranonce factories for non-aggregated mode when extranonce adjustment is
     /// needed
     pub extranonce_factories: Arc<DashMap<ChannelId, ExtendedExtranonce>>,
+    /// The upstream extended channel used in aggregated mode
+    pub upstream_extended_channel: Arc<Mutex<Option<ExtendedChannel<'static>>>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -121,6 +123,7 @@ impl ChannelManager {
             share_sequence_counters: Arc::new(DashMap::new()),
             negotiated_extensions: Arc::new(Mutex::new(Vec::new())),
             extranonce_factories: Arc::new(DashMap::new()),
+            upstream_extended_channel: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -166,6 +169,7 @@ impl ChannelManager {
                                 self.share_sequence_counters.clear();
                                 self.negotiated_extensions.super_safe_lock(|data| data.clear());
                                 self.extranonce_factories.clear();
+                                self.upstream_extended_channel.super_safe_lock(|data| *data = None);
                                 self.channel_manager_data.super_safe_lock(|data| {
                                     data.reset_for_upstream_reconnection();
                                 });
@@ -300,16 +304,16 @@ impl ChannelManager {
 
                 if is_aggregated() {
                     if self
-                        .channel_manager_data
-                        .super_safe_lock(|c| c.upstream_extended_channel.is_some())
+                        .upstream_extended_channel
+                        .super_safe_lock(|data| data.is_some())
                     {
                         // We already have the unique channel open and so we create a new
                         // extranonce prefix and we send the
                         // OpenExtendedMiningChannelSuccess message directly to the sv1
                         // server
-                        let target = self.channel_manager_data.super_safe_lock(|c| {
-                            *c.upstream_extended_channel.as_ref().unwrap().get_target()
-                        });
+                        let target = self
+                            .upstream_extended_channel
+                            .super_safe_lock(|data| *data.as_ref().unwrap().get_target());
                         let new_extranonce_prefix =
                             self.channel_manager_data.super_safe_lock(|c| {
                                 c.extranonce_prefix_factory
@@ -376,10 +380,10 @@ impl ChannelManager {
                                     })?;
                                 // Initialize the new downstream channel with state from upstream:
                                 // chain tip, active job, and any pending future jobs.
-                                let active_job_for_sv1_server =
-                                    self.channel_manager_data.super_safe_lock(|c| {
-                                        let (last_active_job, future_jobs, last_chain_tip) =
-                                            c.upstream_extended_channel.as_ref().map(|ch| {
+                                let active_job_for_sv1_server = || {
+                                    let (last_active_job, future_jobs, last_chain_tip) =
+                                        self.upstream_extended_channel.super_safe_lock(|data| {
+                                            data.as_ref().map(|ch| {
                                                 let active =
                                                     ch.get_active_job().map(|j| j.0.clone());
                                                 let futures = ch
@@ -389,36 +393,36 @@ impl ChannelManager {
                                                     .collect::<Vec<_>>();
                                                 let chain_tip = ch.get_chain_tip().cloned();
                                                 (active, futures, chain_tip)
-                                            })?;
+                                            })
+                                        })?;
 
-                                        let channel =
-                                            self.extended_channels.get(&next_channel_id)?;
-                                        let mut channel = channel.write().ok()?;
+                                    let channel = self.extended_channels.get(&next_channel_id)?;
+                                    let mut channel = channel.write().ok()?;
 
-                                        if let Some(chain_tip) = last_chain_tip {
-                                            channel.set_chain_tip(chain_tip);
-                                        }
+                                    if let Some(chain_tip) = last_chain_tip {
+                                        channel.set_chain_tip(chain_tip);
+                                    }
 
-                                        if let Some(mut job) = last_active_job.clone() {
-                                            job.channel_id = next_channel_id;
-                                            let _ = channel.on_new_extended_mining_job(job);
-                                        }
+                                    if let Some(mut job) = last_active_job.clone() {
+                                        job.channel_id = next_channel_id;
+                                        let _ = channel.on_new_extended_mining_job(job);
+                                    }
 
-                                        // Also add any future jobs so SetNewPrevHash won't fail
-                                        for mut future_job in future_jobs {
-                                            future_job.channel_id = next_channel_id;
-                                            let _ = channel.on_new_extended_mining_job(future_job);
-                                        }
+                                    // Also add any future jobs so SetNewPrevHash won't fail
+                                    for mut future_job in future_jobs {
+                                        future_job.channel_id = next_channel_id;
+                                        let _ = channel.on_new_extended_mining_job(future_job);
+                                    }
 
-                                        // set the channel id to the aggregated channel id
-                                        // before sending the message to the Sv1Server
-                                        last_active_job.map(|mut job| {
-                                            job.channel_id = AGGREGATED_CHANNEL_ID;
-                                            job
-                                        })
-                                    });
+                                    // set the channel id to the aggregated channel id
+                                    // before sending the message to the Sv1Server
+                                    last_active_job.map(|mut job| {
+                                        job.channel_id = AGGREGATED_CHANNEL_ID;
+                                        job
+                                    })
+                                };
 
-                                if let Some(job) = active_job_for_sv1_server {
+                                if let Some(job) = active_job_for_sv1_server() {
                                     self.channel_state
                                         .sv1_server_sender
                                         .send((Mining::NewExtendedMiningJob(job), None))
@@ -506,16 +510,12 @@ impl ChannelManager {
 
                     if is_aggregated()
                         && self
-                            .channel_manager_data
-                            .super_safe_lock(|c| c.upstream_extended_channel.is_some())
+                            .upstream_extended_channel
+                            .super_safe_lock(|data| data.is_some())
                     {
-                        let upstream_extended_channel_id =
-                            self.channel_manager_data.super_safe_lock(|c| {
-                                c.upstream_extended_channel
-                                    .as_ref()
-                                    .unwrap()
-                                    .get_channel_id()
-                            });
+                        let upstream_extended_channel_id = self
+                            .upstream_extended_channel
+                            .super_safe_lock(|data| data.as_ref().unwrap().get_channel_id());
 
                         // In aggregated mode, use a single sequence counter for all valid shares
                         m.sequence_number =
