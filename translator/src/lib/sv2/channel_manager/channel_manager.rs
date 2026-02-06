@@ -69,8 +69,7 @@ pub struct ChannelManager {
     pub share_sequence_counters: Arc<DashMap<u32, u32>>,
     /// Extensions that have been successfully negotiated with the upstream server
     pub negotiated_extensions: Arc<Mutex<Vec<u16>>>,
-    /// Per-channel extranonce factories for non-aggregated mode when extranonce adjustment is
-    /// needed
+    /// Extranonce factories containing per channel extranonces
     pub extranonce_factories: Arc<DashMap<ChannelId, ExtendedExtranonce>>,
     /// The upstream extended channel used in aggregated mode
     pub upstream_extended_channel: Arc<Mutex<Option<ExtendedChannel<'static>>>>,

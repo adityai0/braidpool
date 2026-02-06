@@ -140,10 +140,9 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                     downstream_extranonce_len,
                 );
 
-                // range 0 is the extranonce1 from upstream
-                // range 1 is the extranonce1 added by the tproxy
-                // range 2 is the extranonce2 used by the miner for rolling (this is the one
-                // that is used for rolling)
+                // range 0 is the extranonce_prefix from upstream
+                // range 1 is the extranonce_prefix added by the tproxy
+                // range 2 is the extranonce_size used by the miner for rolling
                 let range_0 = 0..extranonce_prefix.len();
                 let range1 = range_0.end..range_0.end + translator_proxy_extranonce_prefix_len;
                 let range2 = range1.end..range1.end + downstream_extranonce_len;
