@@ -178,10 +178,8 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                     true,
                     new_extranonce_size,
                 );
-                self.extended_channels.insert(
-                    m.channel_id,
-                    Arc::new(RwLock::new(new_downstream_extended_channel)),
-                );
+                self.extended_channels
+                    .insert(m.channel_id, new_downstream_extended_channel);
                 let new_open_extended_mining_channel_success = OpenExtendedMiningChannelSuccess {
                     request_id: m.request_id,
                     channel_id: m.channel_id,
@@ -237,10 +235,8 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                         true,
                         downstream_extranonce_len as u16,
                     );
-                    self.extended_channels.insert(
-                        m.channel_id,
-                        Arc::new(RwLock::new(new_downstream_extended_channel)),
-                    );
+                    self.extended_channels
+                        .insert(m.channel_id, new_downstream_extended_channel);
 
                     self.extranonce_factories.insert(m.channel_id, factory);
 
@@ -259,7 +255,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                 } else {
                     // Extranonce size matches, use as-is
                     self.extended_channels
-                        .insert(m.channel_id, Arc::new(RwLock::new(extended_channel)));
+                        .insert(m.channel_id, extended_channel);
                     Ok::<OpenExtendedMiningChannelSuccess<'static>, Self::Error>(m.into_static())
                 }
             }
@@ -454,12 +450,9 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                                 })?;
 
                             // update each extended channel state
-                            for extended_channel in self.extended_channels.iter() {
-                                let channel = extended_channel.value();
-                                let mut channel = channel.write().map_err(|e| {
-                                    error!("Failed to write channel: {:?}", e);
-                                    TproxyError::shutdown(TproxyErrorKind::PoisonLock)
-                                })?;
+                            for mut extended_channel in self.extended_channels.iter_mut() {
+                                let channel = extended_channel.value_mut();
+
                                 channel
                                     .on_new_extended_mining_job(m_static.clone())
                                     .map_err(|e| {
@@ -505,14 +498,10 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
 
                 // process the message for each individual channel on the group
                 for channel_id in group_channel.get_channel_ids() {
-                    let channel = self
+                    let mut channel = self
                         .extended_channels
-                        .get(channel_id)
+                        .get_mut(channel_id)
                         .ok_or(TproxyError::fallback(TproxyErrorKind::ChannelNotFound))?;
-                    let mut channel = channel.write().map_err(|e| {
-                        error!("Failed to write channel: {:?}", e);
-                        TproxyError::shutdown(TproxyErrorKind::PoisonLock)
-                    })?;
 
                     let mut job = m_static.clone();
                     job.channel_id = *channel_id;
@@ -535,7 +524,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
             // if the message was not sent to a group channel, we need to check if we're
             // working in aggregated mode
             } else {
-                let Some(channel) = self.extended_channels.get(&m_static.channel_id) else {
+                let Some(mut channel) = self.extended_channels.get_mut(&m_static.channel_id) else {
                     // we got a nonsense channel id, we should log an error and ignore the
                     // message
                     error!(
@@ -544,11 +533,6 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                     );
                     return Err(TproxyError::log(TproxyErrorKind::ChannelNotFound));
                 };
-
-                let mut channel = channel.write().map_err(|e| {
-                    error!("Failed to write to channel: {:?}", e);
-                    TproxyError::shutdown(TproxyErrorKind::PoisonLock)
-                })?;
 
                 // update channel state
                 channel
@@ -639,12 +623,9 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                                     })?;
 
                                 // update each extended channel state
-                                for extended_channel in self.extended_channels.iter() {
-                                    let channel = extended_channel.value();
-                                    let mut channel = channel.write().map_err(|e| {
-                                        error!("Failed to write channel: {:?}", e);
-                                        TproxyError::shutdown(TproxyErrorKind::PoisonLock)
-                                    })?;
+                                for mut extended_channel in self.extended_channels.iter_mut() {
+                                    let channel = extended_channel.value_mut();
+
                                     channel.on_set_new_prev_hash(m_static.clone()).map_err(
                                         |e| {
                                             error!("Failed to set new prev hash: {:?}", e);
@@ -699,15 +680,11 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                     // there's no aggregated channel, so we need to process the message for each
                     // individual channel on the group
                     for channel_id in group_channel.get_channel_ids() {
-                        let channel = self
+                        let mut channel = self
                             .extended_channels
-                            .get(channel_id)
+                            .get_mut(channel_id)
                             .ok_or(TproxyError::fallback(TproxyErrorKind::ChannelNotFound))?;
-                        let channel = channel.value();
-                        let mut channel = channel.write().map_err(|e| {
-                            error!("Failed to write channel: {:?}", e);
-                            TproxyError::shutdown(TproxyErrorKind::PoisonLock)
-                        })?;
+
                         channel
                             .on_set_new_prev_hash(m_static.clone())
                             .map_err(|e| {
@@ -734,7 +711,8 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                 // if the message was not sent to a group channel, and we're not in aggregated
                 // mode, we need to process the message for a specific channel
                 } else {
-                    let Some(channel) = self.extended_channels.get(&m_static.channel_id) else {
+                    let Some(mut channel) = self.extended_channels.get_mut(&m_static.channel_id)
+                    else {
                         // we got a nonsense channel id, we should log an error and ignore the
                         // message
                         warn!(
@@ -743,11 +721,6 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                         );
                         return Err(TproxyError::log(TproxyErrorKind::ChannelNotFound));
                     };
-
-                    let mut channel = channel.write().map_err(|e| {
-                        error!("Failed to write channel: {:?}", e);
-                        TproxyError::shutdown(TproxyErrorKind::PoisonLock)
-                    })?;
 
                     // update channel state
                     channel
@@ -880,16 +853,13 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                                     .try_into()
                                     .expect("target deserialization should never fail"),
                             ));
-                            self.extended_channels.iter().for_each(|channel| {
-                                let channel = channel.value();
-                                if let Ok(mut channel) = channel.write() {
-                                    channel.set_target(Target::from_le_bytes(
-                                        m.maximum_target
-                                            .inner_as_ref()
-                                            .try_into()
-                                            .expect("target deserialization should never fail"),
-                                    ));
-                                }
+                            self.extended_channels.iter_mut().for_each(|mut channel| {
+                                channel.set_target(Target::from_le_bytes(
+                                    m.maximum_target
+                                        .inner_as_ref()
+                                        .try_into()
+                                        .expect("target deserialization should never fail"),
+                                ));
                             });
 
                             let mut message = m_static.clone();
@@ -916,14 +886,11 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
 
                 // process the message for each individual channel on the group
                 for channel_id in group_channel.get_channel_ids() {
-                    let channel = self
+                    let mut channel = self
                         .extended_channels
-                        .get(channel_id)
+                        .get_mut(channel_id)
                         .ok_or(TproxyError::fallback(TproxyErrorKind::ChannelNotFound))?;
-                    let mut channel = channel.write().map_err(|e| {
-                        error!("Failed to write channel: {:?}", e);
-                        TproxyError::shutdown(TproxyErrorKind::PoisonLock)
-                    })?;
+
                     channel.set_target(Target::from_le_bytes(
                         m.maximum_target
                             .inner_as_ref()
@@ -938,7 +905,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
             // if the message was not sent to a group channel, and we're not in aggregated
             // mode, we need to process the message for a specific channel
             } else {
-                let Some(channel) = self.extended_channels.get(&m.channel_id) else {
+                let Some(mut channel) = self.extended_channels.get_mut(&m.channel_id) else {
                     // we got a nonsense channel id, we should log an error and ignore the
                     // message
                     warn!(
@@ -947,11 +914,8 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                     );
                     return Err(TproxyError::log(TproxyErrorKind::ChannelNotFound));
                 };
-                let mut channel_guard = channel.write().map_err(|e| {
-                    error!("Failed to write channel: {:?}", e);
-                    TproxyError::shutdown(TproxyErrorKind::PoisonLock)
-                })?;
-                channel_guard.set_target(Target::from_le_bytes(
+
+                channel.set_target(Target::from_le_bytes(
                     m.maximum_target
                         .inner_as_ref()
                         .try_into()
@@ -1039,15 +1003,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                         .get(&channel_id)
                         .ok_or_else(|| TproxyError::fallback(TproxyErrorKind::ChannelNotFound))?;
 
-                    let channel = extended_channel.value().clone();
-
-                    let full_extranonce_size = channel
-                        .read()
-                        .map_err(|e| {
-                            error!("Failed to read extended channel: {:?}", e);
-                            TproxyError::shutdown(TproxyErrorKind::PoisonLock)
-                        })?
-                        .get_full_extranonce_size();
+                    let full_extranonce_size = extended_channel.get_full_extranonce_size();
                     group_channel
                         .add_channel_id(channel_id, full_extranonce_size)
                         .map_err(|e| {
@@ -1069,15 +1025,7 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                         .get(&channel_id)
                         .ok_or_else(|| TproxyError::fallback(TproxyErrorKind::ChannelNotFound))?;
 
-                    let channel = extended_channel.value().clone();
-
-                    let full_extranonce_size = channel
-                        .read()
-                        .map_err(|e| {
-                            error!("Failed to read extended channel: {:?}", e);
-                            TproxyError::shutdown(TproxyErrorKind::PoisonLock)
-                        })?
-                        .get_full_extranonce_size();
+                    let full_extranonce_size = extended_channel.get_full_extranonce_size();
 
                     group_channel
                         .add_channel_id(channel_id, full_extranonce_size)

@@ -62,7 +62,7 @@ pub struct ChannelManager {
     /// downstream_extranonce_len)
     pub pending_channels: Arc<DashMap<DownstreamId, (String, Hashrate, usize)>>,
     /// Map of active extended channels by channel ID
-    pub extended_channels: Arc<DashMap<ChannelId, Arc<RwLock<ExtendedChannel<'static>>>>>,
+    pub extended_channels: Arc<DashMap<ChannelId, ExtendedChannel<'static>>>,
     /// Map of active group channels by group channel ID
     pub group_channels: Arc<DashMap<ChannelId, Arc<RwLock<GroupChannel<'static>>>>>,
     /// Share sequence number counter for tracking valid shares forwarded upstream.
@@ -340,10 +340,8 @@ impl ChannelManager {
                                     true,
                                     new_extranonce_size as u16,
                                 );
-                                self.extended_channels.insert(
-                                    next_channel_id,
-                                    Arc::new(RwLock::new(new_downstream_extended_channel)),
-                                );
+                                self.extended_channels
+                                    .insert(next_channel_id, new_downstream_extended_channel);
                                 let success_message = Mining::OpenExtendedMiningChannelSuccess(
                                     OpenExtendedMiningChannelSuccess {
                                         request_id: open_channel_msg.request_id,
@@ -385,22 +383,27 @@ impl ChannelManager {
                                             })
                                         })?;
 
-                                    let channel = self.extended_channels.get(&next_channel_id)?;
-                                    let mut channel = channel.write().ok()?;
-
                                     if let Some(chain_tip) = last_chain_tip {
-                                        channel.set_chain_tip(chain_tip);
+                                        self.extended_channels
+                                            .get_mut(&next_channel_id)?
+                                            .set_chain_tip(chain_tip);
                                     }
 
                                     if let Some(mut job) = last_active_job.clone() {
                                         job.channel_id = next_channel_id;
-                                        let _ = channel.on_new_extended_mining_job(job);
+                                        _ = self
+                                            .extended_channels
+                                            .get_mut(&next_channel_id)?
+                                            .on_new_extended_mining_job(job);
                                     }
 
                                     // Also add any future jobs so SetNewPrevHash won't fail
                                     for mut future_job in future_jobs {
                                         future_job.channel_id = next_channel_id;
-                                        let _ = channel.on_new_extended_mining_job(future_job);
+                                        _ = self
+                                            .extended_channels
+                                            .get_mut(&next_channel_id)?
+                                            .on_new_extended_mining_job(future_job);
                                     }
 
                                     // set the channel id to the aggregated channel id
@@ -478,19 +481,15 @@ impl ChannelManager {
                     })?;
             }
             Mining::SubmitSharesExtended(mut m) => {
-                let mut value = None;
-                {
-                    let extended_channel = self.extended_channels.get(&m.channel_id);
-                    if let Some(extended_channel) = extended_channel {
-                        let channel = extended_channel.write();
-                        if let Ok(mut channel) = channel {
-                            value = Some((
-                                channel.validate_share(m.clone()),
-                                channel.get_share_accounting().clone(),
-                            ));
-                        }
-                    }
-                };
+                let value =
+                    self.extended_channels
+                        .get_mut(&m.channel_id)
+                        .map(|mut extended_channel| {
+                            (
+                                extended_channel.validate_share(m.clone()),
+                                extended_channel.get_share_accounting().clone(),
+                            )
+                        });
                 if let Some((Ok(_result), _share_accounting)) = value {
                     info!(
                         "SubmitSharesExtended: valid share, forwarding it to upstream | channel_id: {}, sequence_number: {} ☑️",
@@ -514,7 +513,7 @@ impl ChannelManager {
                         let downstream_extranonce_prefix = self
                             .extended_channels
                             .get(&m.channel_id)
-                            .map(|channel| channel.read().unwrap().get_extranonce_prefix().clone());
+                            .map(|channel| channel.get_extranonce_prefix().clone());
                         // Get the length of the upstream prefix (range0)
                         let range0_len = self
                             .extranonce_factories
@@ -547,10 +546,10 @@ impl ChannelManager {
 
                         if let Some(factory) = channel_factory {
                             // We need to adjust the extranonce for this channel
-                            let downstream_extranonce_prefix =
-                                self.extended_channels.get(&m.channel_id).map(|channel| {
-                                    channel.read().unwrap().get_extranonce_prefix().clone()
-                                });
+                            let downstream_extranonce_prefix = self
+                                .extended_channels
+                                .get(&m.channel_id)
+                                .map(|channel| channel.get_extranonce_prefix().clone());
                             let range0_len = factory.get_range0_len();
                             if let Some(downstream_extranonce_prefix) = downstream_extranonce_prefix
                             {
