@@ -1,12 +1,13 @@
 use stratum_apps::stratum_core::sv1_api::{
-    client_to_server, json_rpc, server_to_client,
+    client_to_server, json_rpc,
+    server_to_client::{self, Notify},
     utils::{Extranonce, HexU32Be},
     IsServer,
 };
 use tracing::{debug, info, warn};
 
 use crate::{
-    error,
+    error, is_aggregated,
     sv1::{downstream::SubmitShareWithChannelId, Sv1Server},
     utils::validate_sv1_share,
 };
@@ -105,29 +106,33 @@ impl IsServer<'static> for Sv1Server {
 
         let job_id = &request.job_id;
 
-        let channel_id = match downstream
+        let Some(channel_id) = downstream
             .downstream_data
             .super_safe_lock(|data| data.channel_id)
-        {
-            Some(id) => id,
-            None => return false,
+        else {
+            return false;
         };
 
-        let aggregated_job = self.aggregated_valid_jobs.as_ref().and_then(|jobs| {
-            jobs.super_safe_lock(|jobs| jobs.iter().find(|j| j.job_id == *job_id).cloned())
-        });
+        let find_job =
+            |jobs: &[Notify<'static>]| jobs.iter().find(|j| j.job_id == *job_id).cloned();
 
-        let non_aggregated_job = self
-            .non_aggregated_valid_jobs
-            .as_ref()
-            .and_then(|jobs| jobs.get(&channel_id))
-            .and_then(|jobs| jobs.iter().find(|j| j.job_id == *job_id).cloned());
+        let job = if is_aggregated() {
+            // aggregated_valid_jobs is always defined in aggregate mode.
+            self.aggregated_valid_jobs
+                .as_ref()
+                .unwrap()
+                .super_safe_lock(|jobs| find_job(jobs))
+        } else {
+            // non-aggregated_valid_jobs is always defined in non-aggregate mode.
+            self.non_aggregated_valid_jobs
+                .as_ref()
+                .unwrap()
+                .get(&channel_id)
+                .and_then(|jobs| find_job(jobs.as_ref()))
+        };
 
-        let job = aggregated_job.or(non_aggregated_job);
-
-        let job = match job {
-            Some(job) => job,
-            None => return false,
+        let Some(job) = job else {
+            return false;
         };
 
         downstream.downstream_data.super_safe_lock(|data| {
