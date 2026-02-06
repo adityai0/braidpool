@@ -7,7 +7,7 @@ use crate::{
         downstream::downstream::Downstream,
         sv1_server::{channel::Sv1ServerChannelState, KEEPALIVE_JOB_ID_DELIMITER},
     },
-    utils::ShutdownMessage,
+    utils::{ShutdownMessage, AGGREGATED_CHANNEL_ID},
 };
 use async_channel::{Receiver, Sender};
 use dashmap::DashMap;
@@ -77,11 +77,9 @@ pub struct Sv1Server {
     pub(crate) prevhashes: Arc<DashMap<ChannelId, SetNewPrevHash<'static>>>,
     /// Tracks pending target updates that are waiting for SetTarget response from upstream
     pub(crate) pending_target_updates: Arc<Mutex<Vec<PendingTargetUpdate>>>,
-    /// Job storage for non-aggregated mode - each Sv1 downstream has its own jobs
-    pub(crate) non_aggregated_valid_jobs:
-        Option<Arc<DashMap<ChannelId, Vec<server_to_client::Notify<'static>>>>>,
-    /// Job storage for aggregated mode - all Sv1 downstreams share the same jobs
-    pub(crate) aggregated_valid_jobs: Option<Arc<Mutex<Vec<server_to_client::Notify<'static>>>>>,
+    /// Valid Sv1 jobs storage, containing only a single shared entry (AGGREGATED_CHANNEL_ID) in
+    /// case of channels aggregation (aggregated mode)
+    pub(crate) valid_sv1_jobs: Arc<DashMap<ChannelId, Vec<server_to_client::Notify<'static>>>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -125,8 +123,7 @@ impl Sv1Server {
             vardiff: Arc::new(DashMap::new()),
             prevhashes: Arc::new(DashMap::new()),
             pending_target_updates: Arc::new(Mutex::new(Vec::new())),
-            non_aggregated_valid_jobs: is_non_aggregated().then(|| Arc::new(DashMap::new())),
-            aggregated_valid_jobs: is_aggregated().then(|| Arc::new(Mutex::new(Vec::new()))),
+            valid_sv1_jobs: Arc::new(DashMap::new()),
         }
     }
 
@@ -655,22 +652,17 @@ impl Sv1Server {
 
                     // Update job storage based on the configured mode
                     let notify_parsed = notify.clone();
-                    if let Some(ref aggregated_jobs) = self.aggregated_valid_jobs {
-                        // Aggregated mode: all downstreams share the same jobs
-                        if clean_jobs {
-                            aggregated_jobs.super_safe_lock(|jobs| jobs.clear());
-                        }
-                        aggregated_jobs.super_safe_lock(|jobs| jobs.push(notify_parsed));
-                    } else if let Some(ref non_aggregated_jobs) = self.non_aggregated_valid_jobs {
-                        // Non-aggregated mode: per-downstream jobs
-                        let mut channel_jobs = non_aggregated_jobs
-                            .entry(m.channel_id)
-                            .or_insert_with(Vec::new);
-                        if clean_jobs {
-                            channel_jobs.clear();
-                        }
-                        channel_jobs.push(notify_parsed);
+                    let job_channel_id = if is_non_aggregated() {
+                        m.channel_id
+                    } else {
+                        AGGREGATED_CHANNEL_ID
+                    };
+
+                    let mut channel_jobs = self.valid_sv1_jobs.entry(job_channel_id).or_default();
+                    if clean_jobs {
+                        channel_jobs.clear();
                     }
+                    channel_jobs.push(notify_parsed);
 
                     let _ = self
                         .sv1_server_channel_state
@@ -1033,17 +1025,15 @@ impl Sv1Server {
                     keepalive_notify.time = HexU32Be(new_time);
 
                     // Add the keepalive job to valid jobs so shares can be validated
-                    if let Some(ref aggregated_jobs) = self.aggregated_valid_jobs {
-                        aggregated_jobs.super_safe_lock(|jobs| jobs.push(keepalive_notify.clone()));
-                    }
-                    if let Some(ref non_aggregated_jobs) = self.non_aggregated_valid_jobs {
-                        if let Some(ch_id) = channel_id {
-                            if let Some(ref mut channel_jobs) = non_aggregated_jobs.get_mut(&ch_id)
-                            {
-                                channel_jobs.push(keepalive_notify.clone());
-                            }
-                        }
-                    }
+                    let job_channel_id = if is_aggregated() {
+                        Some(AGGREGATED_CHANNEL_ID)
+                    } else {
+                        channel_id
+                    };
+
+                    _ = job_channel_id
+                        .and_then(|ch_id| self.valid_sv1_jobs.get_mut(&ch_id))
+                        .map(|mut jobs| jobs.push(keepalive_notify.clone()));
 
                     Some(keepalive_notify)
                 });
@@ -1104,12 +1094,15 @@ impl Sv1Server {
         &self,
         channel_id: Option<u32>,
     ) -> Option<server_to_client::Notify<'static>> {
-        if let Some(jobs) = &self.aggregated_valid_jobs {
-            return jobs.super_safe_lock(|jobs| jobs.last().cloned());
-        }
-        let channel_jobs = self.non_aggregated_valid_jobs.as_ref()?;
-        let ch_id = channel_id?;
-        channel_jobs.get(&ch_id)?.last().cloned()
+        let channel_id = if is_aggregated() {
+            AGGREGATED_CHANNEL_ID
+        } else {
+            channel_id?
+        };
+
+        self.valid_sv1_jobs
+            .get(&channel_id)
+            .and_then(|jobs| jobs.last().cloned())
     }
 
     /// Gets the original upstream job by its job_id.
@@ -1119,13 +1112,14 @@ impl Sv1Server {
         job_id: &str,
         channel_id: Option<u32>,
     ) -> Option<server_to_client::Notify<'static>> {
-        if let Some(jobs) = &self.aggregated_valid_jobs {
-            return jobs.super_safe_lock(|jobs| jobs.iter().find(|j| j.job_id == job_id).cloned());
-        }
-        let channel_jobs = self.non_aggregated_valid_jobs.as_ref()?;
-        let ch_id = channel_id?;
-        channel_jobs
-            .get(&ch_id)?
+        let channel_id = if is_aggregated() {
+            AGGREGATED_CHANNEL_ID
+        } else {
+            channel_id?
+        };
+
+        self.valid_sv1_jobs
+            .get(&channel_id)?
             .iter()
             .find(|j| j.job_id == job_id)
             .cloned()

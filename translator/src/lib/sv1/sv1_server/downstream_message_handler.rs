@@ -9,7 +9,7 @@ use tracing::{debug, info, warn};
 use crate::{
     error, is_aggregated,
     sv1::{downstream::SubmitShareWithChannelId, Sv1Server},
-    utils::validate_sv1_share,
+    utils::{validate_sv1_share, AGGREGATED_CHANNEL_ID},
 };
 
 // Implements `IsServer` for `Sv1Server` to handle the Sv1 messages.
@@ -113,23 +113,19 @@ impl IsServer<'static> for Sv1Server {
             return false;
         };
 
+        let channel_id = if is_aggregated() {
+            AGGREGATED_CHANNEL_ID
+        } else {
+            channel_id
+        };
+
         let find_job =
             |jobs: &[Notify<'static>]| jobs.iter().find(|j| j.job_id == *job_id).cloned();
 
-        let job = if is_aggregated() {
-            // aggregated_valid_jobs is always defined in aggregate mode.
-            self.aggregated_valid_jobs
-                .as_ref()
-                .unwrap()
-                .super_safe_lock(|jobs| find_job(jobs))
-        } else {
-            // non-aggregated_valid_jobs is always defined in non-aggregate mode.
-            self.non_aggregated_valid_jobs
-                .as_ref()
-                .unwrap()
-                .get(&channel_id)
-                .and_then(|jobs| find_job(jobs.as_ref()))
-        };
+        let job = self
+            .valid_sv1_jobs
+            .get(&channel_id)
+            .and_then(|jobs| find_job(jobs.as_ref()));
 
         let Some(job) = job else {
             return false;
