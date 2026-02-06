@@ -655,19 +655,28 @@ impl ChannelManager {
                 debug!("Received UpdateChannel from SV1Server: {:?}", m);
 
                 if is_aggregated() {
-                    let upstream_extended_channel_id =
-                        self.channel_manager_data.super_safe_lock(|c| {
-                            c.upstream_extended_channel
-                                .as_ref()
-                                .unwrap()
-                                .read()
-                                .unwrap()
-                                .get_channel_id()
-                        });
-                    // We need to set the channel id to the upstream extended
-                    // channel id
-                    m.channel_id = upstream_extended_channel_id;
+                    // Update the local upstream channel's nominal hashrate so
+                    // that monitoring reports a value consistent with the
+                    // downstream vardiff estimate.
+                    self.channel_manager_data.super_safe_lock(|c| {
+                        if let Some(ref upstream_channel) = c.upstream_extended_channel {
+                            if let Ok(mut ch) = upstream_channel.write() {
+                                ch.set_nominal_hashrate(m.nominal_hash_rate);
+                                m.channel_id = ch.get_channel_id();
+                            }
+                        }
+                    });
+                } else {
+                    // Non-aggregated: update the specific channel's nominal hashrate
+                    self.channel_manager_data.super_safe_lock(|c| {
+                        if let Some(channel) = c.extended_channels.get(&m.channel_id) {
+                            if let Ok(mut ch) = channel.write() {
+                                ch.set_nominal_hashrate(m.nominal_hash_rate);
+                            }
+                        }
+                    });
                 }
+
                 info!(
                     "Sending UpdateChannel message to upstream for channel_id: {:?}",
                     m.channel_id
