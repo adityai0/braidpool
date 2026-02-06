@@ -677,7 +677,22 @@ impl ChannelManager {
                     })?;
             }
             Mining::CloseChannel(m) => {
-                debug!("Received CloseChannel from SV1Server: {m}");
+                debug!("Received CloseChannel from Sv1Server: {m}");
+
+                // Remove from extended_channels
+                if self.extended_channels.remove(&m.channel_id).is_some() {
+                    debug!("Removed channel {} from extended_channels before sending CloseChannel to upstream", m.channel_id);
+                } else {
+                    warn!("Attempted to remove channel {} from extended_channels but it was not found", m.channel_id);
+                }
+                // Remove from any group channels that contain it
+                for mut group_channel in self.group_channels.iter_mut() {
+                    if group_channel.get_channel_ids().contains(&m.channel_id) {
+                        group_channel.remove_channel_id(m.channel_id);
+                        debug!("Removed channel {} from group channel before sending CloseChannel to upstream", m.channel_id);
+                    }
+                }
+
                 let message = Mining::CloseChannel(m);
                 let sv2_frame: Sv2Frame = AnyMessage::Mining(message)
                     .try_into()
@@ -688,7 +703,7 @@ impl ChannelManager {
                     .send(sv2_frame)
                     .await
                     .map_err(|e| {
-                        error!("Failed to send UpdateChannel message to upstream: {:?}", e);
+                        error!("Failed to send CloseChannel message to upstream: {:?}", e);
                         TproxyError::fallback(TproxyErrorKind::ChannelErrorSender)
                     })?;
             }
