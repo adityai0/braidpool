@@ -218,6 +218,7 @@ impl Sv1Server {
 
                                     let channel_id = downstream.downstream_data.super_safe_lock(|d| d.channel_id);
                                     if let Some(channel_id) = channel_id {
+                                        self.prevhashes.remove(&channel_id);
                                         if is_non_aggregated() {
                                             info!("Sending CloseChannel message: {channel_id} for downstream: {downstream_id}");
                                             let reason_code =  Str0255::try_from("downstream disconnected".to_string()).unwrap();
@@ -236,6 +237,7 @@ impl Sv1Server {
                                 if self.config.downstream_difficulty_config.enable_vardiff {
                                     self.vardiff.clear();
                                 }
+                                self.prevhashes.clear();
                                 self.downstreams.clear();
                                 info!("Fallback in processing stopping sv1 server");
                                 drop(tx);
