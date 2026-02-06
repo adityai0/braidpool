@@ -7,7 +7,7 @@ use crate::{
 };
 use async_channel::{Receiver, Sender};
 use dashmap::DashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use stratum_apps::{
     custom_mutex::Mutex,
     stratum_core::{
@@ -64,7 +64,7 @@ pub struct ChannelManager {
     /// Map of active extended channels by channel ID
     pub extended_channels: Arc<DashMap<ChannelId, ExtendedChannel<'static>>>,
     /// Map of active group channels by group channel ID
-    pub group_channels: Arc<DashMap<ChannelId, Arc<RwLock<GroupChannel<'static>>>>>,
+    pub group_channels: Arc<DashMap<ChannelId, GroupChannel<'static>>>,
     /// Share sequence number counter for tracking valid shares forwarded upstream.
     /// In aggregated mode: single counter for all shares going to the upstream channel.
     /// In non-aggregated mode: one counter per downstream channel.
