@@ -56,6 +56,8 @@ pub struct ChannelManager {
     pub supported_extensions: Vec<u16>,
     /// Extensions that the translator requires (must be supported by server)
     pub required_extensions: Vec<u16>,
+    /// The upstream extended channel used in aggregated mode
+    pub upstream_extended_channel: Arc<Mutex<Option<ExtendedChannel<'static>>>>,
     /// Store pending channel info by downstream_id: (user_identity, hashrate,
     /// downstream_extranonce_len)
     pub pending_channels: Arc<DashMap<DownstreamId, (String, Hashrate, usize)>>,
@@ -71,8 +73,6 @@ pub struct ChannelManager {
     pub negotiated_extensions: Arc<Mutex<Vec<u16>>>,
     /// Extranonce factories containing per channel extranonces
     pub extranonce_factories: Arc<DashMap<ChannelId, ExtendedExtranonce>>,
-    /// The upstream extended channel used in aggregated mode
-    pub upstream_extended_channel: Arc<Mutex<Option<ExtendedChannel<'static>>>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
