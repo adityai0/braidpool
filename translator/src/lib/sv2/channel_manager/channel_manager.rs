@@ -644,23 +644,17 @@ impl ChannelManager {
                     // Update the local upstream channel's nominal hashrate so
                     // that monitoring reports a value consistent with the
                     // downstream vardiff estimate.
-                    self.channel_manager_data.super_safe_lock(|c| {
-                        if let Some(ref upstream_channel) = c.upstream_extended_channel {
-                            if let Ok(mut ch) = upstream_channel.write() {
-                                ch.set_nominal_hashrate(m.nominal_hash_rate);
-                                m.channel_id = ch.get_channel_id();
-                            }
+                    self.upstream_extended_channel.super_safe_lock(|channel| {
+                        if let Some(ref mut upstream_channel) = channel {
+                            upstream_channel.set_nominal_hashrate(m.nominal_hash_rate);
+                            m.channel_id = upstream_channel.get_channel_id();
                         }
                     });
                 } else {
                     // Non-aggregated: update the specific channel's nominal hashrate
-                    self.channel_manager_data.super_safe_lock(|c| {
-                        if let Some(channel) = c.extended_channels.get(&m.channel_id) {
-                            if let Ok(mut ch) = channel.write() {
-                                ch.set_nominal_hashrate(m.nominal_hash_rate);
-                            }
-                        }
-                    });
+                    if let Some(ref mut channel) = self.extended_channels.get_mut(&m.channel_id) {
+                        channel.set_nominal_hashrate(m.nominal_hash_rate);
+                    }
                 }
 
                 info!(
