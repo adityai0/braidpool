@@ -125,8 +125,9 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
             // If we are in aggregated mode, we need to create a new extranonce prefix and
             // insert the extended channel into the map
             if is_aggregated() {
-                self.upstream_extended_channel
-                    .super_safe_lock(|data| *data = Some(extended_channel.clone()));
+                // Store the upstream extended channel under AGGREGATED_CHANNEL_ID
+                self.extended_channels
+                    .insert(AGGREGATED_CHANNEL_ID, extended_channel.clone());
 
                 let upstream_extranonce_prefix: Extranonce = m.extranonce_prefix.clone().into();
                 let translator_proxy_extranonce_prefix_len = proxy_extranonce_prefix_len(
@@ -398,73 +399,56 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
 
             // are we in aggregated mode?
             if is_aggregated() {
-                self.upstream_extended_channel
-                    .super_safe_lock(|upstream_channel| {
-                        let aggregated_channel = upstream_channel
-                            .as_mut()
-                            .ok_or(TproxyError::fallback(TproxyErrorKind::ChannelNotFound))?;
+                // Validate that the message is for the aggregated channel or its group
+                let aggregated_channel_id = self
+                    .extended_channels
+                    .get(&AGGREGATED_CHANNEL_ID)
+                    .ok_or(TproxyError::fallback(TproxyErrorKind::ChannelNotFound))?
+                    .get_channel_id();
 
-                        // here, we are assuming that since we are in aggregated mode, there should
-                        // be only one single group channel and the
-                        // aggregated channel must belong to it
-                        let group_channel = self.group_channels.iter().next();
-                        let Some(group_channel) = group_channel else {
-                            error!("Aggregated channel does not belong to any group channel");
-                            return Err(TproxyError::fallback(TproxyErrorKind::ChannelNotFound));
-                        };
+                // here, we are assuming that since we are in aggregated mode, there should
+                // be only one single group channel and the
+                // aggregated channel must belong to it
+                let group_channel = self.group_channels.iter().next();
+                let Some(group_channel) = group_channel else {
+                    error!("Aggregated channel does not belong to any group channel");
+                    return Err(TproxyError::fallback(TproxyErrorKind::ChannelNotFound));
+                };
 
-                        let group_channel_id = group_channel.get_group_channel_id();
+                let group_channel_id = group_channel.get_group_channel_id();
 
-                        // was the message sent to the aggregated channel?
-                        if aggregated_channel.get_channel_id() == m_static.channel_id
-                            || group_channel_id == m_static.channel_id
-                        {
-                            // update upstream channel state
-                            aggregated_channel
-                                .on_new_extended_mining_job(m_static.clone())
-                                .map_err(|e| {
-                                    error!("Failed to process new extended mining job: {:?}", e);
-                                    TproxyError::fallback(
-                                        TproxyErrorKind::FailedToProcessNewExtendedMiningJob,
-                                    )
-                                })?;
+                // was the message sent to the aggregated channel?
+                if aggregated_channel_id == m_static.channel_id
+                    || group_channel_id == m_static.channel_id
+                {
+                    // update all extended channel states
+                    for mut extended_channel in self.extended_channels.iter_mut() {
+                        extended_channel
+                            .on_new_extended_mining_job(m_static.clone())
+                            .map_err(|e| {
+                                error!("Failed to process new extended mining job: {:?}", e);
+                                TproxyError::fallback(
+                                    TproxyErrorKind::FailedToProcessNewExtendedMiningJob,
+                                )
+                            })?;
+                    }
 
-                            // update each extended channel state
-                            for mut extended_channel in self.extended_channels.iter_mut() {
-                                let channel = extended_channel.value_mut();
-
-                                channel
-                                    .on_new_extended_mining_job(m_static.clone())
-                                    .map_err(|e| {
-                                        error!(
-                                            "Failed to process new extended mining job: {:?}",
-                                            e
-                                        );
-                                        TproxyError::fallback(
-                                            TproxyErrorKind::FailedToProcessNewExtendedMiningJob,
-                                        )
-                                    })?;
-                            }
-
-                            // only send this message to the SV1Server if it's not a future job
-                            if !m_static.is_future() {
-                                let mut new_extended_mining_job_message = m_static.clone();
-                                new_extended_mining_job_message.channel_id = AGGREGATED_CHANNEL_ID; // this is done so that every aggregated downstream
-                                                                                                    // will receive the NewExtendedMiningJob message
-                                new_extended_mining_job_messages
-                                    .push(new_extended_mining_job_message);
-                            }
-                            Ok(())
-                        } else {
-                            // we got a nonsense channel id, we should log an error and ignore the
-                            // message
-                            error!(
-                                "Channel not found: {}, ignoring NewExtendedMiningJob message",
-                                m_static.channel_id
-                            );
-                            Err(TproxyError::log(TproxyErrorKind::ChannelNotFound))
-                        }
-                    })?;
+                    // only send this message to the SV1Server if it's not a future job
+                    if !m_static.is_future() {
+                        let mut new_extended_mining_job_message = m_static.clone();
+                        new_extended_mining_job_message.channel_id = AGGREGATED_CHANNEL_ID; // this is done so that every aggregated downstream
+                                                                                            // will receive the NewExtendedMiningJob message
+                        new_extended_mining_job_messages.push(new_extended_mining_job_message);
+                    }
+                } else {
+                    // we got a nonsense channel id, we should log an error and ignore the
+                    // message
+                    error!(
+                        "Channel not found: {}, ignoring NewExtendedMiningJob message",
+                        m_static.channel_id
+                    );
+                    return Err(TproxyError::log(TproxyErrorKind::ChannelNotFound));
+                }
             // we're not in aggregated mode
             // was the message sent to a group channel?
             } else if let Some(mut group_channel) = self.group_channels.get_mut(&m.channel_id) {
@@ -557,81 +541,64 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                 let mut new_extended_mining_job_messages = Vec::new();
 
                 if is_aggregated() {
-                    self.upstream_extended_channel
-                        .super_safe_lock(|upstream_channel| {
-                            let aggregated_channel = upstream_channel
-                                .as_mut()
-                                .ok_or(TproxyError::fallback(TproxyErrorKind::ChannelNotFound))?;
+                    // Validate that the message is for the aggregated channel or its group
+                    let aggregated_channel_id = self
+                        .extended_channels
+                        .get(&AGGREGATED_CHANNEL_ID)
+                        .ok_or(TproxyError::fallback(TproxyErrorKind::ChannelNotFound))?
+                        .get_channel_id();
 
-                            // does aggregated channel belong to some group channel?
-                            // here, we are assuming that since we are in aggregated mode, there
-                            // should be only one single group channle
-                            // and the aggregated channel must belong to
-                            // it
-                            let group_channel = self.group_channels.iter().next();
-                            let Some(group_channel) = group_channel else {
-                                error!("Aggregated channel does not belong to any group channel");
-                                return Err(TproxyError::fallback(
-                                    TproxyErrorKind::ChannelNotFound,
-                                ));
-                            };
+                    // does aggregated channel belong to some group channel?
+                    // here, we are assuming that since we are in aggregated mode, there
+                    // should be only one single group channel
+                    // and the aggregated channel must belong to it
+                    let group_channel = self.group_channels.iter().next();
+                    let Some(group_channel) = group_channel else {
+                        error!("Aggregated channel does not belong to any group channel");
+                        return Err(TproxyError::fallback(TproxyErrorKind::ChannelNotFound));
+                    };
 
-                            let group_channel_id = group_channel.get_group_channel_id();
+                    let group_channel_id = group_channel.get_group_channel_id();
 
-                            // was the message sent to the aggregated channel?
-                            if aggregated_channel.get_channel_id() == m.channel_id
-                                || group_channel_id == m.channel_id
-                            {
-                                // update aggregated channel state
-                                aggregated_channel
-                                    .on_set_new_prev_hash(m_static.clone())
-                                    .map_err(|e| {
-                                        error!("Failed to set new prev hash: {:?}", e);
-                                        TproxyError::fallback(
-                                            TproxyErrorKind::FailedToProcessSetNewPrevHash,
-                                        )
-                                    })?;
+                    // was the message sent to the aggregated channel?
+                    if aggregated_channel_id == m.channel_id || group_channel_id == m.channel_id {
+                        // update all extended channel states
+                        for mut extended_channel in self.extended_channels.iter_mut() {
+                            extended_channel
+                                .on_set_new_prev_hash(m_static.clone())
+                                .map_err(|e| {
+                                    error!("Failed to set new prev hash: {:?}", e);
+                                    TproxyError::fallback(
+                                        TproxyErrorKind::FailedToProcessSetNewPrevHash,
+                                    )
+                                })?;
+                        }
 
-                                // update each extended channel state
-                                for mut extended_channel in self.extended_channels.iter_mut() {
-                                    let channel = extended_channel.value_mut();
+                        // make sure the SetNewPrevHash message is sent to the aggregated
+                        // channel
+                        m_static.channel_id = AGGREGATED_CHANNEL_ID;
+                        set_new_prev_hash_messages.push(m_static.clone());
 
-                                    channel.on_set_new_prev_hash(m_static.clone()).map_err(
-                                        |e| {
-                                            error!("Failed to set new prev hash: {:?}", e);
-                                            TproxyError::fallback(
-                                                TproxyErrorKind::FailedToProcessSetNewPrevHash,
-                                            )
-                                        },
-                                    )?;
-                                }
-
-                                // make sure the SetNewPrevHash message is sent to the aggregated
-                                // channel
-                                m_static.channel_id = AGGREGATED_CHANNEL_ID;
-                                set_new_prev_hash_messages.push(m_static.clone());
-
-                                // for the aggregated channel, send one NewExtendedMiningJob message
-                                // to the SV1Server
-                                let mut new_extended_mining_job_message = aggregated_channel
-                                    .get_active_job()
-                                    .expect("active job must exist")
-                                    .clone();
-                                new_extended_mining_job_message.0.channel_id =
-                                    AGGREGATED_CHANNEL_ID;
-                                new_extended_mining_job_messages
-                                    .push(new_extended_mining_job_message.0);
-                                Ok(())
-                            } else {
-                                // we got a nonsense channel id, we should log an error and ignore
-                                // the message
-                                warn!(
-                                    "Channel not found: {}, ignoring SetNewPrevHash message",
-                                    m_static.channel_id
-                                );
-                                Err(TproxyError::log(TproxyErrorKind::ChannelNotFound))
-                            }
-                        })?;
+                        // for the aggregated channel, send one NewExtendedMiningJob message
+                        // to the SV1Server (get active job after updating all channels)
+                        let mut new_extended_mining_job_message = self
+                            .extended_channels
+                            .get(&AGGREGATED_CHANNEL_ID)
+                            .expect("aggregated channel must exist")
+                            .get_active_job()
+                            .expect("active job must exist")
+                            .clone();
+                        new_extended_mining_job_message.0.channel_id = AGGREGATED_CHANNEL_ID;
+                        new_extended_mining_job_messages.push(new_extended_mining_job_message.0);
+                    } else {
+                        // we got a nonsense channel id, we should log an error and ignore
+                        // the message
+                        warn!(
+                            "Channel not found: {}, ignoring SetNewPrevHash message",
+                            m_static.channel_id
+                        );
+                        return Err(TproxyError::log(TproxyErrorKind::ChannelNotFound));
+                    }
                 // we are not in aggregated mode.. was the message sent to a group channel?
                 } else if let Some(mut group_channel) = self.group_channels.get_mut(&m.channel_id) {
                     // update group channel state
@@ -785,57 +752,48 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
 
             // are in aggregated mode?
             if is_aggregated() {
-                self.upstream_extended_channel
-                    .super_safe_lock(|upstream_channel| {
-                        let aggregated_extended_channel = upstream_channel
-                            .as_mut()
-                            .ok_or(TproxyError::fallback(TproxyErrorKind::ChannelNotFound))?;
+                let aggregated_channel_id = self
+                    .extended_channels
+                    .get(&AGGREGATED_CHANNEL_ID)
+                    .ok_or(TproxyError::fallback(TproxyErrorKind::ChannelNotFound))?
+                    .get_channel_id();
 
-                        // does aggregated channel belong to some group channel?
-                        // here, we are assuming that since we are in aggregated mode, there should
-                        // be only one single group channle and the
-                        // aggregated channel must belong to it
-                        let group_channel = self.group_channels.iter().next();
-                        let Some(group_channel) = group_channel else {
-                            error!("Aggregated channel does not belong to any group channel");
-                            return Err(TproxyError::fallback(TproxyErrorKind::ChannelNotFound));
-                        };
+                // does aggregated channel belong to some group channel?
+                // here, we are assuming that since we are in aggregated mode, there should
+                // be only one single group channel and the
+                // aggregated channel must belong to it
+                let group_channel = self.group_channels.iter().next();
+                let Some(group_channel) = group_channel else {
+                    error!("Aggregated channel does not belong to any group channel");
+                    return Err(TproxyError::fallback(TproxyErrorKind::ChannelNotFound));
+                };
 
-                        let group_channel_id = group_channel.get_group_channel_id();
+                let group_channel_id = group_channel.get_group_channel_id();
 
-                        // was the message sent to the aggregated channel?
-                        if aggregated_extended_channel.get_channel_id() == m.channel_id
-                            || group_channel_id == m.channel_id
-                        {
-                            aggregated_extended_channel.set_target(Target::from_le_bytes(
-                                m.maximum_target
-                                    .inner_as_ref()
-                                    .try_into()
-                                    .expect("target deserialization should never fail"),
-                            ));
-                            self.extended_channels.iter_mut().for_each(|mut channel| {
-                                channel.set_target(Target::from_le_bytes(
-                                    m.maximum_target
-                                        .inner_as_ref()
-                                        .try_into()
-                                        .expect("target deserialization should never fail"),
-                                ));
-                            });
+                // was the message sent to the aggregated channel?
+                if aggregated_channel_id == m.channel_id || group_channel_id == m.channel_id {
+                    // Update target for all extended channels (including AGGREGATED_CHANNEL_ID)
+                    self.extended_channels.iter_mut().for_each(|mut channel| {
+                        channel.set_target(Target::from_le_bytes(
+                            m.maximum_target
+                                .inner_as_ref()
+                                .try_into()
+                                .expect("target deserialization should never fail"),
+                        ));
+                    });
 
-                            let mut message = m_static.clone();
-                            message.channel_id = AGGREGATED_CHANNEL_ID;
-                            set_target_messages.push(message);
-                            Ok(())
-                        } else {
-                            // we got a nonsense channel id, we should log an error and ignore the
-                            // message
-                            warn!(
-                                "Channel not found: {}, ignoring SetTarget message",
-                                m_static.channel_id
-                            );
-                            Err(TproxyError::log(TproxyErrorKind::ChannelNotFound))
-                        }
-                    })?;
+                    let mut message = m_static.clone();
+                    message.channel_id = AGGREGATED_CHANNEL_ID;
+                    set_target_messages.push(message);
+                } else {
+                    // we got a nonsense channel id, we should log an error and ignore the
+                    // message
+                    warn!(
+                        "Channel not found: {}, ignoring SetTarget message",
+                        m_static.channel_id
+                    );
+                    return Err(TproxyError::log(TproxyErrorKind::ChannelNotFound));
+                }
 
             // we are not in aggregated mode... was the message sent to a group channel?
             } else if let Some(group_channel) = self.group_channels.get(&m.channel_id) {

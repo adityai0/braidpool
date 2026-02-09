@@ -56,12 +56,12 @@ pub struct ChannelManager {
     pub supported_extensions: Vec<u16>,
     /// Extensions that the translator requires (must be supported by server)
     pub required_extensions: Vec<u16>,
-    /// The upstream extended channel used in aggregated mode
-    pub upstream_extended_channel: Arc<Mutex<Option<ExtendedChannel<'static>>>>,
     /// Store pending channel info by downstream_id: (user_identity, hashrate,
     /// downstream_extranonce_len)
     pub pending_channels: Arc<DashMap<DownstreamId, (String, Hashrate, usize)>>,
-    /// Map of active extended channels by channel ID
+    /// Map of active extended channels by channel ID.
+    /// In aggregated mode, the shared upstream channel is stored under AGGREGATED_CHANNEL_ID.
+    /// In non-aggregated mode, each downstream has its own channel with its assigned ID.
     pub extended_channels: Arc<DashMap<ChannelId, ExtendedChannel<'static>>>,
     /// Map of active group channels by group channel ID
     pub group_channels: Arc<DashMap<ChannelId, GroupChannel<'static>>>,
@@ -120,7 +120,6 @@ impl ChannelManager {
             share_sequence_counters: Arc::new(DashMap::new()),
             negotiated_extensions: Arc::new(Mutex::new(Vec::new())),
             extranonce_factories: Arc::new(DashMap::new()),
-            upstream_extended_channel: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -166,7 +165,6 @@ impl ChannelManager {
                                 self.share_sequence_counters.clear();
                                 self.negotiated_extensions.super_safe_lock(|data| data.clear());
                                 self.extranonce_factories.clear();
-                                self.upstream_extended_channel.super_safe_lock(|data| *data = None);
                                 drop(tx);
                             }
                             Ok(_) => {
@@ -297,17 +295,16 @@ impl ChannelManager {
                 let min_extranonce_size = m.min_extranonce_size as usize;
 
                 if is_aggregated() {
-                    if self
-                        .upstream_extended_channel
-                        .super_safe_lock(|data| data.is_some())
-                    {
+                    if self.extended_channels.contains_key(&AGGREGATED_CHANNEL_ID) {
                         // We already have the unique channel open and so we create a new
                         // extranonce prefix and we send the
                         // OpenExtendedMiningChannelSuccess message directly to the sv1
                         // server
                         let target = self
-                            .upstream_extended_channel
-                            .super_safe_lock(|data| *data.as_ref().unwrap().get_target());
+                            .extended_channels
+                            .get(&AGGREGATED_CHANNEL_ID)
+                            .map(|ch| *ch.get_target())
+                            .unwrap();
                         let new_extranonce_prefix = self
                             .extranonce_factories
                             .get_mut(&AGGREGATED_CHANNEL_ID)
@@ -322,9 +319,12 @@ impl ChannelManager {
                         if let Some(new_extranonce_prefix) = new_extranonce_prefix {
                             if new_extranonce_size >= open_channel_msg.min_extranonce_size as usize
                             {
+                                // Find max channel ID, excluding AGGREGATED_CHANNEL_ID (u32::MAX)
+                                // which would cause overflow when adding 1
                                 let channel_id = self
                                     .extended_channels
                                     .iter()
+                                    .filter(|x| *x.key() != AGGREGATED_CHANNEL_ID)
                                     .fold(0, |acc, x| std::cmp::max(acc, *x.key()));
                                 let next_channel_id = channel_id + 1;
                                 let new_downstream_extended_channel = ExtendedChannel::new(
@@ -368,20 +368,23 @@ impl ChannelManager {
                                 // Initialize the new downstream channel with state from upstream:
                                 // chain tip, active job, and any pending future jobs.
                                 let active_job_for_sv1_server = || {
-                                    let (last_active_job, future_jobs, last_chain_tip) =
-                                        self.upstream_extended_channel.super_safe_lock(|data| {
-                                            data.as_ref().map(|ch| {
-                                                let active =
-                                                    ch.get_active_job().map(|j| j.0.clone());
-                                                let futures = ch
-                                                    .get_future_jobs()
-                                                    .values()
-                                                    .map(|j| j.0.clone())
-                                                    .collect::<Vec<_>>();
-                                                let chain_tip = ch.get_chain_tip().cloned();
-                                                (active, futures, chain_tip)
-                                            })
-                                        })?;
+                                    // Extract data from aggregated channel in a scope block
+                                    // to release the borrow before accessing other channels
+                                    let (last_active_job, future_jobs, last_chain_tip) = {
+                                        let aggregated_channel =
+                                            self.extended_channels.get(&AGGREGATED_CHANNEL_ID)?;
+                                        (
+                                            aggregated_channel
+                                                .get_active_job()
+                                                .map(|j| j.0.clone()),
+                                            aggregated_channel
+                                                .get_future_jobs()
+                                                .values()
+                                                .map(|j| j.0.clone())
+                                                .collect::<Vec<_>>(),
+                                            aggregated_channel.get_chain_tip().cloned(),
+                                        )
+                                    }; // aggregated_channel borrow ends here
 
                                     if let Some(chain_tip) = last_chain_tip {
                                         self.extended_channels
@@ -497,13 +500,13 @@ impl ChannelManager {
                     );
 
                     if is_aggregated()
-                        && self
-                            .upstream_extended_channel
-                            .super_safe_lock(|data| data.is_some())
+                        && self.extended_channels.contains_key(&AGGREGATED_CHANNEL_ID)
                     {
                         let upstream_extended_channel_id = self
-                            .upstream_extended_channel
-                            .super_safe_lock(|data| data.as_ref().unwrap().get_channel_id());
+                            .extended_channels
+                            .get(&AGGREGATED_CHANNEL_ID)
+                            .map(|ch| ch.get_channel_id())
+                            .unwrap();
 
                         // In aggregated mode, use a single sequence counter for all valid shares
                         m.sequence_number =
@@ -641,18 +644,18 @@ impl ChannelManager {
                 debug!("Received UpdateChannel from SV1Server: {:?}", m);
 
                 if is_aggregated() {
-                    // Update the local upstream channel's nominal hashrate so
+                    // Update the aggregated channel's nominal hashrate so
                     // that monitoring reports a value consistent with the
                     // downstream vardiff estimate.
-                    self.upstream_extended_channel.super_safe_lock(|channel| {
-                        if let Some(ref mut upstream_channel) = channel {
-                            upstream_channel.set_nominal_hashrate(m.nominal_hash_rate);
-                            m.channel_id = upstream_channel.get_channel_id();
-                        }
-                    });
+                    if let Some(mut aggregated_extended_channel) =
+                        self.extended_channels.get_mut(&AGGREGATED_CHANNEL_ID)
+                    {
+                        aggregated_extended_channel.set_nominal_hashrate(m.nominal_hash_rate);
+                        m.channel_id = aggregated_extended_channel.get_channel_id();
+                    }
                 } else {
                     // Non-aggregated: update the specific channel's nominal hashrate
-                    if let Some(ref mut channel) = self.extended_channels.get_mut(&m.channel_id) {
+                    if let Some(mut channel) = self.extended_channels.get_mut(&m.channel_id) {
                         channel.set_nominal_hashrate(m.nominal_hash_rate);
                     }
                 }
