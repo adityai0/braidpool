@@ -732,7 +732,15 @@ Several aspects of this proposal require further research:
    include: (a) reuse an existing ceremony (Zcash Powers of Tau, Hermez, or
    whatever Citrea adopted), (b) run a pool-specific ceremony, or (c) switch
    to PLONK (universal setup, no ceremony required) at the cost of
-   approximately 3× larger proofs.
+   approximately 3× larger proofs. Additionally, Groth16's security rests on
+   the hardness of the discrete logarithm problem in pairing-friendly elliptic
+   curves — broken by Shor's algorithm on a fault-tolerant quantum computer.
+   While there is no consensus on timelines (estimates range from decades to
+   never for cryptographically relevant quantum computers), this is a long-term
+   concern for any pairing-based proof system. STARKs (hash-based) are
+   quantum-resistant by construction; see the Circle STARK discussion in
+   [Section 9.3](#93-critical-analysis) for a potential migration path that
+   would eliminate both the trusted setup and the quantum vulnerability.
 
 8. **BitVM evolution.** BitVM3-RSA
    ([Linus et al., July 2025](https://bitvm.org/bitvm3)) was retracted due
@@ -740,9 +748,13 @@ Several aspects of this proposal require further research:
    [Glock](https://eprint.iacr.org/2025/1485) (Designated-Verifier SNARK,
    Alpen Labs) is the most promising successor, offering approximately 1000×
    lower on-chain costs than BitVM2 (~56 kB Assert transaction vs. ~4.8 MB).
-   However, Glock remains in the research phase with no production
-   implementations. Braidpool should track Glock for future adoption while
-   building on the proven BitVM2 architecture.
+   Glock has progressed from research to active development: the
+   [Starknet Foundation](https://www.starknet.io/blog/starknet-alpen-bitcoin-glock/)
+   has funded a shared Glock verifier for the Starknet–Bitcoin bridge, with
+   a claimed ~550× on-chain data reduction (this figure should be verified
+   against the primary Alpen Labs source) and a target 2026 deployment.
+   Braidpool should track Glock for future adoption while building on the
+   proven BitVM2 architecture.
 
 9. **Multi-input BitVM2 scaling.** The Direct Coinbase Settlement model
    creates a settlement transaction with ~2016 inputs. While this fits within
@@ -798,6 +810,8 @@ distribution) match the fraud-proof-validated template.
 | OP_CAT | [347](https://github.com/bitcoin/bips/blob/master/bip-0347.mediawiki) | Yes (sighash trick) | No | Signet since April 2024 | Reconstructs sighash → extracts hashOutputs |
 | OP_TXHASH | [346](https://github.com/bitcoin/bips/pull/1500) | Yes | No | Bitcoin Core PR #29050 | TxFieldSelector hashes chosen fields; cleaner than CAT trick |
 | OP_CCV (MATT) | [443](https://github.com/bitcoin/bips/pull/1793) | Yes (if included) | Yes | Specification stage, no activation timeline | Merkle tree state machine; could replace BitVM2 (~7,000 vbytes vs. megabytes) |
+| LNHANCE | [119](https://github.com/bitcoin/bips/blob/master/bip-0119.mediawiki) + [348](https://github.com/bitcoin/bips/blob/master/bip-0348.mediawiki) + IKEY + [442](https://github.com/bitcoin/bips/pull/1699) | Delegated (CTV + CSFS) | No | Bundled proposal, 66+ signatories | Bundles CTV + CSFS + OP_INTERNALKEY + OP_PAIRCOMMIT; most likely activation vehicle |
+| OP_PAIRCOMMIT | [442](https://github.com/bitcoin/bips/pull/1699) | No | No | Draft BIP | Efficient hash combiner for two stack elements; useful for Merkle proofs with OP_CAT but does not enable output binding alone |
 | OP_COHV | Thought experiment ([Section 9.5](#95-the-output-binding-impossibility)) | Vacuous without cross-input data | No | N/A | Collapses to CSFS or CTV unless combined with cross-input introspection. DCS provides a natural cross-input architecture via connector outputs (see [Section 9.5](#95-the-output-binding-impossibility)), though the "vacuous" assessment is unchanged: OP_COHV *per-coinbase* remains trivially satisfiable. |
 
 ### 9.3 Critical Analysis
@@ -898,6 +912,33 @@ above), it does enable the hybrid taproot design where CTV + CSFS provides a
 fast path with cryptographic output binding alongside the BitVM2 dispute path.
 OP_CCV and OP_TXHASH have smaller constituencies and longer timelines.
 
+**LNHANCE as activation vehicle.** The
+[LNHANCE](https://www.lnhance.org/) proposal bundles CTV
+([BIP 119](https://github.com/bitcoin/bips/blob/master/bip-0119.mediawiki))
+with CSFS
+([BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.mediawiki)),
+OP_INTERNALKEY, and OP_PAIRCOMMIT
+([BIP 442](https://github.com/bitcoin/bips/pull/1699)) into a single soft fork.
+This bundling is politically strategic: it includes Lightning Network
+improvements (LN-Symmetry, simplified PTLCs) alongside covenant capabilities,
+broadening the constituency beyond covenant-only use cases. A realistic
+community push could emerge by late 2026 or early 2027. For Braidpool, LNHANCE
+is the most likely near-term path to getting CTV + CSFS activated.
+
+**Circle STARK verification on Bitcoin.** The
+[Bitcoin Wildlife Sanctuary](https://github.com/Bitcoin-Wildlife-Sanctuary/bitcoin-circle-stark)
+project (a StarkWare collaboration) has implemented a Circle STARK verifier in
+Bitcoin Script, tested on the Catnet signet. Circle STARKs use the Mersenne-31
+prime ($2^{31} - 1$), which fits natively in Bitcoin Script's 4-byte
+(CScriptNum) integer arithmetic — a key compatibility insight. The verifier
+requires OP_CAT (the soft fork dependency) together with the existing OP_SHA256.
+If OP_CAT activates, this enables direct STARK verification in Script,
+replacing the Groth16 SNARK wrapper used by BitVM2. Benefits: no trusted setup
+ceremony (eliminating [Open Problem 7](#open-problems)), quantum-resistant
+(hash-based, immune to Shor's algorithm), and transparent (no structured
+reference string). This is the long-term endgame for on-chain fraud proof
+verification.
+
 ### 9.4 Recommendation
 
 Braidpool should:
@@ -931,9 +972,18 @@ Braidpool should:
    be added or replaced as new opcodes become available, while coinbase custody
    remains untouched.
 
-The practical path is: BitVM2 today → CTV + CSFS delegated fast path →
-OP_CAT for trustless output binding → OP_CCV for efficient fraud proofs.
-Each step reduces trust assumptions and on-chain costs.
+The practical path follows two parallel tracks:
+
+- **Verification track** (how fraud proofs are checked): BitVM2 today →
+  Glock (~2026 target, ~550× claimed on-chain data reduction) → Circle STARK
+  (requires OP_CAT; no trusted setup, quantum-resistant).
+- **Covenant track** (how outputs are bound): FROST/economic only → LNHANCE
+  CTV + CSFS delegated fast path → OP_CAT trustless output binding → OP_CCV
+  efficient on-chain fraud proofs.
+
+These tracks are independent — progress on one does not require progress on
+the other. Each step within a track reduces trust assumptions and on-chain
+costs.
 
 ### 9.5 The Output-Binding Impossibility
 
@@ -1013,6 +1063,16 @@ settlement logic is architecturally clean but still requires an opcode that
 can read data across inputs — confirming that the minimum viable covenant is
 at least as powerful as OP_CAT or OP_TXHASH.
 
+**ColliderScript: an existence proof.** ColliderScript
+([Heilman, Kolobov, Levy, Poelstra, 2024](https://eprint.iacr.org/2024/1802))
+demonstrates that output binding is theoretically achievable *today* without any
+soft fork, via 160-bit hash collisions in SHA-1/RIPEMD-160. The cost — on the
+order of $2^{86}$ hash queries per spend, or tens of millions of dollars at
+current hardware prices — makes it wildly impractical. But it serves as an
+existence proof: the impossibility is specific to *efficient* introspection,
+not introspection per se. No fundamental cryptographic barrier prevents output
+binding; only the absence of a cheap opcode.
+
 **Conclusion.** The impossibility result is robust: closing the output-binding
 gap requires either (a) a trusted online signer (FROST, delegated CTV + CSFS),
 or (b) a covenant opcode powerful enough to bridge verified computation results
@@ -1075,3 +1135,8 @@ needs risk-takers to act as operators.
 - [BIP 443: OP_CCV](https://github.com/bitcoin/bips/pull/1793)
 - [Challenge: Covenants for Braidpool](https://delvingbitcoin.org/t/challenge-covenants-for-braidpool/1370)
 - [MATT](https://merkle.fun/)
+- [ColliderScript: Covenants in Bitcoin via 160-bit hash collisions](https://eprint.iacr.org/2024/1802)
+- [LNHANCE](https://www.lnhance.org/)
+- [BIP 442: OP_PAIRCOMMIT](https://github.com/bitcoin/bips/pull/1699)
+- [Bitcoin Circle STARK Verifier](https://github.com/Bitcoin-Wildlife-Sanctuary/bitcoin-circle-stark)
+- [Starknet x Alpen Labs: Glock Bridge](https://www.starknet.io/blog/starknet-alpen-bitcoin-glock/)
