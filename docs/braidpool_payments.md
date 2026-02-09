@@ -111,7 +111,8 @@ already laid out the capital.
 Multiple risk-takers can operate simultaneously, each serving a subset of
 miners. Competition among risk-takers drives down fees. Any well-capitalized
 party can act as an operator — the role is permissionless. See
-[Section 6](#6-settlement-modes) for how multiple operators coordinate.
+[Section 6](#6-parallel-batched-settlement) for how multiple operators
+coordinate.
 
 ### 3.4 Non-Derivative Miners
 
@@ -164,9 +165,10 @@ weeks), matching the natural settlement point described in
    recorded in the braid consensus. Coinbase UTXOs accumulate as standard P2TR
    outputs.
 
-3. **Settlement phase** (epoch end): The operator computes the UHPO
-   distribution for the completed epoch, pays all miners, and publishes a
-   settlement claim on-chain.
+3. **Settlement phase** (epoch end): Each operator (risk-taker) computes the
+   UHPO distribution for the completed epoch, pays their miners, and publishes
+   a batch settlement claim on-chain. Multiple operators settle in parallel
+   (see [Section 6](#6-parallel-batched-settlement)).
 
 4. **Dispute phase**: A challenge window of $D$ blocks during which any
    challenger can submit a fraud proof. We require:
@@ -201,13 +203,21 @@ pre-signing protocol operates incrementally:
 
 3. **Template construction.** For each mature coinbase, the current SC
    constructs and pre-signs the BitVM2 transaction templates (KickOff, Assert,
-   Disprove, Recovery). Each coinbase is signed independently — there is no
-   requirement to batch-sign all coinbases in a single ceremony.
+   Disprove, Recovery). Coinbase spending signatures use
+   `SIGHASH_ANYONECANPAY | SIGHASH_NONE`, committing only to the individual
+   input — not to other inputs or outputs. This decouples pre-signing from
+   the settlement structure: the SC does not need to know which operator will
+   claim a coinbase, how many batches the settlement will be split into, or
+   what the outputs will be. Output correctness is enforced by the BitVM2
+   connector, not by the coinbase signatures (see
+   [Section 4.3.2](#432-batched-settlement)).
 
 4. **Key management across epoch.** Because the SC rotates as new blocks are
    won, different coinbases within the same epoch may be pre-signed under
-   different SC compositions. The settlement transaction must include valid
-   pre-signatures for each coinbase input under the SC that signed it.
+   different SC compositions. The `SIGHASH_ANYONECANPAY` flag means each
+   coinbase carries a self-contained spending authorization that is valid in
+   any settlement transaction, regardless of which other coinbases are
+   included.
 
 5. **Failure handling.** If the SC fails to pre-sign a particular coinbase
    (e.g., insufficient signers are online), that coinbase is excluded from the
@@ -237,31 +247,37 @@ remains as an individual UTXO controlled by the SC active when the block was
 mined.
 
 The SC incrementally pre-signs settlement templates as coinbases mature
-(height + 100). At epoch end, the settlement transaction combines all
-pre-signed coinbases. Three paths are possible:
+(height + 100), using `SIGHASH_ANYONECANPAY | SIGHASH_NONE` so that each
+coinbase's spending authorization is independent of the settlement structure.
+At epoch end, each operator constructs a *batch* settlement transaction
+spending a subset of pre-signed coinbases (see
+[Section 4.3.2](#432-batched-settlement)). Three paths are possible per batch:
 
 ```
-Happy path (operator pays correctly, no dispute):
-  [~2016 coinbase inputs] + [connector] --> KickOff1 (operator commits)
-      --> KickOff2 (after 2-week challenge window)
-           --> Take1 (operator reimbursed, UHPO outputs paid)
+Shared layer (one per epoch):
+  KickOff1 (operator commits UHPO Merkle root)
+      --> KickOff2 (after challenge window)
+           --> Assert anchors proven UHPO root on-chain (if disputed)
 
-Unhappy path (challenger disputes):
-  KickOff2 --> Challenge (challenger posts 1 BTC bond)
-                --> Assert (~4.8 MB, operator reveals z1..z42;
-                           embeds proven output hash in connector UTXO)
-                     --> Disprove (~4 MB, challenger re-executes faulty chunk)
-                          --> Bond to challenger + coinbases returned to pool
+Per-batch layer (one per operator):
+  Happy path:
+    [N coinbase inputs] + [batch connector referencing proven UHPO root]
+        --> Take1 (operator reimbursed, batch UHPO outputs paid)
 
-Timeout path:
-  KickOff1 --> KickOff Timeout Tx (handles non-responsive operator)
+  Unhappy path:
+    Assert --> Challenge (challenger posts 1 BTC bond)
+        --> Disprove (~4 MB, challenger re-executes faulty chunk)
+              --> Bond to challenger + coinbases returned to pool
+
+  Timeout path:
+    KickOff1 --> KickOff Timeout Tx (handles non-responsive operator)
 ```
 
-In the happy path, the operator's settlement claim goes unchallenged and
-finalizes in approximately three transactions at minimal cost. In the unhappy
-path, the full dispute plays out in four transactions (KickOff → Challenge →
-Assert → Disprove). The connector outputs ensure that once the challenger
-initiates a dispute, the operator's claim path is invalidated.
+In the happy path, each operator's batch settlement goes unchallenged and
+finalizes independently. In the unhappy path, a challenger disputes the shared
+UHPO computation or a specific batch's output subset. The connector outputs
+ensure that once a challenger initiates a dispute, the operator's claim path
+is invalidated.
 
 If a coinbase's SC fails to pre-sign, that coinbase is excluded from the
 settlement and rolls to the next epoch. This provides failure isolation: a
@@ -311,20 +327,85 @@ state.
   1 × witness. With ~91 KB non-witness and ~133 KB witness: ~498 KWU, well
   within Bitcoin's 4000 KWU block weight limit.
 
-**Fee economics.** The settlement transaction weighs ~498 KWU, or ~125 KvB.
-At 20 sat/vB, this costs approximately 0.025 BTC (~$2.5K). During fee spikes
-(100+ sat/vB), costs could reach 0.125 BTC (~$12.5K). This fee is deducted
-from the epoch's coinbase pool before UHPO distribution. The operator bears
-this cost upfront and is reimbursed from the settlement. Fee volatility is a
-practical concern: an operator who submits a settlement during a fee spike
-absorbs a larger cost, which should be factored into the operator's fee
-structure.
+**Fee economics.** A single monolithic settlement (~2016 inputs) weighs ~498
+KWU, or ~125 KvB — exceeding Bitcoin Core's 400 KWU standardness limit. Under
+batched settlement ([Section 4.3.2](#432-batched-settlement)), each batch of
+~500 inputs weighs ~120–180 KWU (~30–45 KvB). At 20 sat/vB, each batch costs
+approximately 0.006–0.009 BTC; during fee spikes (100+ sat/vB), ~0.03–0.045
+BTC. The total epoch fee across all batches is comparable to the monolithic
+case, but each batch is independently standard and relayable. Each operator
+bears their batch's fee and is reimbursed from the settlement.
 
 **BitVM2 connectors:** The standard BitVM2 mutual-exclusivity connectors gate
 between the happy path (Take1) and unhappy path (Challenge → Assert →
 Disprove). These are distinct from the settlement logic connector described
 above. The mutual-exclusivity connectors ensure that once a dispute begins,
 the operator's happy-path claim is invalidated.
+
+### 4.3.2 Batched Settlement
+
+A single settlement transaction spending ~2016 coinbase inputs weighs ~498
+KWU, which exceeds Bitcoin Core's default `MAX_STANDARD_TX_WEIGHT` of 400,000
+WU. Non-standard transactions are not relayed by default nodes and must be
+submitted directly to a cooperating miner. The batched settlement model
+eliminates this constraint by splitting the settlement into multiple smaller
+transactions, each well under the standardness limit.
+
+**Architecture.** Because coinbase pre-signatures use
+`SIGHASH_ANYONECANPAY | SIGHASH_NONE` (see
+[Section 4.2.1](#421-coinbase-pre-signing-protocol), item 3), each coinbase's
+spending authorization is independent of the settlement structure. This
+enables *late binding*: the allocation of coinbases to operators is determined
+at epoch end, not at pre-signing time. Each operator constructs a batch
+transaction spending only their allocated coinbases:
+
+```
+Operator A (serves miners 1-50, derivative contracts):
+  [~600 coinbases] + [batch connector A] → miners 1-50 payouts + A's reimbursement
+
+Operator B (serves miners 51-120, derivative contracts):
+  [~800 coinbases] + [batch connector B] → miners 51-120 payouts + B's reimbursement
+
+Operator C (non-derivative miners 121-200):
+  [~616 coinbases] + [batch connector C] → miners 121-200 payouts + C's reimbursement
+```
+
+Each batch transaction weighs ~120–180 KWU, comfortably under the 400 KWU
+standardness limit. All batches can be submitted and finalize in parallel.
+
+**Coinbase allocation protocol.** At epoch end, operators announce their miner
+sets (known from derivative contracts recorded in the braid consensus). The
+epoch's coinbase UTXOs are allocated proportionally: each operator receives
+coinbases whose total value covers their miners' payouts plus reimbursement.
+Bitcoin's UTXO model provides double-spend protection — once a coinbase is
+confirmed in one batch, it cannot appear in another.
+
+**Shared UHPO proof, per-batch connectors.** The UHPO computation (cohort
+identification, share formula, per-miner aggregation) is the same regardless
+of batching. A single SNARK proof covers the entire epoch's distribution,
+anchoring a Merkle root of all miner payouts. Each batch connector carries a
+Merkle inclusion proof showing that the batch's output subset is valid against
+the proven root. A challenger can dispute at either layer:
+
+- **Computation dispute:** The UHPO SNARK is incorrect. Standard BitVM2
+  Assert/Disprove against the shared proof.
+- **Subset dispute:** A batch's outputs don't match the proven distribution.
+  Merkle subset fraud proof against the batch connector — much simpler and
+  cheaper than a full SNARK dispute.
+
+**Partitioning fraud proof.** The operator commits to a partition (which
+miners and coinbases belong to each batch) in the KickOff transaction. The
+SNARK circuit additionally proves partition consistency: every coinbase
+appears in exactly one batch, every miner appears in exactly one batch, and
+each batch's coinbase total covers its output total. Alternatively, a
+separate lightweight fraud proof verifies partition consistency without
+modifying the UHPO SNARK.
+
+**Relationship to parallel settlement.** Batched settlement is the
+architecture underlying
+[Section 6](#6-parallel-batched-settlement): each risk-taker settles their
+own miners in a separate batch. A single operator claiming all batches is a
+special case. See Section 6 for the full epoch-end protocol.
 
 ### 4.4 Fraud Proof Specification
 
@@ -660,33 +741,88 @@ guarantees.
 | Per-block FROST signing | Yes (~2016/epoch) | No (incremental pre-signing only) |
 | SC key deletion | Required, unverifiable | Required for template pre-signing |
 | SC collusion risk | Same | Same (inherited) |
-| Failure isolation | None (all-or-nothing) | Per-coinbase (partial settlement OK) |
+| Failure isolation | None (all-or-nothing) | Per-batch (parallel settlement, partial OK) |
 | Bootstrapping | Works from block 5 | Requires derivatives market |
 
-## 6. Settlement Modes
+## 6. Parallel Batched Settlement
 
-When multiple risk-takers operate simultaneously, several settlement modes are
-possible:
+The batched settlement architecture
+([Section 4.3.2](#432-batched-settlement)) combines naturally with the
+risk-taker model: each risk-taker settles their own miners in a separate
+batch transaction, in parallel.
 
-**Single processor (recommended default).** One risk-taker handles the entire
-epoch's settlement. This is the simplest model: the operator includes all
-miners (both derivative and non-derivative) in a single UHPO computation, pays
-everyone, and claims reimbursement. The operator is selected by being the first
-to post a valid claim after the epoch ends. Recommended for initial deployment
-due to its simplicity.
+### 6.1 Epoch-End Settlement Protocol
 
-**Sequential claims.** Each risk-taker claims reimbursement for their portion
-of miners. This requires serial dispute windows (each claim is independent),
-making finalization slower. Appropriate when multiple risk-takers serve disjoint
-miner sets and cannot agree on a single processor.
+1. **UHPO computation.** The epoch ends. Every Braidpool full node computes
+   the UHPO distribution from the finalized DAG state.
 
-**Competitive auction.** Risk-takers bid to process the epoch. The lowest fee
-wins. This requires an auction mechanism (e.g., sealed-bid via commit-reveal)
-and is more complex to implement, but drives down processing fees.
+2. **Operator announcement.** Each risk-taker announces their claim: which
+   miners they serve (known from derivative contracts recorded in the braid
+   consensus) and which coinbase UTXOs they request. Announcements are
+   broadcast via the Braidpool P2P network.
 
-**Hybrid.** BitVM for risk-taker reimbursement, FROST fallback for direct miner
-payouts. This provides the most flexibility but is the most complex. Suitable
-for a mature deployment where both mechanisms are well-tested.
+3. **Coinbase allocation.** Coinbase UTXOs are allocated to operators
+   proportionally — each operator receives coinbases whose total value covers
+   their miners' payouts plus their reimbursement. Allocation follows a
+   deterministic rule (e.g., coinbases assigned in block-height order to
+   operators in order of announcement) so all nodes agree on the partition
+   without coordination.
+
+4. **Non-derivative miners.** Miners who did not engage a risk-taker are
+   assigned to the first operator willing to include them, or to a dedicated
+   "residual" operator. The residual operator's incentive is the processing
+   fee deducted from non-derivative miners' payouts.
+
+5. **Batch submission.** Each operator constructs and submits their batch
+   transaction independently. All batches share a single UHPO SNARK proof;
+   each batch connector carries a Merkle inclusion proof for its output
+   subset.
+
+6. **Parallel dispute windows.** Each batch enters its own dispute window.
+   A dispute on batch A does not affect batch B's finalization. Challengers
+   can target specific batches independently.
+
+7. **Finalization.** Each batch finalizes independently after its dispute
+   window expires without a valid fraud proof. The operator is reimbursed,
+   the bond is returned, and the batch's miners receive their payouts.
+
+### 6.2 Bond Structure
+
+Each operator posts a bond proportional to their batch's value:
+$B_i = \alpha \cdot V_i$ where $V_i$ is the total coinbase value in batch
+$i$. This is more capital-efficient than a single operator bonding the
+entire epoch: each risk-taker bonds only the portion they settle.
+A challenger who successfully disputes batch $i$ receives $B_i$.
+
+### 6.3 Failure Modes
+
+**Operator fails to submit batch.** If an operator does not submit their
+batch within $F = 144$ blocks after the epoch ends, their allocated coinbases
+are released and can be claimed by another operator or fall back to FROST
+signing ([Section 7](#7-bootstrapping-and-fallback)).
+
+**Disputed batch.** If a batch is successfully disputed, the operator's bond
+is forfeited, and the batch's coinbase UTXOs remain under SC control. A new
+operator can claim those coinbases, or they fall back to FROST.
+
+**Partial epoch settlement.** Some batches may finalize while others are
+disputed or abandoned. Miners in finalized batches receive their payouts
+regardless of what happens to other batches. This extends per-coinbase
+failure isolation to per-batch failure isolation.
+
+### 6.4 Special Cases
+
+**Single operator.** If only one risk-taker is active (e.g., during early
+pool growth), they claim all coinbases in a single batch — or split into
+multiple batches to stay under the standardness limit. The protocol degrades
+gracefully to the single-processor model.
+
+**No operators.** If no risk-taker announces a claim, the epoch falls back
+to FROST signing ([Section 7](#7-bootstrapping-and-fallback)).
+
+**Competitive pressure.** Risk-takers compete for miners by offering lower
+fees and better service. Miners can switch risk-takers between epochs. This
+permissionless competition prevents rent extraction.
 
 ## 7. Bootstrapping and Fallback
 
@@ -797,16 +933,16 @@ Several aspects of this proposal require further research:
    Braidpool should track Glock for future adoption while building on the
    proven BitVM2 architecture.
 
-9. **Multi-input BitVM2 scaling.** The Direct Coinbase Settlement model
-   creates a settlement transaction with ~2016 inputs. While this fits within
-   Bitcoin's 4000 KWU block weight limit (~498 KWU for a ~245 KB settlement
-   transaction), the BitVM2 pre-signed template must accommodate variable
-   input counts — the exact number of coinbases depends on how many SCs
-   successfully pre-sign. Whether BitVM2 templates support variable input
-   counts natively, or whether a fixed maximum (e.g., 2048) must be
-   allocated with unused slots filled by dust inputs, needs investigation.
-   If fixed-count templates are required, the dust overhead and its effect
-   on settlement economics should be quantified.
+9. **Batched settlement details.** The batched settlement model
+   ([Section 4.3.2](#432-batched-settlement)) resolves the standardness
+   concern (each batch is under 400 KWU) but introduces new questions:
+   (a) the deterministic coinbase allocation rule must be specified precisely
+   to prevent disagreements between nodes, (b) the partition consistency
+   proof (ensuring every coinbase and every miner appears in exactly one
+   batch) needs to be designed — either as part of the UHPO SNARK circuit or
+   as a separate lightweight fraud proof, and (c) the interaction between
+   per-batch dispute windows and the shared UHPO proof needs analysis: if
+   the shared proof is disputed, should all batch dispute windows pause?
 
 ## 9. Covenant Soft Fork Analysis
 
@@ -1194,10 +1330,14 @@ reduced to incremental pre-signing of settlement templates as coinbases mature
 one per block.
 
 Each coinbase remains as a standard P2TR UTXO controlled by the SC active when
-the block was mined. At epoch end, a single multi-input settlement transaction
-(~2016 inputs) distributes UHPO payments to all miners. If any coinbase's SC
-fails to pre-sign, it is excluded from the settlement and rolls to the next
-epoch — providing failure isolation that an aggregated model would lack.
+the block was mined, pre-signed with `SIGHASH_ANYONECANPAY | SIGHASH_NONE` to
+decouple spending authorization from settlement structure. At epoch end,
+risk-takers settle their own miners in parallel batch transactions, each
+spending a subset of coinbase UTXOs. Each batch stays under Bitcoin's 400 KWU
+standardness limit, finalizes independently, and shares a single UHPO SNARK
+proof with per-batch Merkle inclusion verification. If any coinbase's SC fails
+to pre-sign, it is excluded and rolls to the next epoch — providing per-batch
+failure isolation.
 
 This comes at two costs. First, the output-binding gap is a new, critical
 limitation. We cannot force the operator to execute the correct payouts on-chain
