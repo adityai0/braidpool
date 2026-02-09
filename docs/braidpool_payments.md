@@ -214,7 +214,11 @@ pre-signing protocol operates incrementally:
    current epoch's settlement. It rolls to the next epoch, where a new SC
    attempt is made. This per-coinbase failure isolation is a key advantage
    over aggregated models where a single signing failure blocks the entire
-   epoch.
+   epoch. If a coinbase remains unsettled for more than 2 epochs (failure to
+   pre-sign persists across SC rotations), it falls back to FROST signing with
+   the current SC, using the same mechanism as
+   [Section 7](#7-bootstrapping-and-fallback). This prevents indefinite
+   accumulation of stuck coinbases.
 
 ### 4.3 Transaction Structure
 
@@ -290,6 +294,12 @@ The settlement transaction at epoch end has the following structure:
 - Operator reimbursement output.
 - Bond output (returned to operator after dispute window, or to challenger).
 
+Miners whose UHPO payout falls below Bitcoin's dust threshold (546 satoshis
+for P2TR) are excluded from the current epoch's settlement. Their unclaimed
+balance accumulates across epochs and is paid out when it exceeds the
+threshold. The operator tracks accumulated balances in the off-chain DAG
+state.
+
 **Size analysis:**
 - ~2016 inputs × ~107 bytes each (41-byte non-witness [36-byte outpoint +
   4-byte sequence + 1-byte scriptSig length] + 66-byte witness [1-byte item
@@ -300,6 +310,15 @@ The settlement transaction at epoch end has the following structure:
 - Total transaction: ~230–245 KB. Weight (BIP 141) = 4 × non-witness +
   1 × witness. With ~91 KB non-witness and ~133 KB witness: ~498 KWU, well
   within Bitcoin's 4000 KWU block weight limit.
+
+**Fee economics.** The settlement transaction weighs ~498 KWU, or ~125 KvB.
+At 20 sat/vB, this costs approximately 0.025 BTC (~$2.5K). During fee spikes
+(100+ sat/vB), costs could reach 0.125 BTC (~$12.5K). This fee is deducted
+from the epoch's coinbase pool before UHPO distribution. The operator bears
+this cost upfront and is reimbursed from the settlement. Fee volatility is a
+practical concern: an operator who submits a settlement during a fee spike
+absorbs a larger cost, which should be factored into the operator's fee
+structure.
 
 **BitVM2 connectors:** The standard BitVM2 mutual-exclusivity connectors gate
 between the happy path (Take1) and unhappy path (Challenge → Assert →
@@ -486,6 +505,15 @@ $$B = \alpha \cdot V_{\text{epoch}}, \qquad \alpha \in [0.1, 1.0]$$
 
 The bond is returned to the operator upon successful finalization (after the
 dispute window with no valid fraud proof).
+
+**Capital requirements.** For a pool with fraction $p$ of network hashrate,
+$V_{\text{epoch}} \approx p \times 2016 \times 3.125$ BTC (post-2024 halving).
+At $\alpha = 0.5$: a 1% pool requires ~31.5 BTC bond (~$3M), a 5% pool
+requires ~157 BTC (~$15M). This concentrates the operator role among
+well-capitalized entities, which is acceptable given that risk-takers are
+already well-capitalized by definition
+([Section 3.1](#31-the-derivatives-market)). However, it constrains the number
+of potential operators and should be considered when calibrating $\alpha$.
 
 ### 4.9 Deployment Validation
 
@@ -687,6 +715,14 @@ FROST signing uses the same SC: the unique hashers who won the most recent $S
 \approx 50$ blocks. This ensures liveness even when no risk-taker is available,
 at the cost of the known FROST limitations (liveness, 51% attack risk).
 
+**Multi-epoch overlap.** Epoch N's settlement occurs while epoch N+1 is being
+mined. If epoch N's fraud proof succeeds (operator's claim rejected), the
+epoch's coinbase UTXOs remain under SC control and are available for a new
+operator's claim or FROST fallback. The $F = 144$ block timeout restarts.
+Epoch N+1's settlement is independent — its operator claims reimbursement from
+epoch N+1's coinbases, not epoch N's. No cross-epoch dependency exists: each
+epoch's coinbase pool is a disjoint set of UTXOs.
+
 ## 8. Open Problems
 
 Several aspects of this proposal require further research:
@@ -734,7 +770,7 @@ Several aspects of this proposal require further research:
    problem for Braidpool is narrower: which existing ceremony to adopt? Options
    include: (a) reuse an existing ceremony (Zcash Powers of Tau, Hermez, or
    whatever Citrea adopted), (b) run a pool-specific ceremony, or (c) switch
-   to PLONK (universal setup, no ceremony required) at the cost of
+   to PLONK (universal, updateable SRS — no per-circuit ceremony, but an initial setup is still required) at the cost of
    approximately 3× larger proofs. Additionally, Groth16's security rests on
    the hardness of the discrete logarithm problem in pairing-friendly elliptic
    curves — broken by Shor's algorithm on a fault-tolerant quantum computer.
@@ -749,13 +785,15 @@ Several aspects of this proposal require further research:
    ([Linus et al., July 2025](https://bitvm.org/bitvm3)) was retracted due
    to a security break discovered by Liam Eagen at Fairgate Labs.
    [Glock](https://eprint.iacr.org/2025/1485) (Designated-Verifier SNARK,
-   Alpen Labs) is the most promising successor, offering approximately 1000×
-   lower on-chain costs than BitVM2 (~56 kB Assert transaction vs. ~4.8 MB).
-   Glock has progressed from research to active development: the
+   Alpen Labs) is the most promising successor, offering up to ~1000×
+   lower on-chain costs than BitVM2 for Assert transactions (~56 kB vs.
+   ~4.8 MB). The Starknet blog reports ~550× for total on-chain data
+   reduction in their specific deployment, which includes overheads beyond
+   Assert alone. Glock has progressed from research to active development:
+   the
    [Starknet Foundation](https://www.starknet.io/blog/starknet-alpen-bitcoin-glock/)
-   has funded a shared Glock verifier for the Starknet–Bitcoin bridge, with
-   a claimed ~550× on-chain data reduction (this figure should be verified
-   against the primary Alpen Labs source) and a target 2026 deployment.
+   has funded a shared Glock verifier for the Starknet–Bitcoin bridge,
+   with a target 2026 deployment.
    Braidpool should track Glock for future adoption while building on the
    proven BitVM2 architecture.
 
@@ -823,7 +861,7 @@ distribution) match the fraud-proof-validated template.
 | OP_TXHASH | [346](https://github.com/bitcoin/bips/pull/1500) | Yes | No | No (same as CAT) | Bitcoin Core PR #29050 | TxFieldSelector hashes chosen fields; cleaner than CAT trick |
 | OP_CCV (MATT) | [443](https://github.com/bitcoin/bips/pull/1793) | Yes (if included) | Yes | **Yes** (NUMS key, on-chain state machine) | Specification stage, no activation timeline | Merkle tree state machine; replaces BitVM2 (~7,000 vbytes vs. megabytes); eliminates 67% attack |
 | LNHANCE | [119](https://github.com/bitcoin/bips/blob/master/bip-0119.mediawiki) + [348](https://github.com/bitcoin/bips/blob/master/bip-0348.mediawiki) + IKEY + [442](https://github.com/bitcoin/bips/pull/1699) | Delegated (CTV + CSFS) | No | No | Bundled proposal, 66+ signatories | Bundles CTV + CSFS + OP_INTERNALKEY + OP_PAIRCOMMIT; most likely activation vehicle |
-| OP_PAIRCOMMIT | [442](https://github.com/bitcoin/bips/pull/1699) | No | No | No | Draft BIP | Efficient hash combiner for two stack elements; useful for Merkle proofs with OP_CAT but does not enable output binding alone |
+| OP_PAIRCOMMIT | [442](https://github.com/bitcoin/bips/pull/1699) | No | No | No | Draft BIP | Tagged hash combiner for two stack elements; enables Merkle proof verification without OP_CAT. With OP_CAT, redundant since CAT provides arbitrary concatenation |
 | OP_COHV | Thought experiment ([Section 9.5](#95-the-output-binding-impossibility)) | Vacuous without cross-input data | No | No | N/A | Collapses to CSFS or CTV unless combined with cross-input introspection. DCS provides a natural cross-input architecture via connector outputs (see [Section 9.5](#95-the-output-binding-impossibility)), though the "vacuous" assessment is unchanged: OP_COHV *per-coinbase* remains trivially satisfiable. |
 
 ### 9.3 Critical Analysis
@@ -853,6 +891,12 @@ to the *correct* UHPO distribution. The SC's signature attests "these are the
 right outputs," but Script has no way to check that claim against the DAG state.
 An honest SC signing a correct template provides strong guarantees; a
 compromised SC signing an incorrect template is undetectable on-chain.
+Note that the 51% attack described in
+[Section 1](#1-introduction-and-problem-statement) applies here: an attacker
+who controls enough recent block wins to dominate the SC can sign arbitrary CTV
+hashes, making delegated CTV + CSFS no stronger than plain FROST against a
+colluding SC. The BitVM2 dispute path (Leaf 2 in the hybrid design) is the
+mitigation.
 
 **Hybrid taproot design.** Under Direct Coinbase Settlement, each coinbase
 remains a standard P2TR output — fund custody is separated from settlement
@@ -888,9 +932,11 @@ to constrain settlement outputs.
 
 **OP_CAT closes the output-binding gap.** Using a technique described by
 [Poelstra](https://medium.com/blockstream/cat-and-schnorr-tricks-i-faf1b59bd298),
-Script can reconstruct the sighash preimage by concatenating transaction fields
-with OP_CAT, then extract the `hashOutputs` component to verify that the
-transaction's outputs match an expected hash. This enables dynamic output
+the spender provides sighash preimage components as witness elements; Script
+concatenates them with OP_CAT and uses OP_CHECKSIG as a "sighash oracle" to
+verify the reconstruction is genuine. Individual components — including
+`hashOutputs` — can then be inspected on the stack to verify transaction
+outputs match an expected hash. This enables dynamic output
 verification at spending time — exactly what Braidpool needs. OP_CAT is the
 most mature candidate (active on signet since April 2024, vault prototypes
 exist). Note that OP_TXHASH
@@ -970,12 +1016,14 @@ is the most likely near-term path to getting CTV + CSFS activated.
 [Bitcoin Wildlife Sanctuary](https://github.com/Bitcoin-Wildlife-Sanctuary/bitcoin-circle-stark)
 project (a StarkWare collaboration) has implemented a Circle STARK verifier in
 Bitcoin Script, tested on the Catnet signet. Circle STARKs use the Mersenne-31
-prime ($2^{31} - 1$), which fits natively in Bitcoin Script's 4-byte
-(CScriptNum) integer arithmetic — a key compatibility insight. The verifier
+prime ($2^{31} - 1$), whose field elements fit in Bitcoin Script's 4-byte
+(CScriptNum) integers, though field arithmetic (especially multiplication
+producing up to 62-bit intermediates) requires multi-precision emulation via
+OP_CAT. The verifier
 requires OP_CAT (the soft fork dependency) together with the existing OP_SHA256.
 If OP_CAT activates, this enables direct STARK verification in Script,
 replacing the Groth16 SNARK wrapper used by BitVM2. Benefits: no trusted setup
-ceremony (eliminating [Open Problem 7](#open-problems)), quantum-resistant
+ceremony (eliminating [Open Problem 7](#8-open-problems)), quantum-resistant
 (hash-based, immune to Shor's algorithm), and transparent (no structured
 reference string). This is the long-term endgame for on-chain fraud proof
 verification.
@@ -1022,7 +1070,7 @@ Braidpool should:
 The practical path follows two parallel tracks:
 
 - **Verification track** (how fraud proofs are checked): BitVM2 today →
-  Glock (~2026 target, ~550× claimed on-chain data reduction) → Circle STARK
+  Glock (~2026 target, up to ~1000× Assert reduction; ~550× total footprint per Starknet blog) → Circle STARK
   (requires OP_CAT; no trusted setup, quantum-resistant).
 - **Covenant track** (how outputs are bound and SC trust reduced):
   FROST/economic only (SC trust assumption) → LNHANCE CTV + CSFS delegated
@@ -1116,8 +1164,9 @@ at least as powerful as OP_CAT or OP_TXHASH.
 ([Heilman, Kolobov, Levy, Poelstra, 2024](https://eprint.iacr.org/2024/1802))
 demonstrates that output binding is theoretically achievable *today* without any
 soft fork, via 160-bit hash collisions in SHA-1/RIPEMD-160. The cost — on the
-order of $2^{86}$ hash queries per spend, or tens of millions of dollars at
-current hardware prices — makes it wildly impractical. But it serves as an
+order of $2^{86}$ hash queries per spend, equivalent to approximately 33 hours
+of the entire Bitcoin mining network's hash output — makes it wildly
+impractical. But it serves as an
 existence proof: the impossibility is specific to *efficient* introspection,
 not introspection per se. No fundamental cryptographic barrier prevents output
 binding; only the absence of a cheap opcode.
