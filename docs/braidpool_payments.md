@@ -1,0 +1,807 @@
+# BitVM-Based UHPO Settlement
+
+## 1. Introduction and Problem Statement
+
+In [Payout Authorization](braidpool_spec.md#payout-authorization) we identified
+that authorizing the UHPO share payouts is "the largest unsolved problem" facing
+Braidpool. Bitcoin cannot evaluate the logic of the pool's consensus mechanism.
+We need a way to ensure that the coinbase outputs are spent correctly, paying
+all hashers according to the share tally.
+
+The current approach uses [FROST](https://eprint.iacr.org/2020/852) /
+[ROAST](https://eprint.iacr.org/2022/550) threshold Schnorr signatures with the
+$S$ most recent block winners (approximately 50 signers) to sign the RCA and
+UHPO transactions. While this is a reasonable starting point, it has known
+limitations:
+
+1. **Liveness failures.** A threshold number of signers must remain online
+   through the entire DKG and signing process. If any participant fails, the
+   subset must be restarted. With 50 signers, even modest churn rates cause
+   frequent restarts.
+
+2. **51% attack on a small signer set.** A miner controlling a fraction $f$ of
+   the pool's hashrate has a non-negligible probability of winning enough recent
+   blocks to control the signing committee (see
+   [51% Attack](braidpool_spec.md#51-attack)).
+
+3. **Non-verifiable key deletion.** After signing, nodes are expected to delete
+   their key shares. We cannot verify that deletion actually occurred, leaving a
+   window for key recovery and unauthorized spending.
+
+What we need is a mechanism where the *correctness* of payouts can be
+cryptographically verified without requiring the signers to compute the correct
+payouts themselves. We want to minimize the trust placed in any single party.
+
+## 2. Fundamental Constraints
+
+### 2.1 The Output-Binding Problem
+
+Without output introspection capabilities, Bitcoin Script can only gate on *who
+signs* a transaction, not *where funds go*. Script conditions like P2PKH,
+P2WPKH, and P2TR all verify that the spender possesses a particular key, but
+they cannot constrain the outputs of the spending transaction.
+
+This means that any spending authorization reduces to: "does this key (or
+threshold of keys) approve?" There is no way to say "these funds can *only* be
+spent to these specific outputs" without cooperative signing.
+
+### 2.2 The Unknown Future Problem
+
+The payout amounts for a given epoch are unknown at coinbase creation time. The
+share tally depends on future beads that have not yet been mined, and the fee
+reward depends on transactions that will be included in future blocks. CTV
+(OP_CHECKTEMPLATEVERIFY) commits to a fixed transaction template, but we cannot
+compute that template until the epoch ends.
+
+### 2.3 Other Approaches Considered
+
+**PIPEs v2** (Polynomial Inner Product Encryption) can theoretically enforce
+arbitrary spending conditions using functional encryption. However, the
+ciphertext for practical key sizes is approximately 338 TB, there is no working
+implementation, and like all Script-based approaches, it can gate on key
+possession but not output destinations.
+
+**Adaptor signatures** allow conditional signing (revealing a secret upon
+signature completion), but again only bind to keys, not to output destinations.
+
+**Direct large multisig** (e.g., CHECKMULTISIG with many keys) is limited to ~20
+keys by script size limits and requires all signers to be known in advance.
+
+### 2.4 Implication
+
+All current Bitcoin mechanisms require cooperative signing to authorize
+spending. The design space is therefore about *minimizing the trust required* in
+the signers. We seek a solution where:
+
+- Correct payouts can be verified by anyone,
+- Incorrect payouts can be challenged and proven fraudulent on-chain,
+- The signing committee need not compute the payouts themselves.
+
+## 3. The Risk-Taker as Payment Processor
+
+### 3.1 The Derivatives Market
+
+As described in [derivatives.md](derivatives.md), miners can engage in hashrate
+derivatives contracts with *risk-takers* who pay a fixed rate per share,
+emulating FPPS. The risk-taker is the counterparty in a fixed-for-floating swap:
+the miner receives a predictable income, and the risk-taker absorbs the
+variance in block rewards and fees.
+
+Risk-takers are well-capitalized entities that audit miners' share production
+via Braidpool nodes. They are repeat players with reputational capital, and they
+already front capital to miners in exchange for shares.
+
+### 3.2 Natural BitVM Operator
+
+A risk-taker who has purchased shares from miners needs *reimbursement* from
+the RCA for those shares. This makes the risk-taker a natural
+[BitVM2](https://bitvm.org/bitvm2) *operator*: they front payouts to miners,
+compute the correct UHPO distribution, and then claim reimbursement from the
+pool's funds, subject to a challenge period where any party can submit a fraud
+proof.
+
+The key insight is that the risk-taker is *already paying miners*. The BitVM
+settlement merely reimburses them from the RCA. This aligns incentives: the
+operator wants correct settlement because they have already laid out the
+capital.
+
+### 3.3 Multiple Risk-Takers
+
+Multiple risk-takers can operate simultaneously, each serving a subset of
+miners. Competition among risk-takers drives down fees. Any well-capitalized
+party can act as an operator — the role is permissionless. See
+[Section 6](#6-settlement-modes) for how multiple operators coordinate.
+
+### 3.4 Non-Derivative Miners
+
+Miners who choose not to engage a risk-taker are still included in the
+settlement. The operator computes the UHPO for *all* miners (both derivative
+and non-derivative) and pays all of them. Non-derivative miners receive the
+floating rate determined by the share formula. Miners who do not trust any
+operator may wait for the FROST fallback described in
+[Section 7](#7-bootstrapping-and-fallback).
+
+## 4. Protocol Specification
+
+### 4.1 Roles
+
+**Signers Committee (SC).** A set of $S$ miners who pre-sign the BitVM
+transaction templates. Following the
+[Payout Authorization](braidpool_spec.md#payout-authorization) section of the
+spec, these are the unique hashers who won the most recent $S \approx 50$
+blocks, with a threshold of $\lceil 2S/3 \rceil + 1$ required to sign. The SC
+does not compute payouts; it only enables the dispute mechanism by pre-signing
+templates.
+
+**Operator (Risk-Taker).** Proposes a settlement for a completed epoch. The
+operator computes the UHPO distribution, pays all miners (derivative and
+non-derivative), posts a bond, and claims reimbursement from the RCA after a
+dispute window. This role is permissionless — any well-capitalized party can
+propose.
+
+**Challengers.** Verify the operator's proposed settlement and submit fraud
+proofs if it is incorrect. Every Braidpool full node is a natural challenger
+because all nodes maintain the full DAG state and can independently compute the
+correct UHPO. A challenger who successfully disproves a claim receives the
+operator's bond.
+
+### 4.2 Epoch Lifecycle
+
+An epoch corresponds to one difficulty adjustment period (~2016 blocks, ~2
+weeks), matching the natural settlement point described in
+[Pool Transactions and Derivative Instruments](braidpool_spec.md#pool-transactions-and-derivative-instruments).
+
+1. **Setup phase** (epoch start): The SC pre-signs KickOff, Assert, Disprove,
+   and Recovery transaction templates for the upcoming epoch's settlement.
+
+2. **Mining phase**: Miners produce shares. Share transfers to risk-takers are
+   recorded in the braid consensus.
+
+3. **Settlement phase** (epoch end): The operator computes the UHPO
+   distribution for the completed epoch, pays all miners, and publishes a
+   settlement claim on-chain.
+
+4. **Dispute phase**: A challenge window of $D$ blocks during which any
+   challenger can submit a fraud proof. We require:
+   $$D \geq T_{\text{sync}} + T_{\text{proof}} + T_{\text{confirm}}$$
+   where $T_{\text{sync}}$ is the time for a challenger to sync the full DAG
+   state, $T_{\text{proof}}$ is the time to generate a SNARK proof and submit
+   on-chain fraud proof transactions, and $T_{\text{confirm}}$ is the number
+   of confirmations needed for the fraud proof transactions. A conservative
+   initial value is $D = 2016$ blocks (~2 weeks), matching the difficulty
+   adjustment period. See [Section 4.5](#45-proving-infrastructure) for
+   concrete proving time benchmarks.
+
+5. **Finalization**: If no valid fraud proof is submitted, the operator is
+   reimbursed from the RCA. If a fraud proof succeeds, the claim is rejected,
+   the operator's bond is awarded to the challenger, and the RCA funds are
+   returned.
+
+### 4.3 Transaction Structure
+
+BitVM2 uses pre-signed transaction graphs with *connector outputs* — one-time
+spending gates that create mutually exclusive execution paths. When one path
+consumes a connector output, all alternative paths become unspendable, enforcing
+mutual exclusivity without requiring new signatures.
+
+In Braidpool's adaptation, the RCA output serves the role of the locked funds
+(analogous to the "peg-in" UTXO in generic BitVM2 bridges). There is no
+separate peg-out step — the RCA *is* the UTXO being disputed over. This is a
+key simplification compared to generic BitVM2 bridges: the pool's coinbase
+rewards are already locked in the RCA, so the "deposit" phase is implicit in
+the mining process itself.
+
+The SC pre-signs all transaction templates during the setup phase. Three paths
+are possible:
+
+```
+Happy path (operator pays correctly, no dispute):
+  RCA Output --> KickOff1 (operator commits to settlement)
+                  --> KickOff2 (after 2-week challenge window)
+                       --> Take1 (operator reimbursed from RCA)
+
+Unhappy path (challenger disputes):
+  KickOff2 --> Challenge (challenger posts 1 BTC bond)
+                --> Assert (~4.8 MB, operator reveals z1..z42)
+                     --> Disprove (~4 MB, challenger re-executes faulty chunk)
+                          --> Bond to challenger + RCA returned to pool
+
+Timeout path:
+  KickOff1 --> KickOff Timeout Tx (handles non-responsive operator)
+```
+
+In the happy path, the operator's settlement claim goes unchallenged and
+finalizes in approximately three transactions at minimal cost. In the unhappy
+path, the full dispute plays out in four transactions (KickOff → Challenge →
+Assert → Disprove). The connector outputs ensure that once the challenger
+initiates a dispute, the operator's claim path is invalidated.
+
+The SC does not need to be online during the dispute phase — all paths are
+pre-signed during setup. The security model requires only that at least one SC
+member honestly deletes their key share after pre-signing (1-of-N honesty
+assumption).
+
+### 4.4 Fraud Proof Specification
+
+We define three types of fraud:
+
+**Type A: Wrong DAG state.** The operator commits to a Merkle root of the DAG
+state. Each Bitcoin block's coinbase OP_RETURN already includes the braid DAG
+state Merkle root (see
+[Metadata Commitments](braidpool_spec.md#metadata-commitments)). A challenger
+can prove that the operator's committed Merkle root contradicts the OP_RETURN
+commitments anchored in Bitcoin's proof of work.
+
+**Type B: Wrong computation.** The operator's proposed UHPO distribution does
+not match the result of applying the share formula to the committed DAG state.
+The computation includes:
+
+- Cohort identification from the DAG structure,
+- Per-share value computation using the formula $s = 1/(x \cdot (1 - P_{\geq 2}))$,
+- Per-miner aggregation across all shares in the epoch.
+
+**Type C: Operator didn't pay.** The operator claims to have paid miners but
+the payments are incorrect or absent. See [Section 4.7](#47-proof-of-payment)
+for the verification mechanism.
+
+The fraud proof uses BitVM2 SNARK verification, not the multi-round bisection
+protocol of BitVM1. The process is:
+
+1. **Off-chain proving.** The UHPO computation is compiled to a RISC-V program
+   and executed in a zkVM. The prover generates a STARK proof of correct
+   execution, then wraps it in a Groth16 SNARK for on-chain verification.
+
+2. **On-chain verification.** The Groth16 verifier (~1.2 GB total script) is
+   split into approximately 611 chunks, each ≤4 MB to fit in a single Bitcoin
+   block. Winternitz One-Time Signatures (WOTS) provide bit-commitments between
+   chunks, binding the intermediate values across transactions.
+
+3. **Dispute protocol.** This is a single-round challenge, not a multi-round
+   bisection:
+   - The operator commits to the output state in the KickOff transaction.
+   - If challenged, the operator reveals all intermediate values $z_1 \ldots
+     z_{42}$ in the Assert transaction (~4.8 MB).
+   - The challenger identifies a faulty chunk $f_i$ where $f_i(z_{i-1}) \neq
+     z_i$ and re-executes it on-chain in the Disprove transaction (~4 MB).
+   - Maximum dispute length: 2 rounds (4 transactions).
+
+The UHPO computation is estimated at approximately $2 \times 10^6$ steps:
+
+| Component | Estimated Steps |
+| --------- | --------------- |
+| Cohort identification (DAG traversal) | ~500K |
+| Share formula evaluation per share | ~10 ops × ~100K shares = ~1M |
+| Per-miner aggregation | ~100K |
+| Merkle proof verification | ~300K |
+
+These $\sim 2 \times 10^6$ steps are compiled to a RISC-V program and proven
+via STARK, then verified on-chain via Groth16 SNARK. The step count determines
+the prover's workload (and thus the proving time in
+[Section 4.5](#45-proving-infrastructure)), not the number of on-chain dispute
+rounds.
+
+### 4.5 Proving Infrastructure
+
+The off-chain SNARK proof pipeline requires selecting a zkVM and provisioning
+proving hardware.
+
+**zkVM selection.** The two leading candidates are
+[RISC Zero](https://www.risczero.com/) (used by Citrea's Clementine bridge)
+and [SP1](https://succinct.xyz/) (Succinct Labs). Both compile Rust programs
+to RISC-V and generate STARK proofs that can be wrapped in Groth16 SNARKs for
+Bitcoin verification. RISC Zero has the most BitVM2 deployment experience
+through Citrea; SP1 offers competitive proving times. The choice depends on
+toolchain maturity at implementation time.
+
+**Proving time estimates.** Benchmarks from GOAT Network's testnet and Alpen
+Labs provide concrete performance data. Each figure below measures a different
+component of the proving pipeline:
+
+| Component | Hardware | Time | Source |
+| --------- | -------- | ---- | ------ |
+| Groth16 SNARK proof | GOAT testnet GPU | ~10.4 s | GOAT Network |
+| Block proof generation | GOAT testnet | ~2.6 s | GOAT Network |
+| Proof aggregation | GOAT testnet | ~2.7 s | GOAT Network |
+| End-to-end pipeline | GOAT testnet (optimized) | ~15.7 s total | GOAT Network |
+| Consumer CPU (Groth16) | General estimate | ~3–6 minutes | Alpen Labs |
+
+The end-to-end pipeline time (~15.7 s) is the sum of individual components
+(Groth16 proof + block proof + aggregation), not a separate measurement.
+
+**Hardware implications.** Operators need GPU hardware (commodity gaming GPUs
+suffice) for timely proving. Consumer-grade CPUs can generate proofs but
+require minutes rather than seconds, which may be acceptable for Braidpool's
+settlement cadence (epoch-level, not per-block). Specialized ASIC-class
+infrastructure is not required.
+
+### 4.6 On-Chain State Commitments
+
+Each Bitcoin block's coinbase OP_RETURN includes a hash of the serialized
+`BraidpoolMetadata` struct, which contains:
+
+- `parents`: the bead's parent hashes and timestamps,
+- `payout_address`: the miner's P2TR payout address,
+- `comm_pubkey`: secp256k1 key for encrypted communication.
+
+These commitments anchor the off-chain DAG state to Bitcoin's proof of work,
+making it available for fraud proof verification. An operator cannot falsify the
+DAG state without also falsifying Bitcoin blocks.
+
+### 4.7 Proof of Payment
+
+When claiming reimbursement, the operator must demonstrate that miners were
+actually paid the correct amounts. This is the *execution fidelity* problem:
+even if the computation is correct, the operator might not execute the payments.
+
+The operator publishes a claim containing:
+
+1. The UHPO distribution Merkle root (what should be paid),
+2. A list of payment transaction IDs (what was paid).
+
+We consider three approaches to verifying payment execution:
+
+**Approach 1: SPV proof in BitVM circuit.** The challenger provides a Bitcoin
+block header and Merkle inclusion proof demonstrating that a claimed payment
+txid either does not exist in the specified block or has incorrect
+amounts/destinations. This is the most trust-minimized approach — it requires
+only Bitcoin's existing SPV security model. The cost is additional circuit
+complexity: each SPV proof verification adds approximately 500K computation
+steps to the fraud proof circuit.
+
+**Approach 2: SC escrow verification.** Before releasing the timelocked output,
+SC members independently verify that the operator's payment transactions exist
+on-chain with correct amounts and destinations. Only after $\lceil 2S/3 \rceil
++ 1$ SC members attest to payment correctness does the timelocked output become
+spendable. This approach closes the output-binding gap (see
+[Section 5.2](#52-the-output-binding-gap)) but re-introduces an SC liveness
+requirement during the finalization phase.
+
+**Approach 3: Extended monitoring period.** The operator claims reimbursement
+after an extended timeout (e.g., $2D$ blocks). During this period, any node can
+verify payments and raise an alarm via the social layer (e.g., alerting other
+miners to withhold future cooperation). This provides the weakest on-chain
+guarantees but is the simplest to implement.
+
+**Recommendation:** Approach 1 (SPV proof) as the primary mechanism, with
+Approach 2 (SC escrow) as a fallback during the bootstrapping phase when the
+BitVM circuit has not yet been fully implemented and audited.
+
+### 4.8 Bond Sizing
+
+The operator's bond must be large enough that the expected profit from fraud is
+negative. We require:
+
+$$B \geq \max\left(\pi_{\text{fraud}},\; C_{\text{challenge}}\right)$$
+
+where $\pi_{\text{fraud}}$ is the maximum profit from submitting an incorrect
+settlement, and $C_{\text{challenge}}$ is the cost for a challenger to generate
+and submit a fraud proof (ensuring challengers are always incentivized).
+
+In practice, the fraud profit is bounded by the total RCA value $V_{\text{RCA}}$
+for that epoch. We parameterize the bond as:
+
+$$B = \alpha \cdot V_{\text{RCA}}, \qquad \alpha \in [0.1, 1.0]$$
+
+- $\alpha = 1.0$ provides full security against the output-binding gap: the
+  operator risks losing their entire bond (equal to the RCA value) if they
+  misbehave.
+- $\alpha = 0.5$ is a practical starting point: the operator risks losing half
+  the epoch's value, which already exceeds any rational fraud profit when
+  accounting for reputational damage and loss of future operating income.
+- $\alpha < 0.1$ is insufficient because challenger costs could exceed the
+  bond, removing the incentive to challenge. The Babylon mainnet test (June
+  2025) measured full unhappy-path fees at approximately 14.88M sat (~$16K at
+  then-current rates), with the challenger bearing the Disprove transaction
+  cost (~10.99M sat, ~$12K) and the operator bearing the Assert cost (~3.89M
+  sat, ~$4K). The bond must exceed the *challenger's* costs to maintain
+  incentive compatibility — if the bond is less than the Disprove cost,
+  rational challengers will not dispute even fraudulent claims.
+
+The bond is returned to the operator upon successful finalization (after the
+dispute window with no valid fraud proof).
+
+### 4.9 Deployment Validation
+
+BitVM2 has been validated in production by multiple independent projects:
+
+| Project | Status | Date | Details |
+| ------- | ------ | ---- | ------- |
+| Babylon (Fairgate) | Full unhappy-path test | June 2025 | 42 blocks (~7.5 hours), ~$16K in fees. First complete dispute resolution on mainnet. |
+| Bitlayer | Mainnet bridge | July 2025 | First functional BitVM bridge deployment. |
+| Citrea (Clementine) | Mainnet bridge | January 2026 | BitVM2-based, RISC Zero prover, audited. |
+| GOAT Network | Testnet | August 2025 | Real-time proving with Groth16 SNARK in ~10.4 s on GPU. |
+
+These deployments confirm that the BitVM2 dispute mechanism works end-to-end
+on Bitcoin mainnet. The Babylon test is particularly relevant: it exercised the
+full unhappy path (KickOff → Challenge → Assert → Disprove) and validated the
+fee estimates used in [Section 4.8](#48-bond-sizing). No BitVM2-specific
+security incidents have been reported as of February 2026, though deployments
+remain early-stage with limited total value locked.
+
+## 5. Security Analysis
+
+### 5.1 Trust Assumptions
+
+We enumerate all trust assumptions required by this proposal:
+
+1. **SC honest majority.** At least $\lceil 2S/3 \rceil + 1$ of the $S$ SC
+   members are honest and correctly pre-sign the BitVM templates. This is
+   inherited from the FROST approach.
+
+2. **At least one honest challenger.** During the dispute window, at least one
+   party must be online, have the full DAG state, and be willing to submit a
+   fraud proof if the settlement is incorrect.
+
+3. **Operator solvency.** The operator must have sufficient capital to front
+   payouts to all miners and to post the bond.
+
+4. **Bitcoin censorship resistance.** Fraud proof transactions must be able to
+   reach the Bitcoin blockchain within the dispute window. A miner with
+   sufficient hashrate to censor specific transactions could prevent fraud proofs
+   from being confirmed.
+
+5. **Fraud proof circuit correctness.** The BitVM circuit encoding the UHPO
+   computation must be correct. This is a software correctness assumption,
+   mitigated by open-source code and public auditing.
+
+6. **Verifier's dilemma.** The 1-of-N honest challenger assumption (item 2)
+   has been formally shown to be incentive-incompatible
+   ([Lazar et al., 2023](https://arxiv.org/abs/2312.01549)). If the operator
+   behaves honestly, challengers earn zero reward, so rational challengers stop
+   monitoring, at which point the operator can begin cheating. The "Hollow
+   Victory" attack
+   ([Yousaf et al., 2025](https://arxiv.org/abs/2504.05094)) further shows
+   that challengers may not profit even when they win disputes, due to
+   front-running and gas costs.
+
+   Mitigations:
+   - **(a) Randomized attention tests.** Periodic forced challenges with
+     subsidized rewards ensure that monitoring remains profitable on average.
+   - **(b) Monitoring bounties.** A small fee deducted from each epoch's
+     settlement funds a bounty pool for active challengers.
+   - **(c) Braidpool's structural advantage.** Every Braidpool full node
+     already maintains the complete DAG state. The marginal cost of detecting
+     Type A fraud (wrong DAG state) and Type B fraud (wrong computation) is
+     near-zero — nodes need only re-run the UHPO computation against state
+     they already have. However, Type C fraud detection (operator didn't pay)
+     requires monitoring Bitcoin on-chain payments, which is additional work
+     beyond DAG maintenance.
+
+   This remains an open problem for all optimistic verification systems,
+   including both BitVM2 and MATT-based approaches.
+
+### 5.2 The Output-Binding Gap
+
+This is the critical limitation of the proposal and must be clearly understood.
+
+After the dispute window expires, the operator controls the timelocked output
+and can sign *any* spending transaction. The fraud proof system guarantees that
+the operator's *proposed computation* is correct (the right amounts are
+attributed to the right miners), but it cannot guarantee that the operator
+actually *executes* those payments.
+
+In other words: we can verify that the operator computed the right answer, but
+we cannot force the operator to act on it (without covenant opcodes).
+
+**Mitigations:**
+
+- **Bond forfeiture.** If the operator fails to pay, challengers can submit
+  proof of non-payment (see [Section 4.7](#47-proof-of-payment)), causing the
+  operator to lose their bond.
+- **Reputation loss.** An operator who defrauds miners will be excluded from
+  future epochs.
+- **Repeat-player dynamics.** The present value of future operating fees exceeds
+  any single-epoch fraud profit for rational operators.
+- **Future covenant soft fork.** Opcodes enabling *output introspection at
+  spending time* (e.g., OP_CAT + OP_SHA256, or dedicated introspection opcodes)
+  would allow Script to verify that a spending transaction's outputs match a
+  dynamically-provided template verified by the fraud proof. See
+  [Section 9](#9-covenant-soft-fork-analysis) for a detailed analysis of
+  current proposals. Note that OP_CTV alone is insufficient: it commits to a
+  fixed template at UTXO creation time, but the UHPO distribution is unknown
+  until the epoch ends (Section 2.2). What is needed is the ability to accept a
+  template *as witness data* and verify it against the transaction's actual
+  outputs.
+
+**Severity: CRITICAL.** This is an acknowledged limitation, not a solved
+problem. The proposal is that economic incentives make exploitation irrational
+for repeat players, while a future soft fork could provide cryptographic
+guarantees.
+
+### 5.3 Security Model
+
+| Guarantee Type | Properties |
+| -------------- | ---------- |
+| Cryptographic | SC pre-signatures valid, fraud proof circuit correct, DAG state tamper-proof (anchored in Bitcoin PoW) |
+| Economic | Bond disincentivizes false claims, challenger bounty incentivizes monitoring, competition among operators reduces rents |
+| Trusted | SC honest majority, operator execution fidelity (mitigated by bond), challenger availability |
+
+### 5.4 Attack Vectors
+
+| Attack | Mitigation | Severity |
+| ------ | ---------- | -------- |
+| Operator claims incorrect distribution | Type B fraud proof catches and rejects | Medium |
+| Output-binding gap exploitation | Economic: bond forfeiture, reputation, repeat-player dynamics | **Critical** |
+| SC + operator collusion | Same severity as FROST 51% attack — inherited, not new | **Critical** |
+| No honest challenger available | Settlement delayed; bond covers costs if eventually challenged. See verifier's dilemma ([Section 5.1](#51-trust-assumptions), item 6) | High |
+| Grief attack (frivolous challenges) | Challenger must post 1 BTC bond and execute full on-chain dispute — bond forfeiture makes griefing expensive | Low |
+| Dispute window timing manipulation | Use block height, not wall-clock timestamps | Medium |
+
+### 5.5 Comparison with FROST-Only Approach
+
+| Property | FROST-Only | BitVM + Risk-Taker |
+| -------- | ---------- | ------------------ |
+| Liveness failures | All signers must complete signing | Only operator + 1 challenger needed |
+| Nonce generation | Interactive, failure-intolerant | Not required |
+| Signing complexity | $O(S^2)$ communication rounds | Pre-signed templates, no interaction |
+| Output-binding gap | None (signers directly produce tx) | **New limitation** |
+| Challenger requirement | None | At least one honest challenger |
+| Capital requirement | Minimal | Operator must front payouts + bond |
+| SC key deletion | Required, unverifiable | Required for template pre-signing |
+| SC collusion risk | Same | Same (inherited) |
+| Bootstrapping | Works from block 5 | Requires derivatives market |
+
+## 6. Settlement Modes
+
+When multiple risk-takers operate simultaneously, several settlement modes are
+possible:
+
+**Single processor (recommended default).** One risk-taker handles the entire
+epoch's settlement. This is the simplest model: the operator includes all
+miners (both derivative and non-derivative) in a single UHPO computation, pays
+everyone, and claims reimbursement. The operator is selected by being the first
+to post a valid claim after the epoch ends. Recommended for initial deployment
+due to its simplicity.
+
+**Sequential claims.** Each risk-taker claims reimbursement for their portion
+of miners. This requires serial dispute windows (each claim is independent),
+making finalization slower. Appropriate when multiple risk-takers serve disjoint
+miner sets and cannot agree on a single processor.
+
+**Competitive auction.** Risk-takers bid to process the epoch. The lowest fee
+wins. This requires an auction mechanism (e.g., sealed-bid via commit-reveal)
+and is more complex to implement, but drives down processing fees.
+
+**Hybrid.** BitVM for risk-taker reimbursement, FROST fallback for direct miner
+payouts. This provides the most flexibility but is the most complex. Suitable
+for a mature deployment where both mechanisms are well-tested.
+
+## 7. Bootstrapping and Fallback
+
+The BitVM settlement mechanism requires an active derivatives market with
+risk-takers willing to act as operators. During the pool's early stages, this
+market may not exist.
+
+**First 4 blocks.** Direct payout to hashers. There are not enough known
+parties to construct a threshold signature (see
+[Payout Authorization](braidpool_spec.md#payout-authorization)).
+
+**Early pool (few miners, no risk-takers).** FROST/ROAST threshold signing is
+the primary mechanism, exactly as described in the current spec.
+
+**Transition.** As the derivatives market develops and risk-takers begin
+operating, the BitVM model becomes available. Both mechanisms can coexist: some
+epochs may use FROST, others may use BitVM settlement.
+
+**Fallback.** If no operator proposes a settlement within $F = 144$ blocks (~1
+day) after an epoch ends, the pool reverts to FROST signing for that epoch. The
+FROST signing uses the same SC: the unique hashers who won the most recent $S
+\approx 50$ blocks. This ensures liveness even when no risk-taker is available,
+at the cost of the known FROST limitations (liveness, 51% attack risk).
+
+## 8. Open Problems
+
+Several aspects of this proposal require further research:
+
+1. **Dispute window calibration.** The inequality $D \geq T_{\text{sync}} +
+   T_{\text{proof}} + T_{\text{confirm}}$ gives a lower bound, but the actual
+   values of these components depend on network conditions and proving
+   infrastructure. The benchmarks in [Section 4.5](#45-proving-infrastructure)
+   provide initial estimates; validation against Braidpool's specific UHPO
+   computation on representative hardware is needed.
+
+2. **Bond sizing dynamics.** The parameter $\alpha$ may need to be adjusted
+   dynamically based on the number of miners, the total RCA value, and observed
+   challenger behavior. A fixed $\alpha$ may be too conservative (locking up
+   unnecessary capital) or too aggressive.
+
+3. **Fraud proof circuit implementation.** The UHPO computation (cohort
+   identification, share formula, per-miner aggregation) must be encoded as a
+   zkVM program and compiled to a SNARK. The estimated $\sim 2 \times 10^6$
+   steps needs validation against an actual implementation.
+
+4. **Covenant alternatives.** Closing the output-binding gap requires opcodes
+   that enable *dynamic output introspection*: Script must be able to verify at
+   spending time that a transaction's outputs match a template provided as
+   witness data. See [Section 9](#9-covenant-soft-fork-analysis) for a detailed
+   analysis of current proposals and their applicability to Braidpool.
+
+5. **Economic model validation.** A game-theoretic analysis of the equilibrium
+   behavior of operators, challengers, and miners under various parameter
+   settings ($\alpha$, $D$, $F$) would strengthen confidence in the proposal's
+   security properties.
+
+6. **Challenger incentive sufficiency.** Whether the bond-as-bounty model
+   provides sufficient incentive for challengers to monitor settlements needs
+   empirical study. If the bond is split among multiple simultaneous
+   challengers, each individual challenger's expected reward decreases, which
+   may reduce monitoring incentives. The initial proposal awards the full bond to
+   the first valid challenger. See also the verifier's dilemma discussion in
+   [Section 5.1](#51-trust-assumptions), item 6.
+
+7. **Groth16 trusted setup.** BitVM2's on-chain SNARK verification uses
+   Groth16, which requires a structured reference string (SRS) from a trusted
+   setup ceremony. Citrea's Clementine bridge already uses Groth16 in
+   production (mainnet January 2026), providing practical precedent — the open
+   problem for Braidpool is narrower: which existing ceremony to adopt? Options
+   include: (a) reuse an existing ceremony (Zcash Powers of Tau, Hermez, or
+   whatever Citrea adopted), (b) run a pool-specific ceremony, or (c) switch
+   to PLONK (universal setup, no ceremony required) at the cost of
+   approximately 3× larger proofs.
+
+8. **BitVM evolution.** BitVM3-RSA
+   ([Linus et al., July 2025](https://bitvm.org/bitvm3)) was retracted due
+   to a security break discovered by Liam Eagen at Fairgate Labs.
+   [Glock](https://eprint.iacr.org/2025/1485) (Designated-Verifier SNARK,
+   Alpen Labs) is the most promising successor, offering approximately 1000×
+   lower on-chain costs than BitVM2 (~56 kB Assert transaction vs. ~4.8 MB).
+   However, Glock remains in the research phase with no production
+   implementations. Braidpool should track Glock for future adoption while
+   building on the proven BitVM2 architecture.
+
+## 9. Covenant Soft Fork Analysis
+
+The output-binding gap ([Section 5.2](#52-the-output-binding-gap)) is the
+critical limitation of this proposal. Covenant opcodes — Script primitives that
+constrain *where* funds can be spent, not just *who* can sign — would close
+this gap. This section evaluates the current covenant proposals against
+Braidpool's specific requirements.
+
+### 9.1 Braidpool's Requirement
+
+Braidpool needs two distinct on-chain capabilities:
+
+1. **Output binding.** At spending time, Script must verify that a
+   transaction's outputs match a template provided as witness data. This
+   template is the UHPO distribution, which is unknown at UTXO creation time
+   (see [Section 2.2](#22-the-unknown-future-problem)). OP_CTV
+   ([BIP 119](https://github.com/bitcoin/bips/blob/master/bip-0119.mediawiki))
+   alone is insufficient: it commits to a *fixed* template at UTXO creation
+   time, but the UHPO distribution is computed *after* the epoch ends. What is
+   needed is the ability to accept a template as witness data and verify it
+   against the transaction's actual outputs at spending time.
+
+2. **Fraud proof verification.** On-chain execution of SNARK verification
+   chunks in the dispute protocol. Currently handled by BitVM2's pre-signed
+   transaction graph, but native Script support could reduce the on-chain
+   footprint from megabytes to kilobytes.
+
+These are *distinct* requirements. A proposal might satisfy one without the
+other.
+
+### 9.2 Proposal Assessment
+
+| Proposal | BIP | Output Binding | Fraud Proofs | Maturity | Notes |
+| -------- | --- | -------------- | ------------ | -------- | ----- |
+| OP_CTV | [119](https://github.com/bitcoin/bips/blob/master/bip-0119.mediawiki) | Static only | No | Implementation ready | Commits at creation time; Braidpool needs dynamic |
+| OP_CSFS | [348](https://github.com/bitcoin/bips/blob/master/bip-0348.mediawiki) | With OP_CAT | No | Implementation ready | Forces tx data onto stack; limited without CAT |
+| OP_CAT | [347](https://github.com/bitcoin/bips/blob/master/bip-0347.mediawiki) | Yes (sighash trick) | No | Signet since April 2024 | Reconstructs sighash → extracts hashOutputs |
+| OP_TXHASH | [346](https://github.com/bitcoin/bips/pull/1500) | Yes | No | Bitcoin Core PR #29050 | TxFieldSelector hashes chosen fields; cleaner than CAT trick |
+| OP_CCV (MATT) | [443](https://github.com/bitcoin/bips/pull/1793) | Yes (if included) | Yes | Specification stage, no activation timeline | Merkle tree state machine; could replace BitVM2 (~7,000 vbytes vs. megabytes) |
+
+### 9.3 Critical Analysis
+
+**CTV + CSFS is insufficient for Braidpool.** CTV commits to a fixed output
+template at the time the UTXO is created. Braidpool's UHPO distribution is
+unknown until the epoch ends — potentially weeks after the RCA UTXO is created.
+CSFS ([BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.mediawiki))
+pushes transaction data onto the Script stack, but without OP_CAT to
+manipulate that data, CSFS cannot extract and verify individual output fields.
+CTV + CSFS together enable *delegated* covenants (the signer can constrain
+outputs), but dynamic UHPO settlement — where the output template is provided
+as witness data and verified at spending time — would gain nothing from this
+combination alone.
+
+**OP_CAT closes the output-binding gap.** Using a technique described by
+[Poelstra](https://medium.com/blockstream/cat-and-schnorr-tricks-i-faf1b59bd298),
+Script can reconstruct the sighash preimage by concatenating transaction fields
+with OP_CAT, then extract the `hashOutputs` component to verify that the
+transaction's outputs match an expected hash. This enables dynamic output
+verification at spending time — exactly what Braidpool needs. OP_CAT is the
+most mature candidate (active on signet since April 2024, vault prototypes
+exist). Note that OP_TXHASH
+([BIP 346](https://github.com/bitcoin/bips/pull/1500)) achieves similar output
+introspection via a `TxFieldSelector` byte, with cleaner semantics but less
+deployment maturity.
+
+**OP_CCV closes the fraud proof gap.** MATT / OP_CHECKCONTRACTVERIFY
+([BIP 443](https://github.com/bitcoin/bips/pull/1793)) enables on-chain state
+machines via Merkle tree commitments. For Braidpool, this could replace the
+entire BitVM2 pre-signed transaction graph with a native Script-based fraud
+proof at approximately 7,000 vbytes — three orders of magnitude smaller than
+the current BitVM2 Assert transaction (~4.8 MB). OP_CCV's role is *distinct*
+from OP_CAT's: CAT solves output binding, CCV solves on-chain fraud proof
+verification. Both would be needed for the most efficient design.
+
+**Recursive covenant concerns.** OP_CAT faces opposition primarily due to
+concerns about enabling recursive covenants — the worry that unrestricted
+Script-level concatenation could enable unforeseen smart contract complexity on
+Bitcoin. These concerns are genuine and actively debated; they are not merely
+political posturing. The technical argument is that OP_CAT combined with
+Schnorr signature verification creates a Turing-complete covenant system, which
+some developers view as fundamentally changing Bitcoin's execution model. This
+is the primary obstacle to OP_CAT activation, not lack of utility.
+
+**Political landscape.** As of early 2026, no covenant opcode has activated on
+mainnet. CTV + CSFS has 66 public signatories expressing support, making it
+the closest to potential activation — but as noted above, this combination does
+not solve Braidpool's dynamic settlement requirement. OP_CCV and OP_TXHASH
+have smaller constituencies and longer timelines.
+
+### 9.4 Recommendation
+
+Braidpool should:
+
+1. **Build on BitVM2 now.** The pre-signed transaction graph works today
+   (validated by Babylon, Citrea, and Bitlayer in
+   [Section 4.9](#49-deployment-validation)) and requires no soft fork.
+
+2. **Support OP_CAT activation.** OP_CAT is the minimum viable covenant for
+   closing the output-binding gap. OP_TXHASH would also suffice and offers
+   cleaner semantics, but OP_CAT has greater deployment maturity. Supporting
+   both is reasonable.
+
+3. **Monitor OP_CCV / MATT.** If OP_CCV activates, the BitVM2 dispute
+   mechanism could be replaced with a drastically more efficient on-chain fraud
+   proof (~7,000 vbytes vs. megabytes), reducing capital requirements and
+   dispute costs.
+
+4. **Design for graceful upgrade.** The protocol should isolate the fraud proof
+   and output-binding components so that covenant-enabled versions can replace
+   BitVM2 components without restructuring the settlement flow.
+
+The practical path is: BitVM2 today → OP_CAT when available → OP_CCV if/when
+available. Each step reduces trust assumptions and on-chain costs.
+
+## 10. Conclusion
+
+The BitVM2 + risk-taker model addresses the biggest weakness of threshold
+signing for UHPO settlement: liveness. By replacing interactive signing with
+optimistic verification, we eliminate the requirement that a threshold of
+signers remain online and correctly execute a multi-round protocol. The signing
+committee's role is reduced to a one-time template pre-signing at epoch start.
+
+This comes at a cost: the output-binding gap is a new, critical limitation. We
+cannot force the operator to execute the correct payouts on-chain without
+covenant opcodes. Economic incentives (bond forfeiture, reputation, future
+income) mitigate this for rational operators, and the proof-of-payment
+mechanism (SPV proof or SC escrow) provides additional verification, but the
+gap remains open until a soft fork enabling dynamic output introspection.
+
+The net assessment: this approach is stronger for pools with active derivatives
+markets, where well-capitalized risk-takers serve as natural operators. It is
+weaker during bootstrapping, when the FROST fallback is the only option. The
+derivatives market described in [derivatives.md](derivatives.md) and the
+settlement mechanism are complementary: each strengthens the other. Risk-takers
+need a settlement mechanism to claim reimbursement, and the settlement mechanism
+needs risk-takers to act as operators.
+
+## References
+
+- [BitVM2: Bridging Bitcoin to Second Layers](https://bitvm.org/bitvm2)
+- [BitVM2-Bridge Formal Paper](https://eprint.iacr.org/2025/1158)
+- [Glock: Designated-Verifier SNARK](https://eprint.iacr.org/2025/1485)
+- [Verifier's Dilemma](https://arxiv.org/abs/2312.01549)
+- [Hollow Victory Attack](https://arxiv.org/abs/2504.05094)
+- [FROST: Flexible Round-Optimized Schnorr Threshold Signatures](https://eprint.iacr.org/2020/852)
+- [ROAST: Robust Asynchronous Schnorr Threshold Signatures](https://eprint.iacr.org/2022/550)
+- [Braidpool Specification](braidpool_spec.md)
+- [Bitcoin Hashrate Derivatives Trading](derivatives.md)
+- [General Considerations for Decentralized Mining Pools](general_considerations.md)
+- [BIP 119: OP_CTV](https://github.com/bitcoin/bips/blob/master/bip-0119.mediawiki)
+- [BIP 346: OP_TXHASH](https://github.com/bitcoin/bips/pull/1500)
+- [BIP 347: OP_CAT](https://github.com/bitcoin/bips/blob/master/bip-0347.mediawiki)
+- [BIP 348: OP_CSFS](https://github.com/bitcoin/bips/blob/master/bip-0348.mediawiki)
+- [BIP 443: OP_CCV](https://github.com/bitcoin/bips/pull/1793)
+- [Challenge: Covenants for Braidpool](https://delvingbitcoin.org/t/challenge-covenants-for-braidpool/1370)
+- [MATT](https://merkle.fun/)
