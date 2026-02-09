@@ -10,14 +10,15 @@ all hashers according to the share tally.
 
 The current approach uses [FROST](https://eprint.iacr.org/2020/852) /
 [ROAST](https://eprint.iacr.org/2022/550) threshold Schnorr signatures with the
-$S$ most recent block winners (approximately 50 signers) to sign the RCA and
-UHPO transactions. While this is a reasonable starting point, it has known
-limitations:
+$S$ most recent block winners (approximately 50 signers) to sign each
+coinbase's spending transaction. While this is a reasonable starting point, it
+has known limitations:
 
 1. **Liveness failures.** A threshold number of signers must remain online
-   through the entire DKG and signing process. If any participant fails, the
-   subset must be restarted. With 50 signers, even modest churn rates cause
-   frequent restarts.
+   through the entire DKG and signing process *for every block's coinbase* —
+   approximately 2016 signing ceremonies per epoch. If any participant fails,
+   the subset must be restarted. With 50 signers, even modest churn rates
+   cause frequent restarts.
 
 2. **51% attack on a small signer set.** A miner controlling a fraction $f$ of
    the pool's hashrate has a non-negligible probability of winning enough recent
@@ -94,16 +95,16 @@ already front capital to miners in exchange for shares.
 ### 3.2 Natural BitVM Operator
 
 A risk-taker who has purchased shares from miners needs *reimbursement* from
-the RCA for those shares. This makes the risk-taker a natural
+the epoch's coinbase pool for those shares. This makes the risk-taker a natural
 [BitVM2](https://bitvm.org/bitvm2) *operator*: they front payouts to miners,
 compute the correct UHPO distribution, and then claim reimbursement from the
-pool's funds, subject to a challenge period where any party can submit a fraud
-proof.
+epoch's coinbase UTXOs, subject to a challenge period where any party can
+submit a fraud proof.
 
 The key insight is that the risk-taker is *already paying miners*. The BitVM
-settlement merely reimburses them from the RCA. This aligns incentives: the
-operator wants correct settlement because they have already laid out the
-capital.
+settlement merely reimburses them from the epoch's coinbase outputs. This
+aligns incentives: the operator wants correct settlement because they have
+already laid out the capital.
 
 ### 3.3 Multiple Risk-Takers
 
@@ -135,8 +136,8 @@ templates.
 
 **Operator (Risk-Taker).** Proposes a settlement for a completed epoch. The
 operator computes the UHPO distribution, pays all miners (derivative and
-non-derivative), posts a bond, and claims reimbursement from the RCA after a
-dispute window. This role is permissionless — any well-capitalized party can
+non-derivative), posts a bond, and claims reimbursement from the epoch's
+coinbase UTXOs after a dispute window. This role is permissionless — any well-capitalized party can
 propose.
 
 **Challengers.** Verify the operator's proposed settlement and submit fraud
@@ -151,11 +152,17 @@ An epoch corresponds to one difficulty adjustment period (~2016 blocks, ~2
 weeks), matching the natural settlement point described in
 [Pool Transactions and Derivative Instruments](braidpool_spec.md#pool-transactions-and-derivative-instruments).
 
-1. **Setup phase** (epoch start): The SC pre-signs KickOff, Assert, Disprove,
-   and Recovery transaction templates for the upcoming epoch's settlement.
+1. **Setup phase** (incremental, throughout epoch): As each coinbase matures
+   (height + 100), the current SC pre-signs it into the BitVM2 settlement
+   template (KickOff, Assert, Disprove, and Recovery paths). Pre-signing is
+   incremental — each coinbase is signed independently as it becomes eligible,
+   rather than requiring a single ceremony at epoch start. If the SC
+   composition changes mid-epoch (new block winners rotate into the committee),
+   later coinbases are pre-signed under the updated SC.
 
 2. **Mining phase**: Miners produce shares. Share transfers to risk-takers are
-   recorded in the braid consensus.
+   recorded in the braid consensus. Coinbase UTXOs accumulate as standard P2TR
+   outputs.
 
 3. **Settlement phase** (epoch end): The operator computes the UHPO
    distribution for the completed epoch, pays all miners, and publishes a
@@ -173,9 +180,41 @@ weeks), matching the natural settlement point described in
    concrete proving time benchmarks.
 
 5. **Finalization**: If no valid fraud proof is submitted, the operator is
-   reimbursed from the RCA. If a fraud proof succeeds, the claim is rejected,
-   the operator's bond is awarded to the challenger, and the RCA funds are
-   returned.
+   reimbursed from the epoch's coinbase outputs. If a fraud proof succeeds,
+   the claim is rejected, the operator's bond is awarded to the challenger,
+   and the coinbase funds are returned to the pool.
+
+### 4.2.1 Coinbase Pre-signing Protocol
+
+Under Direct Coinbase Settlement, each block's coinbase output is a standard
+P2TR UTXO controlled by the SC active at the time the block is mined. The
+pre-signing protocol operates incrementally:
+
+1. **Maturity wait.** A coinbase output becomes spendable at height + 100
+   (Bitcoin's coinbase maturity rule). Pre-signing cannot begin until this
+   height is reached.
+
+2. **SC identification.** The SC for a given coinbase is the set of $S$
+   unique hashers who won the most recent blocks at the time the coinbase
+   matures. If the pool has mined additional blocks since the coinbase was
+   created, the SC may have rotated.
+
+3. **Template construction.** For each mature coinbase, the current SC
+   constructs and pre-signs the BitVM2 transaction templates (KickOff, Assert,
+   Disprove, Recovery). Each coinbase is signed independently — there is no
+   requirement to batch-sign all coinbases in a single ceremony.
+
+4. **Key management across epoch.** Because the SC rotates as new blocks are
+   won, different coinbases within the same epoch may be pre-signed under
+   different SC compositions. The settlement transaction must include valid
+   pre-signatures for each coinbase input under the SC that signed it.
+
+5. **Failure handling.** If the SC fails to pre-sign a particular coinbase
+   (e.g., insufficient signers are online), that coinbase is excluded from the
+   current epoch's settlement. It rolls to the next epoch, where a new SC
+   attempt is made. This per-coinbase failure isolation is a key advantage
+   over aggregated models where a single signing failure blocks the entire
+   epoch.
 
 ### 4.3 Transaction Structure
 
@@ -184,27 +223,31 @@ spending gates that create mutually exclusive execution paths. When one path
 consumes a connector output, all alternative paths become unspendable, enforcing
 mutual exclusivity without requiring new signatures.
 
-In Braidpool's adaptation, the RCA output serves the role of the locked funds
-(analogous to the "peg-in" UTXO in generic BitVM2 bridges). There is no
-separate peg-out step — the RCA *is* the UTXO being disputed over. This is a
-key simplification compared to generic BitVM2 bridges: the pool's coinbase
-rewards are already locked in the RCA, so the "deposit" phase is implicit in
-the mining process itself.
+In Braidpool's Direct Coinbase Settlement, the individual coinbase UTXOs serve
+as the locked funds (analogous to the "peg-in" UTXOs in generic BitVM2
+bridges). There is no separate peg-out step — the coinbases *are* the UTXOs
+being settled. This is a key simplification compared to generic BitVM2 bridges:
+the pool's coinbase rewards are already locked as standard P2TR outputs, so
+the "deposit" phase is implicit in the mining process itself. Each coinbase
+remains as an individual UTXO controlled by the SC active when the block was
+mined.
 
-The SC pre-signs all transaction templates during the setup phase. Three paths
-are possible:
+The SC incrementally pre-signs settlement templates as coinbases mature
+(height + 100). At epoch end, the settlement transaction combines all
+pre-signed coinbases. Three paths are possible:
 
 ```
 Happy path (operator pays correctly, no dispute):
-  RCA Output --> KickOff1 (operator commits to settlement)
-                  --> KickOff2 (after 2-week challenge window)
-                       --> Take1 (operator reimbursed from RCA)
+  [~2016 coinbase inputs] + [connector] --> KickOff1 (operator commits)
+      --> KickOff2 (after 2-week challenge window)
+           --> Take1 (operator reimbursed, UHPO outputs paid)
 
 Unhappy path (challenger disputes):
   KickOff2 --> Challenge (challenger posts 1 BTC bond)
-                --> Assert (~4.8 MB, operator reveals z1..z42)
+                --> Assert (~4.8 MB, operator reveals z1..z42;
+                           embeds proven output hash in connector UTXO)
                      --> Disprove (~4 MB, challenger re-executes faulty chunk)
-                          --> Bond to challenger + RCA returned to pool
+                          --> Bond to challenger + coinbases returned to pool
 
 Timeout path:
   KickOff1 --> KickOff Timeout Tx (handles non-responsive operator)
@@ -216,10 +259,53 @@ path, the full dispute plays out in four transactions (KickOff → Challenge →
 Assert → Disprove). The connector outputs ensure that once the challenger
 initiates a dispute, the operator's claim path is invalidated.
 
+If a coinbase's SC fails to pre-sign, that coinbase is excluded from the
+settlement and rolls to the next epoch. This provides failure isolation: a
+single uncooperative SC member cannot block the entire epoch's settlement,
+only the specific coinbases they refuse to sign.
+
 The SC does not need to be online during the dispute phase — all paths are
 pre-signed during setup. The security model requires only that at least one SC
 member honestly deletes their key share after pre-signing (1-of-N honesty
 assumption).
+
+### 4.3.1 Multi-Input Settlement Transaction
+
+The settlement transaction at epoch end has the following structure:
+
+**Inputs** (~2016 coinbase UTXOs):
+- Each input spends one coinbase P2TR output from the epoch.
+- Each input carries a Schnorr signature from the SC that pre-signed it.
+- Coinbases whose SC failed to pre-sign are excluded (partial settlement).
+
+**Connector input** (1 UTXO):
+- Created by the KickOff transaction as part of the BitVM2 flow.
+- Carries the settlement logic (hybrid taproot leaves for covenant/dispute
+  paths, see [Section 9.3](#93-critical-analysis)).
+- Under a covenant soft fork, this input would enforce output binding via
+  OP_COHV or equivalent.
+
+**Outputs** (UHPO distribution):
+- One output per miner receiving payment (the UHPO set).
+- Operator reimbursement output.
+- Bond output (returned to operator after dispute window, or to challenger).
+
+**Size analysis:**
+- ~2016 inputs × ~107 bytes each (41-byte non-witness [36-byte outpoint +
+  4-byte sequence + 1-byte scriptSig length] + 66-byte witness [1-byte item
+  count + 1-byte length + 64-byte Schnorr signature]) ≈ ~215 KB total input
+  data.
+- Outputs depend on the number of distinct miners; with batching, typically
+  hundreds of outputs ≈ ~15–30 KB.
+- Total transaction: ~230–245 KB. Weight (BIP 141) = 4 × non-witness +
+  1 × witness. With ~91 KB non-witness and ~133 KB witness: ~498 KWU, well
+  within Bitcoin's 4000 KWU block weight limit.
+
+**BitVM2 connectors:** The standard BitVM2 mutual-exclusivity connectors gate
+between the happy path (Take1) and unhappy path (Challenge → Assert →
+Disprove). These are distinct from the settlement logic connector described
+above. The mutual-exclusivity connectors ensure that once a dispute begins,
+the operator's happy-path claim is invalidated.
 
 ### 4.4 Fraud Proof Specification
 
@@ -377,14 +463,15 @@ where $\pi_{\text{fraud}}$ is the maximum profit from submitting an incorrect
 settlement, and $C_{\text{challenge}}$ is the cost for a challenger to generate
 and submit a fraud proof (ensuring challengers are always incentivized).
 
-In practice, the fraud profit is bounded by the total RCA value $V_{\text{RCA}}$
-for that epoch. We parameterize the bond as:
+In practice, the fraud profit is bounded by the total epoch coinbase value
+$V_{\text{epoch}} = \sum_i v_i$ where $v_i$ is the value of each included
+coinbase. We parameterize the bond as:
 
-$$B = \alpha \cdot V_{\text{RCA}}, \qquad \alpha \in [0.1, 1.0]$$
+$$B = \alpha \cdot V_{\text{epoch}}, \qquad \alpha \in [0.1, 1.0]$$
 
 - $\alpha = 1.0$ provides full security against the output-binding gap: the
-  operator risks losing their entire bond (equal to the RCA value) if they
-  misbehave.
+  operator risks losing their entire bond (equal to the epoch's coinbase
+  value) if they misbehave.
 - $\alpha = 0.5$ is a practical starting point: the operator risks losing half
   the epoch's value, which already exceeds any rational fraud profit when
   accounting for reputational damage and loss of future operating income.
@@ -474,11 +561,12 @@ We enumerate all trust assumptions required by this proposal:
 
 This is the critical limitation of the proposal and must be clearly understood.
 
-After the dispute window expires, the operator controls the timelocked output
-and can sign *any* spending transaction. The fraud proof system guarantees that
-the operator's *proposed computation* is correct (the right amounts are
-attributed to the right miners), but it cannot guarantee that the operator
-actually *executes* those payments.
+After the dispute window expires, the operator controls the timelocked outputs
+(the individual coinbase UTXOs included in the settlement) and can sign *any*
+spending transaction. The fraud proof system guarantees that the operator's
+*proposed computation* is correct (the right amounts are attributed to the
+right miners), but it cannot guarantee that the operator actually *executes*
+those payments.
 
 In other words: we can verify that the operator computed the right answer, but
 we cannot force the operator to act on it (without covenant opcodes).
@@ -526,6 +614,7 @@ guarantees.
 | No honest challenger available | Settlement delayed; bond covers costs if eventually challenged. See verifier's dilemma ([Section 5.1](#51-trust-assumptions), item 6) | High |
 | Grief attack (frivolous challenges) | Challenger must post 1 BTC bond and execute full on-chain dispute — bond forfeiture makes griefing expensive | Low |
 | Dispute window timing manipulation | Use block height, not wall-clock timestamps | Medium |
+| Partial SC failure (some coinbases not pre-signed) | Exclude unsigned coinbases from settlement; they roll to next epoch. Partial settlement proceeds with remaining coinbases | Low |
 
 ### 5.5 Comparison with FROST-Only Approach
 
@@ -537,8 +626,10 @@ guarantees.
 | Output-binding gap | None (signers directly produce tx) | **New limitation** |
 | Challenger requirement | None | At least one honest challenger |
 | Capital requirement | Minimal | Operator must front payouts + bond |
+| Per-block FROST signing | Yes (~2016/epoch) | No (incremental pre-signing only) |
 | SC key deletion | Required, unverifiable | Required for template pre-signing |
 | SC collusion risk | Same | Same (inherited) |
+| Failure isolation | None (all-or-nothing) | Per-coinbase (partial settlement OK) |
 | Bootstrapping | Works from block 5 | Requires derivatives market |
 
 ## 6. Settlement Modes
@@ -576,12 +667,16 @@ market may not exist.
 parties to construct a threshold signature (see
 [Payout Authorization](braidpool_spec.md#payout-authorization)).
 
-**Early pool (few miners, no risk-takers).** FROST/ROAST threshold signing is
-the primary mechanism, exactly as described in the current spec.
+**Early pool (few miners, no risk-takers).** FROST/ROAST threshold signing on
+individual coinbase UTXOs is the primary mechanism. Each coinbase is a standard
+P2TR output controlled by the SC, and the SC directly signs the UHPO payout
+transaction — the same coinbase format used under Direct Coinbase Settlement,
+but without the BitVM2 dispute layer.
 
 **Transition.** As the derivatives market develops and risk-takers begin
-operating, the BitVM model becomes available. Both mechanisms can coexist: some
-epochs may use FROST, others may use BitVM settlement.
+operating, the BitVM settlement model becomes available. Both mechanisms can
+coexist: some epochs may use FROST, others may use BitVM settlement. The
+coinbase format (standard P2TR) remains the same in both cases.
 
 **Fallback.** If no operator proposes a settlement within $F = 144$ blocks (~1
 day) after an epoch ends, the pool reverts to FROST signing for that epoch. The
@@ -601,7 +696,7 @@ Several aspects of this proposal require further research:
    computation on representative hardware is needed.
 
 2. **Bond sizing dynamics.** The parameter $\alpha$ may need to be adjusted
-   dynamically based on the number of miners, the total RCA value, and observed
+   dynamically based on the number of miners, the total epoch coinbase value, and observed
    challenger behavior. A fixed $\alpha$ may be too conservative (locking up
    unnecessary capital) or too aggressive.
 
@@ -649,6 +744,17 @@ Several aspects of this proposal require further research:
    implementations. Braidpool should track Glock for future adoption while
    building on the proven BitVM2 architecture.
 
+9. **Multi-input BitVM2 scaling.** The Direct Coinbase Settlement model
+   creates a settlement transaction with ~2016 inputs. While this fits within
+   Bitcoin's 4000 KWU block weight limit (~498 KWU for a ~245 KB settlement
+   transaction), the BitVM2 pre-signed template must accommodate variable
+   input counts — the exact number of coinbases depends on how many SCs
+   successfully pre-sign. Whether BitVM2 templates support variable input
+   counts natively, or whether a fixed maximum (e.g., 2048) must be
+   allocated with unused slots filled by dust inputs, needs investigation.
+   If fixed-count templates are required, the dust overhead and its effect
+   on settlement economics should be quantified.
+
 ## 9. Covenant Soft Fork Analysis
 
 The output-binding gap ([Section 5.2](#52-the-output-binding-gap)) is the
@@ -677,30 +783,82 @@ Braidpool needs two distinct on-chain capabilities:
    footprint from megabytes to kilobytes.
 
 These are *distinct* requirements. A proposal might satisfy one without the
-other.
+other. Under Direct Coinbase Settlement, requirement 1 applies to the
+settlement transaction that spends ~2016 individual coinbase UTXOs: Script on
+the connector input must verify that the transaction's outputs (the UHPO
+distribution) match the fraud-proof-validated template.
 
 ### 9.2 Proposal Assessment
 
 | Proposal | BIP | Output Binding | Fraud Proofs | Maturity | Notes |
 | -------- | --- | -------------- | ------------ | -------- | ----- |
 | OP_CTV | [119](https://github.com/bitcoin/bips/blob/master/bip-0119.mediawiki) | Static only | No | Implementation ready | Commits at creation time; Braidpool needs dynamic |
+| CTV + CSFS | [119](https://github.com/bitcoin/bips/blob/master/bip-0119.mediawiki) + [348](https://github.com/bitcoin/bips/blob/master/bip-0348.mediawiki) | Delegated (SC signs template) | No | Implementation ready | Cryptographic output binding, but requires SC liveness |
 | OP_CSFS | [348](https://github.com/bitcoin/bips/blob/master/bip-0348.mediawiki) | With OP_CAT | No | Implementation ready | Forces tx data onto stack; limited without CAT |
 | OP_CAT | [347](https://github.com/bitcoin/bips/blob/master/bip-0347.mediawiki) | Yes (sighash trick) | No | Signet since April 2024 | Reconstructs sighash → extracts hashOutputs |
 | OP_TXHASH | [346](https://github.com/bitcoin/bips/pull/1500) | Yes | No | Bitcoin Core PR #29050 | TxFieldSelector hashes chosen fields; cleaner than CAT trick |
 | OP_CCV (MATT) | [443](https://github.com/bitcoin/bips/pull/1793) | Yes (if included) | Yes | Specification stage, no activation timeline | Merkle tree state machine; could replace BitVM2 (~7,000 vbytes vs. megabytes) |
+| OP_COHV | Thought experiment ([Section 9.5](#95-the-output-binding-impossibility)) | Vacuous without cross-input data | No | N/A | Collapses to CSFS or CTV unless combined with cross-input introspection. DCS provides a natural cross-input architecture via connector outputs (see [Section 9.5](#95-the-output-binding-impossibility)), though the "vacuous" assessment is unchanged: OP_COHV *per-coinbase* remains trivially satisfiable. |
 
 ### 9.3 Critical Analysis
 
-**CTV + CSFS is insufficient for Braidpool.** CTV commits to a fixed output
-template at the time the UTXO is created. Braidpool's UHPO distribution is
-unknown until the epoch ends — potentially weeks after the RCA UTXO is created.
-CSFS ([BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.mediawiki))
-pushes transaction data onto the Script stack, but without OP_CAT to
-manipulate that data, CSFS cannot extract and verify individual output fields.
-CTV + CSFS together enable *delegated* covenants (the signer can constrain
-outputs), but dynamic UHPO settlement — where the output template is provided
-as witness data and verified at spending time — would gain nothing from this
-combination alone.
+**CTV + CSFS enables delegated covenants but not trustless settlement.** CTV
+commits to a fixed output template at the time the UTXO is created. Braidpool's
+UHPO distribution is unknown until the epoch ends — potentially weeks after the
+coinbase UTXOs are created. CSFS
+([BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.mediawiki))
+verifies a signature over an arbitrary message on the stack, enabling
+*delegated* covenants: the spending script
+`<SC_pubkey> OP_CHECKSIGFROMSTACKVERIFY OP_CHECKTEMPLATEVERIFY` accepts a
+`<signature> <ctv_hash>` witness at spending time. CSFS verifies the SC signed
+the CTV hash; CTV verifies the transaction outputs match that hash. This is a
+meaningful improvement over pure FROST: with FROST, the SC signs the spending
+*transaction* and can redirect funds to arbitrary outputs; with delegated CTV,
+the SC signs a *template hash* and CTV cryptographically enforces the outputs.
+The output binding becomes cryptographic rather than purely trust-based.
+
+However, delegated CTV + CSFS still requires the SC to be **online at
+settlement time** — someone must compute the correct UHPO distribution, create
+the CTV hash, and sign it. This is the same liveness requirement that motivates
+the BitVM2 approach in the first place (see
+[Section 1](#1-introduction-and-problem-statement)). Furthermore, without
+OP_CAT, Script cannot independently verify that the signed CTV hash corresponds
+to the *correct* UHPO distribution. The SC's signature attests "these are the
+right outputs," but Script has no way to check that claim against the DAG state.
+An honest SC signing a correct template provides strong guarantees; a
+compromised SC signing an incorrect template is undetectable on-chain.
+
+**Hybrid taproot design.** Under Direct Coinbase Settlement, each coinbase
+remains a standard P2TR output — fund custody is separated from settlement
+logic. The hybrid taproot design applies to the **connector UTXO** created in
+the KickOff transaction, not to the coinbase scripts themselves. This
+connector carries the settlement logic:
+
+```
+Connector UTXO taproot leaves:
+  Leaf 1: <SC_pubkey> CSFS + CTV   (SC signs template — fast, output-bound)
+  Leaf 2: BitVM2 Assert/Disprove   (operator + fraud proof — slow, trustless)
+  Leaf 3: Timelock + FROST fallback (emergency — slowest)
+```
+
+This is a key architectural insight: DCS **separates fund custody (coinbase
+P2TR) from settlement logic (connector + covenant)**. Under the previous
+aggregated model, these were conflated in a single UTXO. By separating them,
+the coinbase format remains stable across all upgrade paths, and only the
+connector's taproot leaves change as new opcodes become available.
+
+Leaf 1 provides the fast happy path: the SC verifies the operator's UHPO
+computation, signs the CTV hash, and the settlement transaction executes with
+cryptographic output binding across all ~2016 coinbase inputs. If the SC is
+unavailable or disagrees with the operator, Leaf 2 provides the BitVM2 fraud
+proof path that requires no SC participation beyond the initial template
+pre-signing. Leaf 3 is the FROST fallback for when no operator is available.
+This layered design uses each mechanism where it is strongest: CTV + CSFS for
+the common case with output binding, BitVM2 for the adversarial case without
+SC liveness, and FROST for bootstrapping. Note that this "settlement logic
+connector" is distinct from the standard BitVM2 mutual-exclusivity connectors
+that gate between execution paths — it carries validated computation results
+to constrain settlement outputs.
 
 **OP_CAT closes the output-binding gap.** Using a technique described by
 [Poelstra](https://medium.com/blockstream/cat-and-schnorr-tricks-i-faf1b59bd298),
@@ -734,9 +892,11 @@ is the primary obstacle to OP_CAT activation, not lack of utility.
 
 **Political landscape.** As of early 2026, no covenant opcode has activated on
 mainnet. CTV + CSFS has 66 public signatories expressing support, making it
-the closest to potential activation — but as noted above, this combination does
-not solve Braidpool's dynamic settlement requirement. OP_CCV and OP_TXHASH
-have smaller constituencies and longer timelines.
+the closest to potential activation. While this combination alone does not
+provide trustless dynamic settlement (see the delegated covenant analysis
+above), it does enable the hybrid taproot design where CTV + CSFS provides a
+fast path with cryptographic output binding alongside the BitVM2 dispute path.
+OP_CCV and OP_TXHASH have smaller constituencies and longer timelines.
 
 ### 9.4 Recommendation
 
@@ -746,30 +906,140 @@ Braidpool should:
    (validated by Babylon, Citrea, and Bitlayer in
    [Section 4.9](#49-deployment-validation)) and requires no soft fork.
 
-2. **Support OP_CAT activation.** OP_CAT is the minimum viable covenant for
-   closing the output-binding gap. OP_TXHASH would also suffice and offers
+2. **Adopt CTV + CSFS when available.** If CTV + CSFS activates, add a
+   delegated-CTV taproot leaf as a fast settlement path (see the hybrid taproot
+   design above). This provides cryptographic output binding for the common case
+   where the SC is online and agrees with the operator's UHPO computation, while
+   retaining the BitVM2 dispute path for the adversarial case.
+
+3. **Support OP_CAT activation.** OP_CAT is the minimum viable covenant for
+   fully trustless output binding — it removes the SC liveness requirement that
+   delegated CTV + CSFS retains. OP_TXHASH would also suffice and offers
    cleaner semantics, but OP_CAT has greater deployment maturity. Supporting
    both is reasonable.
 
-3. **Monitor OP_CCV / MATT.** If OP_CCV activates, the BitVM2 dispute
+4. **Monitor OP_CCV / MATT.** If OP_CCV activates, the BitVM2 dispute
    mechanism could be replaced with a drastically more efficient on-chain fraud
    proof (~7,000 vbytes vs. megabytes), reducing capital requirements and
    dispute costs.
 
-4. **Design for graceful upgrade.** The protocol should isolate the fraud proof
-   and output-binding components so that covenant-enabled versions can replace
-   BitVM2 components without restructuring the settlement flow.
+5. **Design for graceful upgrade.** Under Direct Coinbase Settlement, each
+   coinbase is a standard P2TR output — this format never changes regardless of
+   which covenant opcodes become available. Only the connector UTXO and
+   settlement template change with new opcodes. The hybrid taproot design
+   naturally supports this: each spending path is an independent leaf that can
+   be added or replaced as new opcodes become available, while coinbase custody
+   remains untouched.
 
-The practical path is: BitVM2 today → OP_CAT when available → OP_CCV if/when
-available. Each step reduces trust assumptions and on-chain costs.
+The practical path is: BitVM2 today → CTV + CSFS delegated fast path →
+OP_CAT for trustless output binding → OP_CCV for efficient fraud proofs.
+Each step reduces trust assumptions and on-chain costs.
+
+### 9.5 The Output-Binding Impossibility
+
+The analysis above reveals a fundamental impossibility: **without an opcode
+that inspects the spending transaction's outputs, no mechanism can enforce
+correct UHPO payouts without a trusted online signer.** Every existing approach
+either (a) delegates output choice to a signer who must be trusted to choose
+correctly (FROST, delegated CTV + CSFS), or (b) verifies computation
+correctness but cannot bind that computation's result to the actual transaction
+outputs (BitVM2 without covenants). The output-binding gap is not an
+implementation limitation — it is a structural property of Bitcoin Script's
+current execution model, which receives no information about the spending
+transaction beyond the signature and witness.
+
+This motivates the question: what is the *minimal* opcode that closes the gap
+for Braidpool's use case? Consider a hypothetical OP_CHECKOUTPUTHASHVERIFY
+(OP_COHV) with the following semantics:
+
+```
+OP_CHECKOUTPUTHASHVERIFY:
+  Pop top stack element (32 bytes, interpreted as SHA256 hash)
+  Compute SHA256(serialized_outputs) of the spending transaction
+  If they match: continue execution
+  If they don't: fail the script
+```
+
+This is strictly less powerful than OP_CAT, OP_TXHASH, or OP_CCV. It
+introduces transaction introspection — Script can "see" the outputs — without
+enabling recursive covenants, sighash reconstruction, or state-carrying UTXOs.
+
+**However, output introspection alone is insufficient.** Consider the
+settlement script `<operator_pubkey> OP_CHECKSIGVERIFY OP_COHV` with witness
+`<signature> <output_hash>`. The operator chooses both the outputs and the hash
+on the witness stack. Since OP_COHV compares `SHA256(outputs)` against the
+stack-provided hash, the operator can always satisfy this check trivially by
+setting `output_hash = SHA256(whatever_outputs_they_chose)`. **The constraint
+is vacuous** — it reduces to plain CHECKSIG.
+
+For output introspection to constrain the operator, the hash must come from
+somewhere the operator does not control:
+
+1. **Hardcoded in the scriptPubKey.** This is equivalent to CTV — the hash is
+   fixed at UTXO creation time. Useless for Braidpool, where the UHPO
+   distribution is unknown until the epoch ends.
+
+2. **Signed by a third party (CSFS).** Script
+   `<SC_pubkey> OP_CHECKSIGFROMSTACKVERIFY OP_COHV` verifies that the SC signed
+   the output hash, and COHV verifies the outputs match. This collapses to the
+   delegated CTV + CSFS pattern already analyzed in
+   [Section 9.3](#93-critical-analysis), with the same SC liveness requirement.
+
+3. **Cross-input data: embedded in a BitVM2 connector.** The Assert transaction
+   commits the proven-correct output hash into a connector output's
+   scriptPubKey. The UHPO payout transaction spends this connector, and the
+   connector's script enforces `<embedded_hash> OP_COHV`. This is the only
+   scenario where output introspection adds something CSFS cannot provide:
+   the hash is committed on-chain by the fraud proof mechanism, not signed by
+   a live party. But this requires reading data across inputs — a significantly
+   more complex capability than single-input introspection, closer in scope to
+   OP_TXHASH or OP_CCV than to a minimal opcode.
+
+**Direct Coinbase Settlement illustrates the impossibility's practical shape.**
+Under DCS, the settlement transaction spends ~2016 individual coinbase inputs
+(standard P2TR) plus one connector input created by the BitVM2 Assert
+transaction. The Assert embeds the proven-correct output hash into the
+connector's scriptPubKey. The natural settlement script is:
+`<embedded_hash> OP_COHV` on the connector input — verifying that the
+transaction's outputs match the fraud-proof-validated UHPO distribution. This
+is precisely item 3 above (cross-input data flow): the output hash originates
+in the Assert transaction, passes through the connector UTXO, and constrains
+the settlement transaction's outputs. DCS does not circumvent the
+impossibility; it *demonstrates why cross-input data flow is necessary*. The
+coinbase inputs provide funds (standard P2TR, no covenant complexity), while
+the connector input provides the validated constraint (requiring
+OP_TXHASH/OP_CCV-level capability). This separation of fund custody from
+settlement logic is architecturally clean but still requires an opcode that
+can read data across inputs — confirming that the minimum viable covenant is
+at least as powerful as OP_CAT or OP_TXHASH.
+
+**Conclusion.** The impossibility result is robust: closing the output-binding
+gap requires either (a) a trusted online signer (FROST, delegated CTV + CSFS),
+or (b) a covenant opcode powerful enough to bridge verified computation results
+to transaction output enforcement. There is no "minimal" opcode that avoids
+both trust and complexity — the simplest sufficient opcodes are OP_CAT (which
+enables sighash reconstruction and output verification in a single input's
+script) or OP_TXHASH (which provides direct field access). Proposals narrower
+than these either collapse to existing mechanisms or require cross-input data
+flow that introduces comparable complexity.
 
 ## 10. Conclusion
 
-The BitVM2 + risk-taker model addresses the biggest weakness of threshold
-signing for UHPO settlement: liveness. By replacing interactive signing with
-optimistic verification, we eliminate the requirement that a threshold of
-signers remain online and correctly execute a multi-round protocol. The signing
-committee's role is reduced to a one-time template pre-signing at epoch start.
+The BitVM2 + risk-taker model with Direct Coinbase Settlement addresses the
+biggest weakness of threshold signing for UHPO settlement: liveness. Under the
+FROST-only approach, the signing committee must execute a multi-round signing
+ceremony for *every block's* coinbase — approximately 2016 ceremonies per
+epoch. By replacing this with optimistic verification over individual coinbase
+UTXOs, we eliminate per-block signing entirely. The signing committee's role is
+reduced to incremental pre-signing of settlement templates as coinbases mature
+(height + 100), requiring at most one coordinated action per epoch rather than
+one per block.
+
+Each coinbase remains as a standard P2TR UTXO controlled by the SC active when
+the block was mined. At epoch end, a single multi-input settlement transaction
+(~2016 inputs) distributes UHPO payments to all miners. If any coinbase's SC
+fails to pre-sign, it is excluded from the settlement and rolls to the next
+epoch — providing failure isolation that an aggregated model would lack.
 
 This comes at a cost: the output-binding gap is a new, critical limitation. We
 cannot force the operator to execute the correct payouts on-chain without
