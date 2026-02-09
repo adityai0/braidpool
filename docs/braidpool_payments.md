@@ -513,7 +513,10 @@ We enumerate all trust assumptions required by this proposal:
 
 1. **SC honest majority.** At least $\lceil 2S/3 \rceil + 1$ of the $S$ SC
    members are honest and correctly pre-sign the BitVM templates. This is
-   inherited from the FROST approach.
+   inherited from the FROST approach. **Note:** OP_CCV
+   ([Section 9.3](#93-critical-analysis)) eliminates this assumption entirely
+   by replacing SC-controlled key paths with NUMS-key coinbases whose spending
+   rules are enforced by an on-chain covenant state machine.
 
 2. **At least one honest challenger.** During the dispute window, at least one
    party must be online, have the full DAG state, and be willing to submit a
@@ -602,7 +605,7 @@ guarantees.
 | -------------- | ---------- |
 | Cryptographic | SC pre-signatures valid, fraud proof circuit correct, DAG state tamper-proof (anchored in Bitcoin PoW) |
 | Economic | Bond disincentivizes false claims, challenger bounty incentivizes monitoring, competition among operators reduces rents |
-| Trusted | SC honest majority, operator execution fidelity (mitigated by bond), challenger availability |
+| Trusted | SC honest majority (eliminated by OP_CCV; see [Section 9.3](#93-critical-analysis)), operator execution fidelity (mitigated by bond), challenger availability |
 
 ### 5.4 Attack Vectors
 
@@ -610,7 +613,7 @@ guarantees.
 | ------ | ---------- | -------- |
 | Operator claims incorrect distribution | Type B fraud proof catches and rejects | Medium |
 | Output-binding gap exploitation | Economic: bond forfeiture, reputation, repeat-player dynamics | **Critical** |
-| SC + operator collusion | Same severity as FROST 51% attack — inherited, not new | **Critical** |
+| SC + operator collusion | Same severity as FROST 67% attack (SC threshold is $\lceil 2S/3 \rceil + 1$) — inherited, not new. **Eliminated by OP_CCV** (NUMS key path, covenant-enforced settlement; see [Section 9.3](#93-critical-analysis)) | **Critical** (without covenants) / Eliminated (with OP_CCV) |
 | No honest challenger available | Settlement delayed; bond covers costs if eventually challenged. See verifier's dilemma ([Section 5.1](#51-trust-assumptions), item 6) | High |
 | Grief attack (frivolous challenges) | Challenger must post 1 BTC bond and execute full on-chain dispute — bond forfeiture makes griefing expensive | Low |
 | Dispute window timing manipulation | Use block height, not wall-clock timestamps | Medium |
@@ -777,7 +780,7 @@ Braidpool's specific requirements.
 
 ### 9.1 Braidpool's Requirement
 
-Braidpool needs two distinct on-chain capabilities:
+Braidpool needs three distinct on-chain capabilities:
 
 1. **Output binding.** At spending time, Script must verify that a
    transaction's outputs match a template provided as witness data. This
@@ -794,6 +797,15 @@ Braidpool needs two distinct on-chain capabilities:
    transaction graph, but native Script support could reduce the on-chain
    footprint from megabytes to kilobytes.
 
+3. **SC trust elimination.** The ability to enforce correct settlement without
+   relying on the SC's honest majority. Under the current design, a miner
+   controlling $\geq \lceil 2S/3 \rceil + 1$ of the most recent $S$ blocks can
+   populate the SC with Sybil identities and spend coinbases via the taproot
+   key path, bypassing BitVM2 entirely ([Section 5.4](#54-attack-vectors)).
+   Eliminating the SC trust assumption requires that the coinbase's spending
+   rules be enforced by the Script interpreter, not by the SC's willingness to
+   sign correctly.
+
 These are *distinct* requirements. A proposal might satisfy one without the
 other. Under Direct Coinbase Settlement, requirement 1 applies to the
 settlement transaction that spends ~2016 individual coinbase UTXOs: Script on
@@ -802,17 +814,17 @@ distribution) match the fraud-proof-validated template.
 
 ### 9.2 Proposal Assessment
 
-| Proposal | BIP | Output Binding | Fraud Proofs | Maturity | Notes |
-| -------- | --- | -------------- | ------------ | -------- | ----- |
-| OP_CTV | [119](https://github.com/bitcoin/bips/blob/master/bip-0119.mediawiki) | Static only | No | Implementation ready | Commits at creation time; Braidpool needs dynamic |
-| CTV + CSFS | [119](https://github.com/bitcoin/bips/blob/master/bip-0119.mediawiki) + [348](https://github.com/bitcoin/bips/blob/master/bip-0348.mediawiki) | Delegated (SC signs template) | No | Implementation ready | Cryptographic output binding, but requires SC liveness |
-| OP_CSFS | [348](https://github.com/bitcoin/bips/blob/master/bip-0348.mediawiki) | With OP_CAT | No | Implementation ready | Forces tx data onto stack; limited without CAT |
-| OP_CAT | [347](https://github.com/bitcoin/bips/blob/master/bip-0347.mediawiki) | Yes (sighash trick) | No | Signet since April 2024 | Reconstructs sighash → extracts hashOutputs |
-| OP_TXHASH | [346](https://github.com/bitcoin/bips/pull/1500) | Yes | No | Bitcoin Core PR #29050 | TxFieldSelector hashes chosen fields; cleaner than CAT trick |
-| OP_CCV (MATT) | [443](https://github.com/bitcoin/bips/pull/1793) | Yes (if included) | Yes | Specification stage, no activation timeline | Merkle tree state machine; could replace BitVM2 (~7,000 vbytes vs. megabytes) |
-| LNHANCE | [119](https://github.com/bitcoin/bips/blob/master/bip-0119.mediawiki) + [348](https://github.com/bitcoin/bips/blob/master/bip-0348.mediawiki) + IKEY + [442](https://github.com/bitcoin/bips/pull/1699) | Delegated (CTV + CSFS) | No | Bundled proposal, 66+ signatories | Bundles CTV + CSFS + OP_INTERNALKEY + OP_PAIRCOMMIT; most likely activation vehicle |
-| OP_PAIRCOMMIT | [442](https://github.com/bitcoin/bips/pull/1699) | No | No | Draft BIP | Efficient hash combiner for two stack elements; useful for Merkle proofs with OP_CAT but does not enable output binding alone |
-| OP_COHV | Thought experiment ([Section 9.5](#95-the-output-binding-impossibility)) | Vacuous without cross-input data | No | N/A | Collapses to CSFS or CTV unless combined with cross-input introspection. DCS provides a natural cross-input architecture via connector outputs (see [Section 9.5](#95-the-output-binding-impossibility)), though the "vacuous" assessment is unchanged: OP_COHV *per-coinbase* remains trivially satisfiable. |
+| Proposal | BIP | Output Binding | Fraud Proofs | SC Trust Eliminated | Maturity | Notes |
+| -------- | --- | -------------- | ------------ | ------------------- | -------- | ----- |
+| OP_CTV | [119](https://github.com/bitcoin/bips/blob/master/bip-0119.mediawiki) | Static only | No | No | Implementation ready | Commits at creation time; Braidpool needs dynamic |
+| CTV + CSFS | [119](https://github.com/bitcoin/bips/blob/master/bip-0119.mediawiki) + [348](https://github.com/bitcoin/bips/blob/master/bip-0348.mediawiki) | Delegated (SC signs template) | No | No (SC signs hash) | Implementation ready | Cryptographic output binding, but requires SC liveness |
+| OP_CSFS | [348](https://github.com/bitcoin/bips/blob/master/bip-0348.mediawiki) | With OP_CAT | No | No | Implementation ready | Forces tx data onto stack; limited without CAT |
+| OP_CAT | [347](https://github.com/bitcoin/bips/blob/master/bip-0347.mediawiki) | Yes (sighash trick) | No | No (fraud proofs still need SC) | Signet since April 2024 | Reconstructs sighash → extracts hashOutputs |
+| OP_TXHASH | [346](https://github.com/bitcoin/bips/pull/1500) | Yes | No | No (same as CAT) | Bitcoin Core PR #29050 | TxFieldSelector hashes chosen fields; cleaner than CAT trick |
+| OP_CCV (MATT) | [443](https://github.com/bitcoin/bips/pull/1793) | Yes (if included) | Yes | **Yes** (NUMS key, on-chain state machine) | Specification stage, no activation timeline | Merkle tree state machine; replaces BitVM2 (~7,000 vbytes vs. megabytes); eliminates 67% attack |
+| LNHANCE | [119](https://github.com/bitcoin/bips/blob/master/bip-0119.mediawiki) + [348](https://github.com/bitcoin/bips/blob/master/bip-0348.mediawiki) + IKEY + [442](https://github.com/bitcoin/bips/pull/1699) | Delegated (CTV + CSFS) | No | No | Bundled proposal, 66+ signatories | Bundles CTV + CSFS + OP_INTERNALKEY + OP_PAIRCOMMIT; most likely activation vehicle |
+| OP_PAIRCOMMIT | [442](https://github.com/bitcoin/bips/pull/1699) | No | No | No | Draft BIP | Efficient hash combiner for two stack elements; useful for Merkle proofs with OP_CAT but does not enable output binding alone |
+| OP_COHV | Thought experiment ([Section 9.5](#95-the-output-binding-impossibility)) | Vacuous without cross-input data | No | No | N/A | Collapses to CSFS or CTV unless combined with cross-input introspection. DCS provides a natural cross-input architecture via connector outputs (see [Section 9.5](#95-the-output-binding-impossibility)), though the "vacuous" assessment is unchanged: OP_COHV *per-coinbase* remains trivially satisfiable. |
 
 ### 9.3 Critical Analysis
 
@@ -886,7 +898,8 @@ exist). Note that OP_TXHASH
 introspection via a `TxFieldSelector` byte, with cleaner semantics but less
 deployment maturity.
 
-**OP_CCV closes the fraud proof gap.** MATT / OP_CHECKCONTRACTVERIFY
+**OP_CCV closes the fraud proof gap *and* eliminates the SC trust assumption.**
+MATT / OP_CHECKCONTRACTVERIFY
 ([BIP 443](https://github.com/bitcoin/bips/pull/1793)) enables on-chain state
 machines via Merkle tree commitments. For Braidpool, this could replace the
 entire BitVM2 pre-signed transaction graph with a native Script-based fraud
@@ -894,6 +907,34 @@ proof at approximately 7,000 vbytes — three orders of magnitude smaller than
 the current BitVM2 Assert transaction (~4.8 MB). OP_CCV's role is *distinct*
 from OP_CAT's: CAT solves output binding, CCV solves on-chain fraud proof
 verification. Both would be needed for the most efficient design.
+
+**OP_CCV uniquely eliminates the 67% SC attack.** With OP_CCV, coinbase outputs
+can use a NUMS (Nothing-Up-My-Sleeve) internal key — a provably unspendable
+taproot key path — so that *all* spending must go through Script leaves
+containing the covenant-enforced dispute mechanism. This eliminates the attack
+described in [Section 9.1](#91-braidpools-requirement) (requirement 3): even a
+miner controlling $\geq 67\%$ of the pool's hashrate cannot steal funds,
+because there is no key path to exploit. The spending rules are enforced by the
+Script interpreter, not by the SC's willingness to sign correctly.
+
+Critically, this defense does not require the attacker to run honest software
+voluntarily — it follows from the braid consensus rules themselves. The
+coinbase format (including the OP_CCV covenant) is part of the share validation
+rules. A miner running standard Braidpool software produces OP_CCV-locked
+coinbases; a miner running forked software that omits the covenant produces
+*invalid shares* that honest nodes reject regardless of the attacker's
+hashrate. Therefore: (a) a 67% miner running standard software creates
+covenant-locked coinbases and cannot steal, (b) a 67% miner running forked
+software cannot get invalid shares accepted into the DAG. The SC trust
+assumption is eliminated entirely.
+
+No other covenant proposal achieves this. CTV + CSFS delegates output binding
+to the SC, preserving the trust assumption. OP_CAT enables trustless output
+binding (via sighash reconstruction) but does not natively support the on-chain
+state machine needed to embed the full dispute mechanism in the coinbase
+Script. OP_CCV is the only proposal that satisfies all three requirements from
+[Section 9.1](#91-braidpools-requirement): output binding, fraud proof
+verification, and SC trust elimination.
 
 **Recursive covenant concerns.** OP_CAT faces opposition primarily due to
 concerns about enabling recursive covenants — the worry that unrestricted
@@ -959,10 +1000,16 @@ Braidpool should:
    cleaner semantics, but OP_CAT has greater deployment maturity. Supporting
    both is reasonable.
 
-4. **Monitor OP_CCV / MATT.** If OP_CCV activates, the BitVM2 dispute
-   mechanism could be replaced with a drastically more efficient on-chain fraud
-   proof (~7,000 vbytes vs. megabytes), reducing capital requirements and
-   dispute costs.
+4. **Advocate for OP_CCV / MATT.** OP_CCV is uniquely important because it is
+   the only covenant proposal that eliminates the SC trust assumption (see
+   [Section 9.3](#93-critical-analysis)). Without OP_CCV, a miner with
+   $\geq 67\%$ of pool hashrate can control the SC and steal funds via key-path
+   spend — this is a critical vulnerability inherited from FROST that no other
+   covenant addresses. If OP_CCV activates, the BitVM2 dispute mechanism is
+   replaced with a drastically more efficient on-chain fraud proof (~7,000
+   vbytes vs. megabytes), coinbases use NUMS internal keys (no exploitable key
+   path), and the dispute mechanism is enforced by the Script interpreter rather
+   than the SC's honest majority.
 
 5. **Design for graceful upgrade.** Under Direct Coinbase Settlement, each
    coinbase is a standard P2TR output — this format never changes regardless of
@@ -977,9 +1024,11 @@ The practical path follows two parallel tracks:
 - **Verification track** (how fraud proofs are checked): BitVM2 today →
   Glock (~2026 target, ~550× claimed on-chain data reduction) → Circle STARK
   (requires OP_CAT; no trusted setup, quantum-resistant).
-- **Covenant track** (how outputs are bound): FROST/economic only → LNHANCE
-  CTV + CSFS delegated fast path → OP_CAT trustless output binding → OP_CCV
-  efficient on-chain fraud proofs.
+- **Covenant track** (how outputs are bound and SC trust reduced):
+  FROST/economic only (SC trust assumption) → LNHANCE CTV + CSFS delegated
+  fast path (SC trust preserved) → OP_CAT trustless output binding (SC trust
+  for fraud proofs only) → OP_CCV on-chain state machine (**SC trust
+  eliminated**; NUMS key path, covenant-enforced settlement).
 
 These tracks are independent — progress on one does not require progress on
 the other. Each step within a track reduces trust assumptions and on-chain
@@ -1101,12 +1150,19 @@ the block was mined. At epoch end, a single multi-input settlement transaction
 fails to pre-sign, it is excluded from the settlement and rolls to the next
 epoch — providing failure isolation that an aggregated model would lack.
 
-This comes at a cost: the output-binding gap is a new, critical limitation. We
-cannot force the operator to execute the correct payouts on-chain without
-covenant opcodes. Economic incentives (bond forfeiture, reputation, future
-income) mitigate this for rational operators, and the proof-of-payment
+This comes at two costs. First, the output-binding gap is a new, critical
+limitation. We cannot force the operator to execute the correct payouts on-chain
+without covenant opcodes. Economic incentives (bond forfeiture, reputation,
+future income) mitigate this for rational operators, and the proof-of-payment
 mechanism (SPV proof or SC escrow) provides additional verification, but the
 gap remains open until a soft fork enabling dynamic output introspection.
+Second, the SC honest majority assumption is inherited from FROST and remains
+critical: a miner controlling $\geq 67\%$ of pool hashrate can populate the SC
+with Sybil identities and steal funds via the taproot key path, bypassing
+BitVM2 entirely. OP_CCV ([Section 9.3](#93-critical-analysis)) is the only
+covenant proposal that eliminates both limitations — replacing key-path-
+spendable coinbases with NUMS-key coinbases whose spending rules are enforced
+by an on-chain covenant state machine.
 
 The net assessment: this approach is stronger for pools with active derivatives
 markets, where well-capitalized risk-takers serve as natural operators. It is
