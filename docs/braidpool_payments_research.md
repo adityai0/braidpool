@@ -899,39 +899,105 @@ Several aspects of this proposal require further research:
    the first valid challenger. See also the verifier's dilemma discussion in
    [Section 5.1](#51-trust-assumptions), item 6.
 
-7. **Groth16 trusted setup.** BitVM2's on-chain SNARK verification uses
-   Groth16, which requires a structured reference string (SRS) from a trusted
-   setup ceremony. Citrea's Clementine bridge already uses Groth16 in
-   production (mainnet January 2026), providing practical precedent — the open
-   problem for Braidpool is narrower: which existing ceremony to adopt? Options
-   include: (a) reuse an existing ceremony (Zcash Powers of Tau, Hermez, or
-   whatever Citrea adopted), (b) run a pool-specific ceremony, or (c) switch
-   to PLONK (universal, updateable SRS — no per-circuit ceremony, but an initial setup is still required) at the cost of
-   approximately 3× larger proofs. Additionally, Groth16's security rests on
-   the hardness of the discrete logarithm problem in pairing-friendly elliptic
-   curves — broken by Shor's algorithm on a fault-tolerant quantum computer.
-   While there is no consensus on timelines (estimates range from decades to
-   never for cryptographically relevant quantum computers), this is a long-term
-   concern for any pairing-based proof system. STARKs (hash-based) are
-   quantum-resistant by construction; see the Circle STARK discussion in
-   [Section 9.3](#93-critical-analysis) for a potential migration path that
-   would eliminate both the trusted setup and the quantum vulnerability.
+7. **Groth16 trusted setup and the path to transparent proofs.** BitVM2's
+   on-chain SNARK verification uses Groth16, which requires a structured
+   reference string (SRS) from a trusted setup ceremony. The trusted setup is
+   not inherent to BitVM2's architecture — it is an artifact of Groth16 being
+   the most efficient proof system whose verification can currently be
+   performed in Bitcoin Script without new opcodes. Citrea's Clementine bridge
+   already uses Groth16 in production (mainnet January 2026), providing
+   practical precedent.
+
+   **Near-term options (no soft fork):**
+   - (a) Reuse an existing Groth16 ceremony (Zcash Powers of Tau with 87+
+     participants, Hermez, or whatever Citrea adopted). Trust assumption:
+     at least one participant destroyed their toxic waste.
+   - (b) Run a pool-specific ceremony with open participation.
+   - (c) Switch to PLONK with KZG commitments (universal, updateable SRS —
+     no per-circuit ceremony, participants can add entropy indefinitely).
+     Cost: ~3× larger proofs, but strictly weaker trust assumption.
+   - (d) Adopt [Glock](https://eprint.iacr.org/2025/1485) (see Open Problem
+     8), which uses a designated-verifier SNARK. **Important clarification:**
+     DV-SNARKs are *not* setup-free — the verifier generates a secret
+     verification key, and the toxic waste problem persists. However, in
+     BitVM2's challenge-response model the challenger *is* the designated
+     verifier, so the setup is per-challenger rather than a shared ceremony.
+
+   **Why transparent (setup-free) alternatives fail without OP_CAT.** The
+   constraint is that verification must execute in Bitcoin Script, which has no
+   loops and limited stack depth. Pairing-based verification (Groth16, PLONK)
+   is compact: 3 pairings, constant time. All known transparent proof systems
+   either have verification too expensive for Script, or require OP_CAT:
+
+   - *STARKs* (hash-based, quantum-resistant): verification is
+     $O(\log^2 n)$ hash operations — efficient enough for Script, but Merkle
+     proof verification requires concatenating siblings before hashing, which
+     needs OP_CAT. This is the *only* transparent system with a demonstrated
+     Bitcoin Script verifier (see [Section 9.3](#93-critical-analysis)).
+   - *Bulletproofs* (discrete-log-based, no trusted setup): verification
+     requires a multi-scalar multiplication $\sum_{i=1}^{n} s_i \cdot G_i$
+     over $n$ generator points, where $n$ is the circuit size. This is
+     $O(n)$ group operations — *linear* in the circuit. For Braidpool's
+     UHPO circuit ($n \sim 10^6$), this means ~$10^6$ elliptic curve
+     multiplications. Each EC multiplication in Script requires hundreds of
+     opcodes (big-integer modular arithmetic emulated in 4-byte CScriptNum).
+     The BitVM2 Assert transaction for Groth16 (3 pairings) is already
+     ~4.8 MB; for Bulletproofs it would be on the order of *terabytes* —
+     completely infeasible. The linear verifier is fundamental to the IPA
+     (Inner Product Argument) construction and cannot be improved without
+     changing the proof system.
+   - *Halo2 / IPA-based PLONK* (discrete-log, no trusted setup): same
+     $O(n)$ verification bottleneck as Bulletproofs. Also not quantum-safe.
+   - *Nova / folding schemes* (discrete-log, transparent): efficient for
+     incremental computation (the UHPO calculation is naturally incremental),
+     but the final proof still requires a base SNARK verifier — deferring
+     the setup question to the inner proof system, not eliminating it.
+   - *Binius* (binary tower fields, hash-based, quantum-resistant): a
+     promising research direction using native binary arithmetic (~5× faster
+     than Mersenne-31 for XOR-heavy computations), but no Bitcoin Script
+     verifier exists or has been proposed.
+
+   **OP_CAT is the critical dependency.** It unlocks the entire class of
+   hash-based transparent proof systems for Bitcoin Script. A single soft fork
+   simultaneously solves two of Braidpool's open problems: trustless output
+   binding (the sighash reconstruction trick) and elimination of the trusted
+   setup (STARK verification). See the Circle STARK discussion in
+   [Section 9.3](#93-critical-analysis).
+
+   **Quantum vulnerability.** Groth16's security rests on the hardness of
+   the discrete logarithm problem in pairing-friendly elliptic curves —
+   broken by Shor's algorithm on a fault-tolerant quantum computer.
+   Bulletproofs, Halo2, and Nova share this vulnerability (all discrete-log-
+   based). Only hash-based systems (STARKs, Circle STARKs, Binius) are
+   quantum-resistant by construction.
 
 8. **BitVM evolution.** BitVM3-RSA
    ([Linus et al., July 2025](https://bitvm.org/bitvm3)) was retracted due
    to a security break discovered by Liam Eagen at Fairgate Labs.
-   [Glock](https://eprint.iacr.org/2025/1485) (Designated-Verifier SNARK,
-   Alpen Labs) is the most promising successor, offering up to ~1000×
-   lower on-chain costs than BitVM2 for Assert transactions (~56 kB vs.
-   ~4.8 MB). The Starknet blog reports ~550× for total on-chain data
-   reduction in their specific deployment, which includes overheads beyond
-   Assert alone. Glock has progressed from research to active development:
-   the
+   [Glock](https://eprint.iacr.org/2025/1485) (Garbled Locks, Alpen Labs)
+   is the most promising successor, offering up to ~1000× lower on-chain
+   costs than BitVM2 for Assert transactions (~56 kB vs. ~4.8 MB). The
+   Starknet blog reports ~550× for total on-chain data reduction in their
+   specific deployment, which includes overheads beyond Assert alone.
+
+   Glock uses a designated-verifier SNARK (DV-SNARK) based on a modified
+   Pari construction. The DV-SNARK replaces expensive pairing verification
+   with scalar multiplication, enabling instantiation over any elliptic
+   curve (not necessarily pairing-friendly) — Glock uses a binary curve for
+   compatibility with garbled circuits. **DV-SNARKs are not setup-free:**
+   the verifier generates a secret verification key, and the toxic waste
+   problem persists at the per-verifier level. However, in BitVM2's
+   challenge-response model, the challenger is the designated verifier and
+   generates their own key, so the trust model differs from a shared
+   ceremony: each challenger's setup is self-sovereign.
+
+   Glock has progressed from research to active development: the
    [Starknet Foundation](https://www.starknet.io/blog/starknet-alpen-bitcoin-glock/)
    has funded a shared Glock verifier for the Starknet–Bitcoin bridge,
-   with a target 2026 deployment.
-   Braidpool should track Glock for future adoption while building on the
-   proven BitVM2 architecture.
+   with a target 2026 deployment. Braidpool should track Glock for future
+   adoption while building on the proven BitVM2 architecture. Note that
+   Glock does not eliminate the trusted setup problem (see Open Problem 7)
+   — only OP_CAT + STARKs achieves that.
 
 9. **Batched settlement details.** The batched settlement model
    ([Section 4.3.2](#432-batched-settlement)) resolves the standardness
@@ -1151,18 +1217,41 @@ is the most likely near-term path to getting CTV + CSFS activated.
 **Circle STARK verification on Bitcoin.** The
 [Bitcoin Wildlife Sanctuary](https://github.com/Bitcoin-Wildlife-Sanctuary/bitcoin-circle-stark)
 project (a StarkWare collaboration) has implemented a Circle STARK verifier in
-Bitcoin Script, tested on the Catnet signet. Circle STARKs use the Mersenne-31
-prime ($2^{31} - 1$), whose field elements fit in Bitcoin Script's 4-byte
-(CScriptNum) integers, though field arithmetic (especially multiplication
-producing up to 62-bit intermediates) requires multi-precision emulation via
-OP_CAT. The verifier
+Bitcoin Script, tested on the Catnet signet. The first STARK proof verification
+on Bitcoin was completed on July 12, 2024, verifying a squared Fibonacci
+sequence at ~790 kvB. Circle STARKs use the Mersenne-31 prime ($2^{31} - 1$),
+whose field elements fit in Bitcoin Script's 4-byte (CScriptNum) integers,
+though field arithmetic (especially multiplication producing up to 62-bit
+intermediates) requires multi-precision emulation via OP_CAT. The verifier
 requires OP_CAT (the soft fork dependency) together with the existing OP_SHA256.
-If OP_CAT activates, this enables direct STARK verification in Script,
-replacing the Groth16 SNARK wrapper used by BitVM2. Benefits: no trusted setup
-ceremony (eliminating [Open Problem 7](#8-open-problems)), quantum-resistant
-(hash-based, immune to Shor's algorithm), and transparent (no structured
-reference string). This is the long-term endgame for on-chain fraud proof
-verification.
+
+The production prover for Circle STARKs is
+[Stwo](https://starkware.co/blog/stwo-prover-the-next-gen-of-stark-scaling-is-here/)
+(StarkWare), deployed on Starknet mainnet in November 2025. Stwo achieves
+940× throughput improvement over its predecessor (Stone), generating proofs in
+seconds for computations that previously took minutes. The Circle STARK
+protocol avoids heavy algebraic machinery: when $p + 1$ is divisible by a
+large power of 2 (as with M31), the circle curve over the prime field provides
+the algebraic structure needed for both FFT and FRI, enabling transparent
+(no trusted setup) polynomial commitments from hash functions alone.
+
+A newer research direction,
+[Binius](https://www.binius.xyz/), operates over binary tower fields (GF(2^k))
+rather than prime fields. Binary field addition is a single XOR gate (no carry
+propagation), yielding ~5× efficiency over M31 for hash-heavy computations.
+Binius is hash-based, transparent, and quantum-resistant like Circle STARKs,
+but no Bitcoin Script verifier has been proposed — M31 arithmetic maps to
+CScriptNum natively, while binary tower arithmetic would require different
+emulation strategies.
+
+If OP_CAT activates, Circle STARK verification in Script replaces the Groth16
+SNARK wrapper used by BitVM2. Benefits: no trusted setup ceremony (eliminating
+[Open Problem 7](#8-open-problems)), quantum-resistant (hash-based, immune to
+Shor's algorithm), and transparent (no structured reference string). Proof
+sizes are larger (~50–100 KB vs. ~200 bytes for Groth16), but in BitVM2's
+dispute model this proof is only materialized on-chain if someone cheats — the
+happy path never posts it. This is the long-term endgame for on-chain fraud
+proof verification.
 
 ### 9.4 Recommendation
 
@@ -1205,9 +1294,11 @@ Braidpool should:
 
 The practical path follows two parallel tracks:
 
-- **Verification track** (how fraud proofs are checked): BitVM2 today →
-  Glock (~2026 target, up to ~1000× Assert reduction; ~550× total footprint per Starknet blog) → Circle STARK
-  (requires OP_CAT; no trusted setup, quantum-resistant).
+- **Verification track** (how fraud proofs are checked, and trusted setup
+  reduced): BitVM2 + Groth16 today (trusted setup, not quantum-safe) →
+  Glock DV-SNARK (~2026 target, ~1000× Assert reduction; per-challenger
+  setup, not quantum-safe) → Circle STARK with Stwo prover (requires OP_CAT;
+  **no trusted setup**, quantum-resistant, ~50–100 KB proofs).
 - **Covenant track** (how outputs are bound and SC trust reduced):
   FROST/economic only (SC trust assumption) → LNHANCE CTV + CSFS delegated
   fast path (SC trust preserved) → OP_CAT trustless output binding (SC trust
@@ -1365,7 +1456,7 @@ needs risk-takers to act as operators.
 
 - [BitVM2: Bridging Bitcoin to Second Layers](https://bitvm.org/bitvm2)
 - [BitVM2-Bridge Formal Paper](https://eprint.iacr.org/2025/1158)
-- [Glock: Designated-Verifier SNARK](https://eprint.iacr.org/2025/1485)
+- [Glock: Garbled Locks for Bitcoin](https://eprint.iacr.org/2025/1485)
 - [Verifier's Dilemma](https://arxiv.org/abs/2312.01549)
 - [Hollow Victory Attack](https://arxiv.org/abs/2504.05094)
 - [FROST: Flexible Round-Optimized Schnorr Threshold Signatures](https://eprint.iacr.org/2020/852)
@@ -1385,3 +1476,9 @@ needs risk-takers to act as operators.
 - [BIP 442: OP_PAIRCOMMIT](https://github.com/bitcoin/bips/pull/1699)
 - [Bitcoin Circle STARK Verifier](https://github.com/Bitcoin-Wildlife-Sanctuary/bitcoin-circle-stark)
 - [Starknet x Alpen Labs: Glock Bridge](https://www.starknet.io/blog/starknet-alpen-bitcoin-glock/)
+- [Stwo Prover: Next-gen STARK Scaling](https://starkware.co/blog/stwo-prover-the-next-gen-of-stark-scaling-is-here/)
+- [Binius: Proofs over Binary Tower Fields](https://www.binius.xyz/)
+- [Bulletproofs: Short Proofs for Confidential Transactions](https://eprint.iacr.org/2017/1066)
+- [Designated-Verifier zk-SNARKs Made Easy](https://eprint.iacr.org/2024/1153)
+- [Applications of Zero-Knowledge Proofs on Bitcoin (Özmiş, 2025)](https://eprint.iacr.org/2025/1271)
+- [Plonky3: Polynomial IOP Toolkit](https://github.com/Plonky3/Plonky3)
