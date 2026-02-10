@@ -49,7 +49,9 @@ pub mod ibd_manager;
 pub mod ipc;
 pub mod peer_manager;
 pub mod rpc_server;
+pub mod status;
 pub mod stratum;
+pub mod task_manager;
 pub mod template_creator;
 pub mod uncommitted_metadata;
 pub mod utils;
@@ -128,7 +130,7 @@ pub const EXTRANONCE_SEPARATOR: [u8; EXTRANONCE1_SIZE + EXTRANONCE2_SIZE] =
 /// * `Err(IPCtemplateError)` - If an unrecoverable IPC template handling error occurs.
 pub async fn ipc_template_consumer(
     mut template_rx: mpsc::Receiver<Arc<crate::ipc::client::BlockTemplate>>,
-    notifier_tx: mpsc::Sender<NotifyCmd>,
+    notifier_tx: mpsc::UnboundedSender<NotifyCmd>,
     latest_template_arc: &mut Arc<Mutex<BlockTemplate>>,
     latest_template_merkle_branch_arc: &mut Arc<Mutex<Vec<Vec<u8>>>>,
     template_cache: Arc<
@@ -226,13 +228,11 @@ pub async fn ipc_template_consumer(
                 "New block template"
             );
 
-            let notification_sent_or_not = notifier_tx
-                .send(NotifyCmd::SendToAll {
-                    template: template,
-                    merkle_branch_coinbase,
-                    template_id,
-                })
-                .await;
+            let notification_sent_or_not = notifier_tx.send(NotifyCmd::SendToAll {
+                template: template,
+                merkle_branch_coinbase,
+                template_id,
+            });
             match notification_sent_or_not {
                 Ok(_) => {
                     debug!(template_id = %template_id, "Template sent to notifier");

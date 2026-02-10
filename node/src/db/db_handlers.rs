@@ -4,6 +4,7 @@ use crate::{
     bead::Bead,
     db::{init_db::init_db, BraidpoolDBTypes, InsertTupleTypes},
     error::DBErrors,
+    task_manager::TaskManager,
     utils::BeadHash,
 };
 use bitcoin::{
@@ -162,50 +163,71 @@ impl DBHandler {
         Ok(())
     }
     //Individual insertion operations
-    pub async fn insert_query_handler(&mut self) {
-        debug!("Query handler task started");
-        while let Some(query_request) = self.receiver.recv().await {
-            match query_request {
-                BraidpoolDBTypes::InsertTupleTypes { query } => match query {
-                    InsertTupleTypes::InsertBeadSequentially {
-                        bead_to_insert,
-                        txs_json,
-                        relative_json,
-                        parent_timestamp_json,
-                        bead_id,
-                    } => {
-                        let bead_hash = bead_to_insert.block_header.block_hash();
-                        match self
-                            .insert_bead(
-                                bead_to_insert,
-                                txs_json,
-                                relative_json,
-                                parent_timestamp_json,
-                                &bead_id,
-                            )
-                            .await
-                        {
-                            Ok(_) => {
-                                debug!(
-                                    bead_id = bead_id,
-                                    bead_hash = %bead_hash,
-                                    "Bead inserted successfully"
-                                );
-                            }
-                            Err(error) => {
-                                error!(
-                                    error = ?error,
-                                    bead_id = bead_id,
-                                    bead_hash = %bead_hash,
-                                    "Failed to insert bead"
-                                );
-                                continue;
-                            }
+    pub async fn insert_query_handler(
+        mut self,
+        shutdown_tx: tokio::sync::mpsc::Sender<()>,
+        cancellation_token: tokio_util::sync::CancellationToken,
+        task_manager: Arc<TaskManager>,
+    ) {
+        task_manager.spawn(async move {
+            loop {
+                tokio::select! {
+                    query_request = self.receiver.recv() => {
+                        let Some(query_request) = query_request else {
+                            warn!("INVALID REQUEST BEING RECEIVED !");
+                            break;
                         };
+                        match query_request {
+                    BraidpoolDBTypes::InsertTupleTypes { query } => match query {
+                        InsertTupleTypes::InsertBeadSequentially {
+                            bead_to_insert,
+                            txs_json,
+                            relative_json,
+                            parent_timestamp_json,
+                            bead_id,
+                        } => {
+                            let bead_hash = bead_to_insert.block_header.block_hash();
+                            match self
+                                .insert_bead(
+                                    bead_to_insert,
+                                    txs_json,
+                                    relative_json,
+                                    parent_timestamp_json,
+                                    &bead_id,
+                                )
+                                .await
+                            {
+                                Ok(_) => {
+                                    debug!(
+                                        bead_id = bead_id,
+                                        bead_hash = %bead_hash,
+                                        "Bead inserted successfully"
+                                    );
+                                }
+                                Err(error) => {
+                                    error!(
+                                        error = ?error,
+                                        bead_id = bead_id,
+                                        bead_hash = %bead_hash,
+                                        "Failed to insert bead"
+                                    );
+                                    continue;
+                                }
+                            };
+                        }
+                    },
+                        }
                     }
-                },
+                    _ = cancellation_token.cancelled() => {
+                        debug!(component = "db_handler", "Shutdown signal received, exiting gracefully");
+                        break;
+                    }
+                }
             }
-        }
+            drop(shutdown_tx);
+            info!("db handler loop exited");
+        });
+        debug!("Query handler task started");
     }
 }
 pub fn prepare_bead_tuple_data(
@@ -298,148 +320,156 @@ pub async fn fetch_beads_in_batch(
     let num_batches = (total_rows + batch_size - 1) / batch_size;
 
     for batch_num in 0..num_batches {
-        let offset = batch_num * batch_size;
-        let rows = sqlx::query("SELECT * FROM BEAD LIMIT ? OFFSET ?")
-            .bind(batch_size)
-            .bind(offset)
-            .fetch_all(&conn)
-            .await
-            .map_err(|e| DBErrors::TupleNotFetched {
-                error: e.to_string(),
-            })?;
-        for row in rows {
-            let mut bead = Bead::default();
-
-            bead.block_header.version = BlockVersion::from_consensus(row.get::<i32, _>("nVersion"));
-            bead.block_header.bits = CompactTarget::from_consensus(row.get::<u32, _>("nBits"));
-            bead.block_header.time = BlockTime::from_u32(row.get::<u32, _>("nTime"));
-            bead.block_header.nonce = row.get::<u32, _>("nNonce");
-
-            let prev_bytes: Vec<u8> = row.get("hashPrevBlock");
-            bead.block_header.prev_blockhash =
-                BlockHash::from_byte_array(prev_bytes.try_into().map_err(|_| {
-                    DBErrors::TupleAttributeParsingError {
-                        error: "Invalid prev block hash length".into(),
-                        attribute: "hashPrevBlock".into(),
-                    }
-                })?);
-
-            let merkle_bytes: Vec<u8> = row.get("hashMerkleRoot");
-            bead.block_header.merkle_root =
-                TxMerkleNode::from_byte_array(merkle_bytes.try_into().map_err(|_| {
-                    DBErrors::TupleAttributeParsingError {
-                        error: "Invalid merkle root length".into(),
-                        attribute: "hashMerkleRoot".into(),
-                    }
-                })?);
-
-            bead.committed_metadata.payout_address =
-                String::from_utf8(row.get::<Vec<u8>, _>("payout_address")).map_err(|_| {
-                    DBErrors::TupleAttributeParsingError {
-                        error: "Invalid payout_address UTF-8".into(),
-                        attribute: "payout_address".into(),
-                    }
-                })?;
-
-            bead.committed_metadata.comm_pub_key =
-                PublicKey::from_slice(&row.get::<Vec<u8>, _>("comm_pub_key")).map_err(|_| {
-                    DBErrors::TupleAttributeParsingError {
-                        error: "Invalid comm_pub_key".into(),
-                        attribute: "comm_pub_key".into(),
-                    }
-                })?;
-
-            bead.committed_metadata.min_target =
-                CompactTarget::from_consensus(row.get::<u32, _>("min_target"));
-            bead.committed_metadata.weak_target =
-                CompactTarget::from_consensus(row.get::<u32, _>("weak_target"));
-            bead.committed_metadata.miner_ip = row.get("miner_ip");
-
-            bead.committed_metadata.start_timestamp =
-                MedianTimePast::from_u32(row.get::<u32, _>("start_timestamp")).unwrap();
-
-            bead.uncommitted_metadata.broadcast_timestamp =
-                MedianTimePast::from_u32(row.get::<u32, _>("broadcast_timestamp")).unwrap();
-
-            bead.uncommitted_metadata.extra_nonce_1 =
-                u32::from_str_radix(&row.get::<String, _>("extranonce1"), 16).unwrap();
-            bead.uncommitted_metadata.extra_nonce_2 =
-                u32::from_str_radix(&row.get::<String, _>("extranonce2"), 16).unwrap();
-
-            bead.uncommitted_metadata.signature =
-                Signature::from_slice(&row.get::<Vec<u8>, _>("signature")).unwrap();
-
-            let current_bead_id = row.get::<i32, _>("id");
-
-            let tx_rows = sqlx::query("SELECT txid as txid FROM Transactions WHERE bead_id = ?")
-                .bind(current_bead_id)
+        if conn.is_closed() {
+            warn!("Connection to DB closed fetching beads loop exited !");
+            break;
+        } else {
+            let offset = batch_num * batch_size;
+            let rows = sqlx::query("SELECT * FROM BEAD LIMIT ? OFFSET ?")
+                .bind(batch_size)
+                .bind(offset)
                 .fetch_all(&conn)
                 .await
                 .map_err(|e| DBErrors::TupleNotFetched {
                     error: e.to_string(),
                 })?;
+            for row in rows {
+                let mut bead = Bead::default();
 
-            for tx in tx_rows {
-                let tx_bytes: Vec<u8> = tx.get("txid");
-                let arr: [u8; 32] =
-                    tx_bytes
-                        .try_into()
-                        .map_err(|_| DBErrors::TupleAttributeParsingError {
-                            error: "Invalid Txid length".into(),
-                            attribute: "txid".into(),
+                bead.block_header.version =
+                    BlockVersion::from_consensus(row.get::<i32, _>("nVersion"));
+                bead.block_header.bits = CompactTarget::from_consensus(row.get::<u32, _>("nBits"));
+                bead.block_header.time = BlockTime::from_u32(row.get::<u32, _>("nTime"));
+                bead.block_header.nonce = row.get::<u32, _>("nNonce");
+
+                let prev_bytes: Vec<u8> = row.get("hashPrevBlock");
+                bead.block_header.prev_blockhash =
+                    BlockHash::from_byte_array(prev_bytes.try_into().map_err(|_| {
+                        DBErrors::TupleAttributeParsingError {
+                            error: "Invalid prev block hash length".into(),
+                            attribute: "hashPrevBlock".into(),
+                        }
+                    })?);
+
+                let merkle_bytes: Vec<u8> = row.get("hashMerkleRoot");
+                bead.block_header.merkle_root =
+                    TxMerkleNode::from_byte_array(merkle_bytes.try_into().map_err(|_| {
+                        DBErrors::TupleAttributeParsingError {
+                            error: "Invalid merkle root length".into(),
+                            attribute: "hashMerkleRoot".into(),
+                        }
+                    })?);
+
+                bead.committed_metadata.payout_address =
+                    String::from_utf8(row.get::<Vec<u8>, _>("payout_address")).map_err(|_| {
+                        DBErrors::TupleAttributeParsingError {
+                            error: "Invalid payout_address UTF-8".into(),
+                            attribute: "payout_address".into(),
+                        }
+                    })?;
+
+                bead.committed_metadata.comm_pub_key = PublicKey::from_slice(
+                    &row.get::<Vec<u8>, _>("comm_pub_key"),
+                )
+                .map_err(|_| DBErrors::TupleAttributeParsingError {
+                    error: "Invalid comm_pub_key".into(),
+                    attribute: "comm_pub_key".into(),
+                })?;
+
+                bead.committed_metadata.min_target =
+                    CompactTarget::from_consensus(row.get::<u32, _>("min_target"));
+                bead.committed_metadata.weak_target =
+                    CompactTarget::from_consensus(row.get::<u32, _>("weak_target"));
+                bead.committed_metadata.miner_ip = row.get("miner_ip");
+
+                bead.committed_metadata.start_timestamp =
+                    MedianTimePast::from_u32(row.get::<u32, _>("start_timestamp")).unwrap();
+
+                bead.uncommitted_metadata.broadcast_timestamp =
+                    MedianTimePast::from_u32(row.get::<u32, _>("broadcast_timestamp")).unwrap();
+
+                bead.uncommitted_metadata.extra_nonce_1 =
+                    u32::from_str_radix(&row.get::<String, _>("extranonce1"), 16).unwrap();
+                bead.uncommitted_metadata.extra_nonce_2 =
+                    u32::from_str_radix(&row.get::<String, _>("extranonce2"), 16).unwrap();
+
+                bead.uncommitted_metadata.signature =
+                    Signature::from_slice(&row.get::<Vec<u8>, _>("signature")).unwrap();
+
+                let current_bead_id = row.get::<i32, _>("id");
+
+                let tx_rows =
+                    sqlx::query("SELECT txid as txid FROM Transactions WHERE bead_id = ?")
+                        .bind(current_bead_id)
+                        .fetch_all(&conn)
+                        .await
+                        .map_err(|e| DBErrors::TupleNotFetched {
+                            error: e.to_string(),
                         })?;
-                bead.committed_metadata
-                    .transaction_ids
-                    .0
-                    .push(Txid::from_byte_array(arr));
+
+                for tx in tx_rows {
+                    let tx_bytes: Vec<u8> = tx.get("txid");
+                    let arr: [u8; 32] =
+                        tx_bytes
+                            .try_into()
+                            .map_err(|_| DBErrors::TupleAttributeParsingError {
+                                error: "Invalid Txid length".into(),
+                                attribute: "txid".into(),
+                            })?;
+                    bead.committed_metadata
+                        .transaction_ids
+                        .0
+                        .push(Txid::from_byte_array(arr));
+                }
+
+                let parent_rows =
+                    sqlx::query("SELECT parent, timestamp FROM ParentTimestamps WHERE child = ?")
+                        .bind(current_bead_id)
+                        .fetch_all(&conn)
+                        .await
+                        .map_err(|e| DBErrors::TupleNotFetched {
+                            error: e.to_string(),
+                        })?;
+
+                for parent in parent_rows {
+                    let parent_id = parent.get::<i64, _>("parent");
+                    let timestamp = parent.get::<i32, _>("timestamp");
+
+                    let parent_hash_row = sqlx::query("SELECT hash FROM BEAD WHERE id = ?")
+                        .bind(parent_id)
+                        .fetch_one(&conn)
+                        .await
+                        .map_err(|e| DBErrors::TupleNotFetched {
+                            error: e.to_string(),
+                        })?;
+
+                    match parent_hash_row.get::<Vec<u8>, _>("hash").try_into() {
+                        Ok(arr) => {
+                            bead.committed_metadata
+                                .parents
+                                .insert(BlockHash::from_byte_array(arr));
+                        }
+                        Err(_) => {
+                            return Err(DBErrors::TupleAttributeParsingError {
+                                error: "Invalid hash length".to_string(),
+                                attribute: "Parent bead hash".to_string(),
+                            });
+                        }
+                    };
+
+                    bead.committed_metadata
+                        .parent_bead_timestamps
+                        .0
+                        .push(MedianTimePast::from_u32(timestamp as u32).unwrap());
+                }
+
+                fetched_beads.push(bead);
             }
-
-            let parent_rows =
-                sqlx::query("SELECT parent, timestamp FROM ParentTimestamps WHERE child = ?")
-                    .bind(current_bead_id)
-                    .fetch_all(&conn)
-                    .await
-                    .map_err(|e| DBErrors::TupleNotFetched {
-                        error: e.to_string(),
-                    })?;
-
-            for parent in parent_rows {
-                let parent_id = parent.get::<i64, _>("parent");
-                let timestamp = parent.get::<i32, _>("timestamp");
-
-                let parent_hash_row = sqlx::query("SELECT hash FROM BEAD WHERE id = ?")
-                    .bind(parent_id)
-                    .fetch_one(&conn)
-                    .await
-                    .map_err(|e| DBErrors::TupleNotFetched {
-                        error: e.to_string(),
-                    })?;
-
-                match parent_hash_row.get::<Vec<u8>, _>("hash").try_into() {
-                    Ok(arr) => {
-                        bead.committed_metadata
-                            .parents
-                            .insert(BlockHash::from_byte_array(arr));
-                    }
-                    Err(_) => {
-                        return Err(DBErrors::TupleAttributeParsingError {
-                            error: "Invalid hash length".to_string(),
-                            attribute: "Parent bead hash".to_string(),
-                        });
-                    }
-                };
-
-                bead.committed_metadata
-                    .parent_bead_timestamps
-                    .0
-                    .push(MedianTimePast::from_u32(timestamp as u32).unwrap());
-            }
-
-            fetched_beads.push(bead);
         }
-    }
 
-    Ok(fetched_beads)
+        return Ok(fetched_beads);
+    }
+    Ok(Vec::new())
 }
 //Fetching single bead
 pub async fn fetch_bead_by_bead_hash(

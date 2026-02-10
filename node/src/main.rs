@@ -16,6 +16,7 @@ use libp2p::{
 };
 use node::db::db_handlers::{fetch_beads_in_batch, prepare_bead_tuple_data};
 use node::ibd_manager::{IBD_TRIGGER_AFTER, MAX_IBD_INCOMING_THRESHOLD, MAX_IBD_RETRIES};
+use node::task_manager::TaskManager;
 use node::utils::BeadHash;
 use node::SwarmHandler;
 use node::{
@@ -62,13 +63,23 @@ use tokio::sync::{
 async fn main() -> Result<(), Box<dyn Error>> {
     // Initialize tracing with colors and module prefixes
     setup_tracing()?;
-    let (mut ibd_manager, ibd_command_tx) = IBDManager::new();
+    //Shutdown channel being shared that will be dropped as soon as all the sub-ordinate tasks have shutdown
+    let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel::<()>(1);
+    //Main task token that will be shared across to trigger the hierarichal shudown of tasks
+    let main_task_token = CancellationToken::new();
+    //Instance of local task manager being shared across different tasks
+    let task_manager = Arc::new(TaskManager::new());
+    let (ibd_manager, ibd_command_tx) = IBDManager::new();
     //IBD cache handler
-    let _ibd_handler = tokio::spawn(async move {
-        ibd_manager.run_ibd_handler().await;
-    });
+    ibd_manager
+        .run_ibd_handler(
+            shutdown_complete_tx.clone(),
+            main_task_token.clone(),
+            task_manager.clone(),
+        )
+        .await;
     //False if not under ibd otherwise true at start will be in IBD by default
-    let ibd_or_not: AtomicBool = AtomicBool::new(true);
+    let ibd_or_not: AtomicBool = AtomicBool::new(false);
     let ibd_spinlock = Arc::new(ibd_or_not);
     // Initializing the braid object with read write lock
     //for supporting concurrent readers and single writer
@@ -86,9 +97,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let braid_ref = braid.clone();
     // FIXME instead we should look 144 blocks back from the bitcoin tip (1 day) and load beads
     // starting from that block as genesis
-    let initial_bead_fetch_handle = tokio::spawn(async move {
-        let mut guard = braid_ref.write().await;
+    {
         let fetched_beads = fetch_beads_in_batch(db_connection_pool_ref, 1000).await?;
+        let mut guard = braid_ref.write().await;
         for bead in &fetched_beads {
             let curr_bead_status = guard.extend(&bead);
             debug!(
@@ -98,36 +109,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
             );
         }
         info!(beads = fetched_beads.len(), "Beads loaded from DB");
-        Ok::<(), node::error::DBErrors>(())
-    });
-    match initial_bead_fetch_handle.await {
-        Ok(Ok(())) => {
-            info!("Initial bead fetch completed successfully");
-        }
-        Ok(Err(e)) => {
-            error!(error = ?e, "Failed to fetch beads from DB during startup");
-            return Err(format!("Database bead fetch failed: {:?}", e).into());
-        }
-        Err(e) => {
-            error!(error = ?e, "Initial bead fetch task panicked");
-            return Err(format!("Initial bead fetch task panicked: {}", e).into());
-        }
     }
+    //Lock is dropped here
     let latest_template_id = Arc::new(Mutex::new(TemplateId::default()));
     let latest_template_id_for_notifier = latest_template_id.clone();
     let latest_template_id_for_consumer = latest_template_id.clone();
     //Starting the `query_handler` task
-    tokio::spawn(async move {
-        let _res = _db_handler.insert_query_handler().await;
-    });
+    _db_handler
+        .insert_query_handler(
+            shutdown_complete_tx.clone(),
+            main_task_token.clone(),
+            task_manager.clone(),
+        )
+        .await;
     //latest available template to be cached for the newest connection until new job is received
     let latest_template = Arc::new(Mutex::new(BlockTemplate::default()));
     //latest available template merkle branch
     let latest_template_merkle_branch = Arc::new(Mutex::new(Vec::new()));
-    let mut latest_template_ref = latest_template.clone();
-    let mut latest_template_merkle_branch_ref = latest_template_merkle_branch.clone();
+    let latest_template_ref = latest_template.clone();
+    let latest_template_merkle_branch_ref = latest_template_merkle_branch.clone();
     //One will go into the IPC and the other will go to the `notifier`
-    let (notification_tx, notification_rx) = mpsc::channel::<NotifyCmd>(1024);
+    let (notification_tx, notification_rx) = mpsc::unbounded_channel::<NotifyCmd>();
     //Communication bridge between stratum and network swarm and swarm commands also, for communicating share population and propogating them further
     let (swarm_handler, mut swarm_command_receiver) =
         SwarmHandler::new(Arc::clone(&braid), db_tx.clone());
@@ -141,61 +143,64 @@ async fn main() -> Result<(), Box<dyn Error>> {
     //Mining job map keeping all the jobs provided to the downstream
     let mining_job_map = Arc::new(Mutex::new(HashMap::new()));
     //Intializing `notifier` for mining.notify
-    let mut notifier: Notifier = Notifier::new(notification_rx, Arc::clone(&mining_job_map));
+    let notifier: Notifier = Notifier::new(notification_rx, Arc::clone(&mining_job_map));
     //Stratum configuration initialization
     let stratum_config: StratumServerConfig = StratumServerConfig::default();
     let (block_submission_tx, block_submission_rx) =
         tokio::sync::mpsc::unbounded_channel::<node::stratum::BlockSubmissionRequest>();
     //IBD notifier task after peer_discovery
     let swarm_command_sender_ref = swarm_command_sender.clone();
-    let _ibd_trigger_handler = tokio::spawn(async move {
+    let _ibd_trigger_handler = task_manager.spawn(async move {
         tokio::time::sleep(Duration::from_secs(IBD_TRIGGER_AFTER)).await;
         //Sending IBD initiating command
-        match swarm_command_sender_ref
-            .send(SwarmCommand::InitiateIBD)
-            .await
-        {
-            Ok(_) => {
-                info!("IBD trigger sent");
-            }
-            Err(error) => {
-                error!(error=?error,"An error occurred while initiating IBD after waiting for peer discovery - ");
-            }
-        };
+        if !swarm_command_sender_ref.is_closed(){
+            match swarm_command_sender_ref
+                .send(SwarmCommand::InitiateIBD)
+                .await
+            {
+                Ok(_) => {
+                    info!("IBD trigger sent");
+                }
+                Err(error) => {
+                    error!(error=?error.to_string(),"An error occurred while initiating IBD after waiting for peer discovery - ");
+                }
+            };
+        }
+        else{
+            warn!("IBD trigger handler dropped !");
+        }
     });
     //Initializing stratum server
-    let mut stratum_server = Server::new(
+    let stratum_server = Server::new(
         stratum_config,
         connection_mapping.clone(),
         Some(block_submission_tx),
     );
     //Running the notification service
-    tokio::spawn(async move {
-        let _res = notifier
-            .run_notifier(
-                connection_mapping.clone(),
-                &mut latest_template_ref,
-                &mut latest_template_merkle_branch_ref,
-                latest_template_id_for_notifier,
-            )
-            .await;
-    });
+    notifier
+        .run_notifier(
+            connection_mapping.clone(),
+            latest_template_ref,
+            latest_template_merkle_branch_ref,
+            latest_template_id_for_notifier,
+            shutdown_complete_tx.clone(),
+            main_task_token.clone(),
+            task_manager.clone(),
+        )
+        .await;
     //Running the stratum service
-    let spin_lock_ref = ibd_spinlock.clone();
-    tokio::spawn(async move {
-        let _res = stratum_server
-            .run_stratum_service(
-                mining_job_map,
-                notification_tx_clone,
-                swarm_handler_arc.clone(),
-                spin_lock_ref,
-            )
-            .await;
-    });
+    stratum_server
+        .run_stratum_service(
+            mining_job_map,
+            notification_tx_clone,
+            swarm_handler_arc.clone(),
+            ibd_spinlock.clone(),
+            main_task_token.clone(),
+            shutdown_complete_tx.clone(),
+            task_manager.clone(),
+        )
+        .await;
 
-    let (main_shutdown_tx, _main_shutdown_rx) =
-        mpsc::channel::<tokio::signal::unix::SignalKind>(32);
-    let main_task_token = CancellationToken::new();
     let ipc_task_token = main_task_token.clone();
     let args = cli::Cli::parse();
     let datadir_str = args.datadir.to_str().ok_or_else(|| {
@@ -267,27 +272,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     //spawning the rpc server
     let rpc_addr = "127.0.0.1:6682"; // TODO: Load from config file
-    if let Some(rpc_command) = args.command {
-        let server_address = tokio::spawn(run_rpc_server(Arc::clone(&braid), rpc_addr));
-        let socket_address = server_address
-            .await
-            .map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("RPC server task failed: {}", e),
-                )
-            })?
-            .map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::Other, "RPC server startup failed")
-            })?;
-        let _parsing_handle =
-            tokio::spawn(parse_arguments(rpc_command, socket_address.clone())).await;
-    } else {
-        //running the rpc server and updating the reference counter
-        //for shared ownership
-        let _server_handler = tokio::spawn(run_rpc_server(Arc::clone(&braid), rpc_addr)).await;
-    }
-    // load beads from db (if present) and insert in braid here
+    let task_manager_clone = task_manager.clone();
+    let braid_ref = Arc::clone(&braid);
+    let rpc_command_or_not = args.command;
+
+    task_manager_clone.spawn(async move {
+        let socket_address = run_rpc_server(braid_ref, rpc_addr).await;
+
+        match socket_address {
+            Ok(addr) => {
+                info!(address = %addr, "RPC server started");
+
+                if let Some(rpc_command) = rpc_command_or_not {
+                    parse_arguments(rpc_command, addr).await;
+                }
+            }
+            Err(_) => {
+                error!("Failed to start RPC server");
+            }
+        }
+    });
     // Initializing the peer manager
     let mut peer_manager = PeerManager::new(8);
     //For local testing uncomment this keypair peer since it running to process will
@@ -378,7 +382,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     info!(address = %ADDR_REFRENCE, "Dialed boot node");
     //IPC(inter process communication) based `getblocktemplate` and `notification` to send to the downstream via the `cmempoold` architecture
     info!(socket = %args.ipc_socket, "IPC socket path");
-
     let network = if let Some(network_name) = &args.network {
         info!(network = %network_name, "Network selected");
         match network_name.as_str() {
@@ -504,7 +507,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             info!(address = %node_multiaddr, "Dialed peer node");
         }
     };
-    let swarm_handle = tokio::spawn(async move {
+    let swarm_task_token = main_task_token.clone();
+    //Required for child tasks shutdown spawned insided swarm loop
+    let child_token = main_task_token.clone();
+    let task_manager_ref = task_manager.clone();
+    task_manager_ref.spawn(async move {
         let braid = std::sync::Arc::clone(&braid);
         loop {
             tokio::select! {
@@ -1370,21 +1377,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         let peer_ids = peer_manager.get_top_k_peers_for_propagation(1);
                         if peer_ids.len() == 0 {
                             warn!("No peer available for syncing to take place");
-                                tokio::spawn({
+                            let ibd_retry_token = child_token.clone();
+                                task_manager.spawn({
                                     let swarm_command_sender = swarm_command_sender.clone();
                                     //Retrying at fixed interval in case of no sync peers being available
                                     async move {
-                                        tokio::time::sleep(Duration::from_secs(IBD_TRIGGER_AFTER)).await;
-                                        match swarm_command_sender.send(SwarmCommand::InitiateIBD).await {
-                                            Ok(_) => {
-                                                info!("Retrying IBD when no sync peers are available");
+                                        tokio::select! {
+                                            _ = ibd_retry_token.cancelled() => {
+                                                info!("Retry IBD task cancelled");
+                                                return;}
+                                            _ = tokio::time::sleep(Duration::from_secs(IBD_TRIGGER_AFTER)) => {
+                                                if let Err(error) =
+                                                    swarm_command_sender.send(SwarmCommand::InitiateIBD).await
+                                                {
+                                                    debug!(error=?error, "Swarm handler gone, stopping retry task");
+                                                }
                                             }
-                                            Err(error) => {
-                                                error!(error=?error, "Failed to reinitiate IBD when no sync peer was available");
-                                            }
-                                        }
-                                    }
-                                });
+                                        }}});
                         }
                         else{
                             let mut sync_request_sent = false;
@@ -1448,7 +1457,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             }
                             else{
                                 warn!("Retry count for all the available sync peers exceeded waiting for new peer connections");
-                                tokio::spawn({
+                                task_manager.spawn({
                                     let swarm_command_sender = swarm_command_sender.clone();
                                     //Retrying at fixed interval in case of all available sync peer retry count has exceeded
                                     //Probe at fixed interval for any new peer
@@ -1469,10 +1478,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                      }
                  }
              }
-
-
-
-
+               _ = swarm_task_token.cancelled() => {
+                    info!(" Main swarm network handler task shutting down - cancellation token triggered");
+                    break;
+                }
             }
         }
     });
@@ -1481,30 +1490,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let shutdown_signal = tokio::signal::ctrl_c().await;
     match shutdown_signal {
         Ok(_) => {
+            //Cancelling the main token and notifying sub-ordinate tasks to shut gracefully
+            main_task_token.cancel();
+            drop(shutdown_complete_tx);
             info!(component = "database", "Closing connection pool");
             let pool = db_connection_pool.lock().await;
             //Closing all the existing connections to pool and committing from .db-wal to .db
             pool.close().await;
             info!(component = "database", "Connections closed");
-            info!(component = "swarm", "Shutting down network swarm");
-            swarm_handle.abort();
-            tokio::time::sleep(Duration::from_millis(1)).await;
-            #[allow(unused)]
-            let shutdown_sub_tasks = match main_shutdown_tx
-                .send(tokio::signal::unix::SignalKind::interrupt())
-                .await
-            {
-                Ok(_) => {
-                    info!(
-                        component = "shutdown",
-                        "Sub-tasks interrupted - waiting for graceful shutdown"
-                    );
-                    main_task_token.cancel();
+            info!("Waiting for shutdown completion signals from subsystems...");
+            let shutdown_timeout = tokio::time::Duration::from_secs(5);
+            tokio::select! {
+                _ = shutdown_complete_rx.recv() => {
+                    info!("All subsystems reported shutdown complete.");
                 }
-                Err(error) => {
-                    error!(error = ?error, "Failed to send interrupt signal to sub-tasks");
+                _ = tokio::time::sleep(shutdown_timeout) => {
+                    warn!("Graceful shutdown timed out after {shutdown_timeout:?} — forcing shutdown.");
+                    task_manager_ref.abort_all().await;
                 }
-            };
+            }
+            info!("Joining remaining tasks...");
+            task_manager_ref.join_all().await;
+            info!("Braidpool shutdown complete.");
         }
         Err(error) => {
             error!(

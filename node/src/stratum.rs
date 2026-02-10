@@ -1,4 +1,5 @@
 use crate::error::StratumErrors;
+use crate::task_manager::TaskManager;
 use crate::template_creator::calculate_merkle_root;
 use crate::{SwarmHandler, TemplateId, EXTRANONCE1_SIZE, EXTRANONCE2_SIZE, EXTRANONCE_SEPARATOR};
 use bitcoin::block::HeaderExt;
@@ -24,6 +25,7 @@ use tokio::{
 };
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec};
+use tokio_util::sync::CancellationToken;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, trace, warn};
 
@@ -240,7 +242,7 @@ impl DownstreamClient {
         client_request: StandardRequest,
         mining_job_map: Arc<Mutex<MiningJobMap>>,
         response_message_sender: mpsc::Sender<String>,
-        notification_sender: mpsc::Sender<NotifyCmd>,
+        notification_sender: mpsc::UnboundedSender<NotifyCmd>,
         peer_addr: String,
         swarm_handler: Arc<Mutex<SwarmHandler>>,
     ) -> Result<StratumResponses, StratumErrors> {
@@ -319,11 +321,10 @@ impl DownstreamClient {
                     // && self.suggest_difficulty_done == true
                     && method != "mining.submit"
                 {
-                    let notification_sent_res = notification_sender
-                        .send(NotifyCmd::SendLatestTemplateToNewDownstream {
+                    let notification_sent_res =
+                        notification_sender.send(NotifyCmd::SendLatestTemplateToNewDownstream {
                             new_downstream_addr: peer_addr.clone(),
-                        })
-                        .await;
+                        });
                     match notification_sent_res {
                         Ok(_) => {
                             debug!(
@@ -339,6 +340,7 @@ impl DownstreamClient {
                                 peer_addr = %peer_addr,
                                 "Failed to request latest template for new downstream"
                             );
+                            panic!("BREAK EVERYTHING");
                         }
                     }
                 }
@@ -1031,8 +1033,8 @@ impl DownstreamClient {
             };
             //Intersecting with the bits provided by the pool and miner's suggested one
             let final_rollable_version_bits = u32::from_be_bytes(mask_bytes) & 0x1FFFE000;
-            // `0x1FFFE000` is a reasonable default as it allows all 16 version bits to be used
-            let hex_str = u32::to_string(&final_rollable_version_bits);
+            // `0x1FFFE000` is a reasonable default as it allows all 16 version bits to be used in `hex`
+            let hex_str = hex::encode(final_rollable_version_bits.to_be_bytes());
             self.version_rolling_mask = Some(hex_str);
         }
         if let Some(min_bit_count_value) = version_rolling_min_bit_count {
@@ -1299,7 +1301,7 @@ impl MiningJobMap {
 ///
 pub struct Notifier {
     ///`IpcGBT` notification receiver whenever new `template` is fethced or tip is updated .
-    notification_receiver: mpsc::Receiver<NotifyCmd>,
+    notification_receiver: mpsc::UnboundedReceiver<NotifyCmd>,
     ///`JobMap` associated with each `peer_addr` and the jobs associated with it .
     pub job_map_arc: Arc<Mutex<HashMap<String, Arc<Mutex<MiningJobMap>>>>>,
 }
@@ -1334,7 +1336,7 @@ pub fn reverse_four_byte_chunks(hash_hex: &str) -> Result<String, StratumErrors>
 impl Notifier {
     ///Spawning a new notifier instance .
     pub fn new(
-        notification_rx: mpsc::Receiver<NotifyCmd>,
+        notification_rx: mpsc::UnboundedReceiver<NotifyCmd>,
         job_map_arc: Arc<Mutex<HashMap<String, Arc<Mutex<MiningJobMap>>>>>,
     ) -> Self {
         Self {
@@ -1351,7 +1353,7 @@ impl Notifier {
     ///
     /// **Generation transaction (part 1)**. The miner inserts ExtraNonce1 and ExtraNonce2 after this section of the transaction data.
     ///
-    /// **Generation transaction (part 2)**. The mine10-3-2025-Forwarding-shares-to-peersr appends this after the first part of the transaction data and the two ExtraNonce values.
+    /// **Generation transaction (part 2)**. The miner appends this after the first part of the transaction data and the two ExtraNonce values.
     ///
     /// **List of merkle branches**. The generation transaction is hashed against the merkle branches to build the final merkle root.
     ///
@@ -1479,85 +1481,94 @@ impl Notifier {
     /// * `Err(StratumErrors)` if an error occurs while constructing or sending a job notification.
     ///
     pub async fn run_notifier(
-        &mut self,
+        mut self,
         downstream_connection_map: Arc<Mutex<ConnectionMapping>>,
-        latest_template_arc: &mut Arc<Mutex<BlockTemplate>>,
-        latest_template_merkle_branch_arc: &mut Arc<Mutex<Vec<Vec<u8>>>>,
+        latest_template_arc: Arc<Mutex<BlockTemplate>>,
+        latest_template_merkle_branch_arc: Arc<Mutex<Vec<Vec<u8>>>>,
         latest_template_id: Arc<Mutex<TemplateId>>,
-    ) -> Result<(), StratumErrors> {
+        shutdown_tx: tokio::sync::mpsc::Sender<()>,
+        cancellation_token: tokio_util::sync::CancellationToken,
+        task_manager: Arc<TaskManager>,
+    ) {
         debug!("Stratum notifier task started");
-        while let Some(notification_command) = self.notification_receiver.recv().await {
-            match notification_command {
-                //Whenever a new template is received it is broadcasted across all the downstream nodes connected .
-                NotifyCmd::SendToAll {
-                    template,
-                    merkle_branch_coinbase,
-                    template_id,
-                } => {
-                    debug!(
-                        template_id = %template_id,
-                        "Received new block template"
-                    );
-                    let connection_snapshot = downstream_connection_map
-                        .lock()
-                        .await
-                        .downstream_channel_mapping
-                        .clone();
-                    //We will receive the template from the IPC channel and construct a valid job
-                    //from the provided template and pass onto the message_reciver in the handle connection for
-                    // downstream communication to take place.
-                    for (peer_adr, mining_job_arc) in self.job_map_arc.lock().await.iter() {
-                        let connection_info = match connection_snapshot.get(peer_adr) {
-                            Some(info) => info,
-                            None => {
-                                warn!(
-                                    template_id = %template_id,
-                                    peer = %peer_adr,
-                                    "Peer not found in connection mapping during job notification - skipping notification"
-                                );
-                                continue;
-                            }
+        task_manager.spawn(async move{
+            loop{
+                tokio::select! {
+                    notification_command = self.notification_receiver.recv()=>{
+                        let Some(notification_command) = notification_command else {
+                            error!("An error occurred while receiving notification");
+                            break;
                         };
-                        let connection_id_hex = format!("{:x}", connection_info.connection_id);
-                        let mut template_for_job = template.clone();
-                        template_for_job.transactions.remove(0);
+                        match notification_command {
+                            //Whenever a new template is received it is broadcasted across all the downstream nodes connected .
+                            NotifyCmd::SendToAll {
+                                template,
+                                merkle_branch_coinbase,
+                                template_id,
+                            } => {
+                                debug!(
+                                    template_id = %template_id,
+                                    "Received new block template"
+                                );
+                                let connection_snapshot = downstream_connection_map
+                                    .lock()
+                                    .await
+                                    .downstream_channel_mapping
+                                    .clone();
+                                //We will receive the template from the IPC channel and construct a valid job
+                                //from the provided template and pass onto the message_reciver in the handle connection for
+                                // downstream communication to take place per channel mapping.
+                                for (peer_adr, mining_job_arc) in self.job_map_arc.lock().await.iter() {
+                                    let connection_info = match connection_snapshot.get(peer_adr) {
+                                        Some(info) => info,
+                                        None => {
+                                            warn!(
+                                                template_id = %template_id,
+                                                peer = %peer_adr,
+                                                "Peer not found in connection mapping during job notification - skipping notification"
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    let connection_id_hex = format!("{:x}", connection_info.connection_id);
+                                    let mut template_for_job = template.clone();
+                                    template_for_job.transactions.remove(0);
 
-                        let mut curr_peer_mining_job_map = mining_job_arc.lock().await;
-                        // Clean Jobs. If true, miners should abort their current work and immediately use the new job,
-                        // even if it degrades hashrate in the short term. If false, they can still use the current job,
-                        // but should move to the new one as soon as possible without impacting hashrate.
-                        let clean_job = false;
-                        let job_notification = match Self::construct_job_notification(
-                            clean_job,
-                            template.clone(),
-                            template_id,
-                            merkle_branch_coinbase.clone(),
-                        )
-                        .await
-                        {
-                            Ok(job) => job,
-                            Err(e) => {
-                                error!(
-                                    connection_id = %connection_id_hex,
-                                    template_id = %template_id,
-                                    peer = %peer_adr,
-                                    error = %e,
-                                    reason = "job_construction_failed",
-                                    "Failed to construct job for peer"
-                                );
-                                continue; // Skip this peer but continue with others
-                            }
-                        };
-                        let current_system_time = std::time::SystemTime::now();
-                        let duration_since_epoch =
-                            match current_system_time.duration_since(UNIX_EPOCH) {
-                                Ok(duration) => duration,
-                                Err(error) => {
-                                    return Err(StratumErrors::ErrorFetchingCurrentUNIXTimestamp {
-                                        error: error.to_string(),
-                                    })
-                                }
-                            };
+                                    let mut curr_peer_mining_job_map = mining_job_arc.lock().await;
+                                    // Clean Jobs. If true, miners should abort their current work and immediately use the new job,
+                                    // even if it degrades hashrate in the short term. If false, they can still use the current job,
+                                    // but should move to the new one as soon as possible without impacting hashrate.
+                                    let clean_job = false;
+                                    let job_notification = match Self::construct_job_notification(
+                                        clean_job,
+                                        template.clone(),
+                                        template_id,
+                                        merkle_branch_coinbase.clone(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(job) => job,
+                                        Err(e) => {
+                                            error!(
+                                                connection_id = %connection_id_hex,
+                                                template_id = %template_id,
+                                                peer = %peer_adr,
+                                                error = %e,
+                                                reason = "job_construction_failed",
+                                                "Failed to construct job for peer"
+                                            );
+                                            continue; // Skip this peer but continue with others
+                                        }
+                                    };
+                                    let current_system_time = std::time::SystemTime::now();
+                                    let duration_since_epoch =
+                                        match current_system_time.duration_since(UNIX_EPOCH) {
+                                            Ok(duration) => duration,
+                                            Err(error) => {
+                                                error!("An error occured while sending notification to downstream client - {} - {}",peer_adr,error.to_string());
+                                                continue;
+                                            }
+                                        };
 
                         let unix_timestamp = match duration_since_epoch.as_secs().to_u32() {
                             Some(ts) => ts,
@@ -1567,34 +1578,34 @@ impl Notifier {
                             }
                         };
 
-                        let job_details = JobDetails {
-                            blocktemplate: template_for_job,
-                            coinbase1: job_notification.coinbase1.clone(),
-                            coinbase2: job_notification.coinbase2.clone(),
-                            coinbase_merkle_path: job_notification.merkle_branches.clone(),
-                            coinbase_witness_commitment: job_notification
-                                .coinbase_witness_commitment,
-                            job_sent_time: unix_timestamp,
-                        };
+                                    let job_details = JobDetails {
+                                        blocktemplate: template_for_job,
+                                        coinbase1: job_notification.coinbase1.clone(),
+                                        coinbase2: job_notification.coinbase2.clone(),
+                                        coinbase_merkle_path: job_notification.merkle_branches.clone(),
+                                        coinbase_witness_commitment: job_notification
+                                            .coinbase_witness_commitment,
+                                        job_sent_time: unix_timestamp,
+                                    };
 
-                        let numeric_job_id = curr_peer_mining_job_map
-                            .insert_mining_job(template_id, job_details)
-                            .await;
+                                    let numeric_job_id = curr_peer_mining_job_map
+                                        .insert_mining_job(template_id, job_details)
+                                        .await;
 
-                        let job_notification_response = JobNotificationResponse {
-                            method: "mining.notify".to_string(),
-                            params: json!([
-                                numeric_job_id.to_string(),
-                                job_notification.prevhash,
-                                job_notification.coinbase1,
-                                job_notification.coinbase2,
-                                job_notification.merkle_branches,
-                                job_notification.version,
-                                job_notification.nbits,
-                                job_notification.ntime,
-                                job_notification.clean_jobs
-                            ]),
-                        };
+                                    let job_notification_response = JobNotificationResponse {
+                                        method: "mining.notify".to_string(),
+                                        params: json!([
+                                            numeric_job_id.to_string(),
+                                            job_notification.prevhash,
+                                            job_notification.coinbase1,
+                                            job_notification.coinbase2,
+                                            job_notification.merkle_branches,
+                                            job_notification.version,
+                                            job_notification.nbits,
+                                            job_notification.ntime,
+                                            job_notification.clean_jobs
+                                        ]),
+                                    };
 
                         let job_notification_json =
                             match serde_json::to_string(&job_notification_response) {
@@ -1622,35 +1633,33 @@ impl Notifier {
                     }
                 }
 
-                NotifyCmd::SendLatestTemplateToNewDownstream {
-                    new_downstream_addr,
-                } => {
-                    let current_template_id = *latest_template_id.lock().await;
-                    let connection_entry = {
-                        let current_downstream_mapping = downstream_connection_map.lock().await;
-                        current_downstream_mapping
-                            .downstream_channel_mapping
-                            .get(&new_downstream_addr)
-                            .cloned()
-                    };
-                    let connection_entry = match connection_entry {
-                        Some(entry) => entry,
-                        None => {
-                            error!(peer = %new_downstream_addr, "Mining peer not found in connection mapping");
-                            return Err(StratumErrors::PeerNotFoundInConnectionMapping {
-                                peer_addr: new_downstream_addr,
-                            });
-                        }
-                    };
-                    let connection_id_hex = format!("{:x}", connection_entry.connection_id);
+                            NotifyCmd::SendLatestTemplateToNewDownstream {
+                                new_downstream_addr,
+                            } => {
+                                let current_template_id = *latest_template_id.lock().await;
+                                let connection_entry = {
+                                    let current_downstream_mapping = downstream_connection_map.lock().await;
+                                    current_downstream_mapping
+                                        .downstream_channel_mapping
+                                        .get(&new_downstream_addr)
+                                        .cloned()
+                                };
+                                let connection_entry = match connection_entry {
+                                    Some(entry) => entry,
+                                    None => {
+                                        error!(peer = %new_downstream_addr, "Mining peer not found in connection mapping");
+                                        continue;
+                                    }
+                                };
+                                let connection_id_hex = format!("{:x}", connection_entry.connection_id);
 
-                    if current_template_id == 0 {
-                        warn!(
-                            connection_id = %connection_id_hex,
-                            "No templates generated yet for new miner"
-                        );
-                        continue; // Skip but keep notifier running
-                    }
+                                if current_template_id == 0 {
+                                    warn!(
+                                        connection_id = %connection_id_hex,
+                                        "No templates generated yet for new miner"
+                                    );
+                                    continue; // Skip but keep notifier running
+                                }
 
                     let latest_template = latest_template_arc.lock().await.to_owned();
                     let latest_template_merkle_branch =
@@ -1671,99 +1680,107 @@ impl Notifier {
                         };
                     let mut curr_peer_mining_job_map = current_peer_mining_job_map_arc.lock().await;
 
-                    // Clean Jobs. If true, miners should abort their current work and immediately use the new job, even if it degrades hashrate in the short term.
-                    // If false, they can still use the current job, but should move to the new one as soon as possible without impacting hashrate.
-                    let clean_job = false;
-                    let job_notification = Self::construct_job_notification(
-                        clean_job,
-                        latest_template.clone(),
-                        current_template_id,
-                        latest_template_merkle_branch,
-                    )
-                    .await;
-                    let current_system_time = std::time::SystemTime::now();
-                    let duration_since_epoch = match current_system_time.duration_since(UNIX_EPOCH)
-                    {
-                        Ok(duration) => duration,
-                        Err(error) => {
-                            return Err(StratumErrors::ErrorFetchingCurrentUNIXTimestamp {
-                                error: error.to_string(),
-                            })
-                        }
-                    };
+                                // Clean Jobs. If true, miners should abort their current work and immediately use the new job, even if it degrades hashrate in the short term.
+                                // If false, they can still use the current job, but should move to the new one as soon as possible without impacting hashrate.
+                                let clean_job = false;
+                                let job_notification = Self::construct_job_notification(
+                                    clean_job,
+                                    latest_template.clone(),
+                                    current_template_id,
+                                    latest_template_merkle_branch,
+                                )
+                                .await;
+                                let current_system_time = std::time::SystemTime::now();
+                                let duration_since_epoch = match current_system_time.duration_since(UNIX_EPOCH)
+                                {
+                                    Ok(duration) => duration,
+                                    Err(error) => {
+                                        error!("An error occured while sending notification to downstream client - {} - {}",new_downstream_addr,error.to_string());
+                                        continue;
+                                    }
+                                };
 
-                    let unix_timestamp = match duration_since_epoch.as_secs().to_u32() {
+                                let unix_timestamp = match duration_since_epoch.as_secs().to_u32() {
                         Some(ts) => ts,
                         None => {
                             error!("System timestamp overflow for new miner notification");
                             continue;
                         }
                     };
-                    let serialized_notification: Result<String, StratumErrors> =
-                        match job_notification {
-                            Ok(job) => {
-                                //Updating the existing `JobMap` with the new job constructed from the newly generated
-                                //template received from IPC .
-                                //Removing stale coinbase
-                                let mut latest_template_ref = latest_template.clone();
-                                latest_template_ref.transactions.remove(0);
-                                let job_details = JobDetails {
-                                    blocktemplate: latest_template_ref,
-                                    coinbase1: job.coinbase1.clone(),
-                                    coinbase2: job.coinbase2.clone(),
-                                    coinbase_merkle_path: job.merkle_branches.clone(),
-                                    coinbase_witness_commitment: job.coinbase_witness_commitment,
-                                    job_sent_time: unix_timestamp,
-                                };
-                                let numeric_job_id = curr_peer_mining_job_map
-                                    .insert_mining_job(current_template_id, job_details)
-                                    .await;
-                                let job_notification_response = JobNotificationResponse {
-                                    method: "mining.notify".to_string(),
-                                    params: json!([
-                                        numeric_job_id.to_string(),
-                                        job.prevhash,
-                                        job.coinbase1,
-                                        job.coinbase2,
-                                        job.merkle_branches,
-                                        job.version,
-                                        job.nbits,
-                                        job.ntime,
-                                        job.clean_jobs
-                                    ]),
-                                };
-                                serde_json::to_string(&job_notification_response).map_err(|_| {
+                                let serialized_notification: Result<String, StratumErrors> =
+                                    match job_notification {
+                                        Ok(job) => {
+                                            //Updating the existing `JobMap` with the new job constructed from the newly generated
+                                            //template received from IPC .
+                                            //Removing stale coinbase
+                                            let mut latest_template_ref = latest_template.clone();
+                                            latest_template_ref.transactions.remove(0);
+                                            let job_details = JobDetails {
+                                                blocktemplate: latest_template_ref,
+                                                coinbase1: job.coinbase1.clone(),
+                                                coinbase2: job.coinbase2.clone(),
+                                                coinbase_merkle_path: job.merkle_branches.clone(),
+                                                coinbase_witness_commitment: job.coinbase_witness_commitment,
+                                                job_sent_time: unix_timestamp,
+                                            };
+                                            let numeric_job_id = curr_peer_mining_job_map
+                                                .insert_mining_job(current_template_id, job_details)
+                                                .await;
+                                            let job_notification_response = JobNotificationResponse {
+                                                method: "mining.notify".to_string(),
+                                                params: json!([
+                                                    numeric_job_id.to_string(),
+                                                    job.prevhash,
+                                                    job.coinbase1,
+                                                    job.coinbase2,
+                                                    job.merkle_branches,
+                                                    job.version,
+                                                    job.nbits,
+                                                    job.ntime,
+                                                    job.clean_jobs
+                                                ]),
+                                            };
+                                            serde_json::to_string(&job_notification_response).map_err(|_| {
                                     StratumErrors::JobNotificationNotConstructed {
                                         job_template: latest_template.clone(),
                                     }
                                 })
+                                        }
+                                        Err(error) => Err(error),
+                                    };
+                                let job_notification = match serialized_notification {
+                                    Ok(job) => job,
+                                    Err(error) => {
+                                        error!(
+                                            error = %error,
+                                            "Error occurred while fetching the job notification"
+                                        );
+                                        continue;
+                                    }
+                                };
+                                match connection_entry.sender.send(job_notification).await {
+                                    Ok(_) => {
+                                        info!("Latest available job template sent to downstream miner upon connection !");
+                                    }
+                                    Err(error) => {
+                                        error!("An error occurred while sending the notification via downstream sender channel {}",error.to_string());
+                                        continue;
+                                    }
+                                };
                             }
-                            Err(error) => Err(error),
-                        };
-                    let job_notification = match serialized_notification {
-                        Ok(job) => job,
-                        Err(error) => {
-                            error!(
-                                error = %error,
-                                "Error occurred while fetching the job notification"
-                            );
-                            return Err(error);
                         }
-                    };
-                    match connection_entry.sender.send(job_notification).await {
-                        Ok(_) => {}
-                        Err(error) => {
-                            return Err(StratumErrors::NotifyMessageNotSent {
-                                error: error.to_string(),
-                                msg: error.0,
-                                msg_type: "LatestTemplateSent".to_string(),
-                            })
-                        }
-                    };
+
+                    }
+                    _ = cancellation_token.cancelled() => {
+                        debug!(component = "notification_task", "Shutdown signal received, exiting gracefully");
+                        break;
+                    }
                 }
+
             }
-        }
-        Ok(())
+            drop(shutdown_tx);
+            drop(self.notification_receiver);
+        });
     }
 }
 ///Connection information associated with each downstream peer associated along with the mapped `Sender_channel` for sending downstream responses and communication.
@@ -1825,12 +1842,16 @@ impl Server {
     /// * `Ok(())` – Runs indefinitely; returns only if the listener loop is broken or an unrecoverable error occurs.
     /// * `Err(Box<std::io::Error>)` – If binding to the server address fails.
     pub async fn run_stratum_service(
-        &mut self,
+        self,
+        //This should be server owned
         mining_job_map: Arc<Mutex<HashMap<String, Arc<Mutex<MiningJobMap>>>>>,
-        notification_sender: mpsc::Sender<NotifyCmd>,
+        notification_sender: mpsc::UnboundedSender<NotifyCmd>,
         swarm_handler: Arc<Mutex<SwarmHandler>>,
         ibd_or_not: Arc<AtomicBool>,
-    ) -> Result<(), Box<std::io::Error>> {
+        cancellation_token: CancellationToken,
+        shutdown_completion_tx: tokio::sync::mpsc::Sender<()>,
+        task_manager: Arc<TaskManager>,
+    ) {
         debug!("Starting stratum server");
         let bind_address = format!(
             "{}:{}",
@@ -1840,7 +1861,7 @@ impl Server {
             Ok(listener) => listener,
             Err(e) => {
                 error!(address = %bind_address, error = %e, "Failed to bind stratum server");
-                return Err(Box::new(e));
+                return;
             }
         };
 
@@ -1860,26 +1881,28 @@ impl Server {
                 info!(endpoint = %endpoint, "Stratum server is listening");
             }
         }
+        let task_manager_ref = task_manager.clone();
+        task_manager.spawn(async move{
         loop {
             tokio::select! {
-                    event = listener.accept()=>{
-                        //Currently we do not accept connections from downstream during IBD wrt to sync nodes
-                        if ibd_or_not.load(std::sync::atomic::Ordering::SeqCst) == true{
-                        warn!("Braid node not synced and is under IBD thus skipping the connection from downstream.");
-                            continue;
-                        }
-                        else{
-                 //shared ownership across all tasks and spawning a seperate downstream for each new connection
-                 let self_ = Arc::new(Mutex::new(DownstreamClient::default()));
-                        let (connection_id, connection_id_hex) = {
-                            let mut client = self_.lock().await;
+                event = listener.accept()=>{
+                //Currently we do not accept connections from downstream during IBD wrt to sync nodes
+                if ibd_or_not.load(std::sync::atomic::Ordering::SeqCst) == true{
+                warn!("Braid node not synced and is under IBD thus skipping the connection from downstream.");
+                    continue;
+                }
+                else
+                {
+                    //shared ownership across all tasks and spawning a seperate downstream for each new connection
+                 let mut self_ = DownstreamClient::default();
+                 let (connection_id, connection_id_hex) = {
                     if let Some(ref submission_tx) = self.block_submission_tx {
-                         client.block_submission_tx = Some(submission_tx.clone());
+                         self_.block_submission_tx = Some(submission_tx.clone());
                      }
-                            let id = client.connection_id;
-                            (id, format!("{:x}", id))
-                        };
-                 //downstream miner mapping for associated jobs for a specific channel for downstream
+                            let id = self_.connection_id;
+                        (id, format!("{:x}", id))
+                    };
+                    //downstream miner mapping for associated jobs for a specific channel for downstream
                  let self_mining_map = Arc::new(Mutex::new(MiningJobMap::new()));
                  match event{
                      Ok((stream,peer_addr))=>{
@@ -1898,26 +1921,26 @@ impl Server {
                                     .await
                                     .new_connection(peer_addr.to_string(), connection_id, downstream_tx.clone());
                          info!(
+                            connection_id = %connection_id_hex,
+                            peer = %peer_addr,
+                            "Miner connected"
+                            );
+                            let cancellation_token_ref = cancellation_token.clone();
+                            let shutdown_complete_tx_ref = shutdown_completion_tx.clone();self_.downstream_ip = peer_addr.to_string();
+                            let connection_mapping_clone = Arc::clone(&self.downstream_connection_mapping);
+                            let mining_job_map_clone = Arc::clone(&mining_job_map);
+                            let peer_addr_string = peer_addr.to_string();
+                         // Catering each new connection as seperate process
+                         task_manager_ref.spawn(async move{
+                             let _=  Self::handle_downstream_connection(self_.clone(),peer_addr,reader,writer,&mut downstream_rx,self_mining_map.clone(),downstream_tx,notification_sender,swarm_handler_arc_ref,cancellation_token_ref,shutdown_complete_tx_ref).await;
+
+                              debug!(
                                     connection_id = %connection_id_hex,
-                                    peer = %peer_addr,
-                                    "Miner connected"
+                                    peer = %peer_addr_string,
+                                    "Cleaning up disconnected miner"
                                 );
-                         self_.lock().await.downstream_ip = peer_addr.to_string();
 
-                         let connection_mapping_clone = Arc::clone(&self.downstream_connection_mapping);
-                         let mining_job_map_clone = Arc::clone(&mining_job_map);
-                         let peer_addr_string = peer_addr.to_string();
-
-                         // catering each new connection as seperate process
-                         tokio::spawn(async move{
-                             let _=  Self::handle_connection(self_.clone(),peer_addr,reader,writer,&mut downstream_rx,self_mining_map.clone(),downstream_tx,notification_sender,swarm_handler_arc_ref).await;
-                             debug!(
-                                        connection_id = %connection_id_hex,
-                                        peer = %peer_addr_string,
-                                        "Cleaning up disconnected miner"
-                                    );
-
-                             // cleanup after connection closes, remove from connection mapping
+                             // Cleanup after connection closes, remove from connection mapping
                              connection_mapping_clone
                                      .lock()
                                      .await
@@ -1948,8 +1971,12 @@ impl Server {
                         }
                     }
                 }
-            }
+                _ = cancellation_token.cancelled() => {
+                        debug!(component = "stratum_service", "Shutdown signal received, exiting gracefully");
+                        break;}}
         }
+            drop(shutdown_completion_tx);
+        });
     }
     /// Handles an individual downstream miner connection over TCP.
     ///
@@ -1969,26 +1996,34 @@ impl Server {
     /// * `Ok(())` – Connection terminated normally (client closed the connection).
     /// * `Err(Box<StratumErrors>)` – On stream reading/writing errors or if the request handling fails.
     ///
-    pub async fn handle_connection(
-        downstream_client: Arc<Mutex<DownstreamClient>>,
+    pub async fn handle_downstream_connection(
+        //per peer
+        mut downstream_client: DownstreamClient,
+        //per peer
         peer_addr: SocketAddr,
+        //per peer
         stream_reader: OwnedReadHalf,
         mut stream_writer: OwnedWriteHalf,
+        //per peer
         downstream_receiver: &mut mpsc::Receiver<String>,
+        //per peer jobs mapping
         mining_job_map: Arc<Mutex<MiningJobMap>>,
+        //per peer sender to be provided as reponse of a request from client2server
         downstream_message_sender: mpsc::Sender<String>,
-        notification_sender: mpsc::Sender<NotifyCmd>,
+        //per peer notification sender providing latest template upon connection establishment after authorization
+        notification_sender: mpsc::UnboundedSender<NotifyCmd>,
+        //common swarm_handler this lock is not required because at granular level the lock is already there
         swarm_handler: Arc<Mutex<SwarmHandler>>,
-    ) -> Result<(), Box<StratumErrors>> {
+        //per peer specific task shutdown and cancellation token
+        cancellation_token: CancellationToken,
+        shutdown_completion_tx: tokio::sync::mpsc::Sender<()>,
+    ) {
         const MAX_LINE_LENGTH: usize = 2_usize.pow(16);
         //It can be excessively inefficient to work directly with a AsyncRead instance. A BufReader performs large, infrequent reads on the underlying AsyncRead and maintains an in-memory buffer of the results.
         let reader = BufReader::new(stream_reader);
         //reading incoming stream frame by frame
         let mut framed = FramedRead::new(reader, LinesCodec::new_with_max_length(MAX_LINE_LENGTH));
-        let connection_id_hex = {
-            let client = downstream_client.lock().await;
-            format!("{:x}", client.connection_id)
-        };
+        let connection_id_hex = { format!("{:x}", downstream_client.connection_id) };
         debug!(
             connection_id = %connection_id_hex,
             peer = %peer_addr,
@@ -1998,7 +2033,7 @@ impl Server {
         loop {
             tokio::select! {
                 Some(message) = downstream_receiver.recv()=>{
-                    trace!(
+                    debug!(
                         connection_id = %connection_id_hex,
                         message = ?message,
                         peer = %peer_addr,
@@ -2008,7 +2043,7 @@ impl Server {
                     let write_or_not = stream_writer.write_all(format!("{}\n",message).as_bytes()).await;
                     match write_or_not{
                         Ok(_)=>{
-                            trace!(
+                            debug!(
                                 connection_id = %connection_id_hex,
                                 peer = %peer_addr,
                                 "Response written to stream"
@@ -2022,6 +2057,7 @@ impl Server {
                                 peer = %peer_addr,
                                 "Failed to write to stream"
                             );
+                            break;
                         }
                     }
                 }
@@ -2040,30 +2076,37 @@ impl Server {
                         //Parsing the lines read from buffer to find out whether they are valid JSON request type to be server as per
                         //stratum or not .
                         match serde_json::from_str::<StandardRequest>(&line) {
-                                Ok(request) => {
-                         let server_request_res:Result<StratumResponses, StratumErrors> = downstream_client.lock().await.handle_client_to_server_request(request,mining_job_map.clone(),downstream_message_sender.clone(),notification_sender.clone(),peer_addr.to_string(),swarm_handler.clone()).await;
-                         match server_request_res{
-                            Ok(_)=>{
-
-                            },
-                            Err(error)=>{
-                                return Err(Box::new(error))
-                            }
-                         }
+                            Ok(parsed_request) => {
+                                let server_request_res:Result<StratumResponses, StratumErrors> = downstream_client.handle_client_to_server_request(parsed_request,mining_job_map.clone(),downstream_message_sender.clone(),notification_sender.clone(),peer_addr.to_string(),swarm_handler.clone()).await;
+                                    match server_request_res{
+                                        Ok(response_received)=>{
+                                            debug!("Response received succesfully  - {:?} ",response_received);
+                                        },
+                                        Err(error)=>{
+                                            error!(
+                                                    connection_id = %connection_id_hex,
+                                                    peer = %peer_addr,
+                                                    error = %error,
+                                                    line = %line,
+                                                    error_type = "reader_task",
+                                                    "Failed to process JSON request for downstream"
+                                                );
+                                                break;
+                                        }
+                                    }
                                 }
-                                Err(e) => {
-                                    error!(
-                                        connection_id = %connection_id_hex,
-                                        peer = %peer_addr,
-                                        error = %e,
-                                        line = %line,
-                                        error_type = "json_parse",
-                                        "Failed to parse JSON request"
-                                    );
+                                    Err(e) => {
+                                        error!(
+                                            connection_id = %connection_id_hex,
+                                            peer = %peer_addr,
+                                            error = %e,
+                                            line = %line,
+                                            error_type = "json_parse",
+                                            "Failed to parse JSON request"
+                                        );
+                                        break;
+                                    }
                                 }
-                            }
-
-
                         }
                         Some(Err(e)) => {
                             error!(
@@ -2071,9 +2114,9 @@ impl Server {
                                 error = %e,
                                 peer = %peer_addr,
                                 fatal = true,
-                                "Fatal error reading from stream"
+                                "Fatal error reading from stream closing connection with downstream"
                             );
-                            return Err(Box::new(StratumErrors::UnableToReadStream { error: e }));
+                            break;
                         }
                         None => {
                             info!(
@@ -2082,14 +2125,17 @@ impl Server {
                                 "Connection closed by client"
                             );
                             break;
-
                         }
                     }
+                }
+                _ = cancellation_token.cancelled() => {
+                        debug!(component = "stratum_service", "Shutdown signal received, exiting gracefully");
+                        break;
                 }
 
             }
         }
-        Ok(())
+        drop(shutdown_completion_tx);
     }
 }
 #[allow(dead_code, unused)]
@@ -2108,7 +2154,7 @@ mod test {
         absolute::LockTime, pow::CompactTargetExt, script::ScriptBufExt, Amount, BlockHash,
         BlockVersion, OutPoint, ScriptBuf, Sequence, TxIn, TxOut,
     };
-    use futures::lock::Mutex;
+    use futures::{channel::oneshot::Cancellation, lock::Mutex};
     use tokio::{
         io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
         net::TcpStream,
@@ -2124,7 +2170,7 @@ mod test {
             Arc::new(RwLock::new(braid::Braid::new(genesis_beads)));
         let connection_mapping = Arc::new(Mutex::new(ConnectionMapping::new()));
         let mining_job_map = Arc::new(Mutex::new(std::collections::HashMap::new()));
-        let notify_tx = mpsc::channel::<NotifyCmd>(32).0;
+        let notify_tx = mpsc::unbounded_channel::<NotifyCmd>().0;
         let (_test_db_handler, test_db_tx) = DBHandler::new().await.unwrap();
         let (swarm_handler, mut swarm_command_receiver) =
             SwarmHandler::new(Arc::clone(&test_braid), test_db_tx);
@@ -2136,17 +2182,20 @@ mod test {
         };
 
         let mut server = Server::new(config.clone(), connection_mapping.clone(), None);
-
-        let server_task = tokio::spawn(async move {
-            let _ = server
-                .run_stratum_service(
-                    mining_job_map,
-                    notify_tx,
-                    swarm_handler_arc,
-                    test_ibd_spinlock.clone(),
-                )
-                .await;
-        });
+        let test_task_manager = Arc::new(TaskManager::new());
+        let test_token = CancellationToken::new();
+        let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel::<()>(1);
+        server
+            .run_stratum_service(
+                mining_job_map,
+                notify_tx,
+                swarm_handler_arc.clone(),
+                test_ibd_spinlock.clone(),
+                test_token.clone(),
+                shutdown_complete_tx.clone(),
+                test_task_manager.clone(),
+            )
+            .await;
 
         tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -2177,7 +2226,6 @@ mod test {
         let conn_map = connection_mapping.lock().await;
         assert_eq!(conn_map.downstream_channel_mapping.len(), 3);
         drop(streams);
-        drop(server_task);
     }
 
     #[tokio::test]
@@ -2193,7 +2241,7 @@ mod test {
         let (swarm_handler, mut swarm_command_receiver) =
             SwarmHandler::new(Arc::clone(&test_braid), test_db_tx);
         let swarm_handler_arc = Arc::new(Mutex::new(swarm_handler));
-        let notify_tx = mpsc::channel::<NotifyCmd>(32).0;
+        let notify_tx = mpsc::unbounded_channel::<NotifyCmd>().0;
 
         let config = StratumServerConfig {
             hostname: "127.0.0.1".to_string(),
@@ -2203,16 +2251,20 @@ mod test {
 
         let mut server = Server::new(config.clone(), connection_mapping.clone(), None);
 
-        let server_task = tokio::spawn(async move {
-            let _ = server
-                .run_stratum_service(
-                    mining_job_map,
-                    notify_tx,
-                    swarm_handler_arc,
-                    test_ibd_spinlock,
-                )
-                .await;
-        });
+        let test_task_manager = Arc::new(TaskManager::new());
+        let test_token = CancellationToken::new();
+        let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel::<()>(1);
+        server
+            .run_stratum_service(
+                mining_job_map,
+                notify_tx,
+                swarm_handler_arc.clone(),
+                test_ibd_spinlock.clone(),
+                test_token.clone(),
+                shutdown_complete_tx.clone(),
+                test_task_manager.clone(),
+            )
+            .await;
 
         tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -2233,13 +2285,13 @@ mod test {
     #[tokio::test]
     async fn test_mining_authorize_response() {
         let ibd_or_not: AtomicBool = AtomicBool::new(false);
-        let ibd_spinlock = Arc::new(ibd_or_not);
+        let test_ibd_spinlock = Arc::new(ibd_or_not);
         let connection_mapping = Arc::new(Mutex::new(ConnectionMapping::new()));
         let genesis_beads = Vec::from([]);
         let test_braid: Arc<RwLock<braid::Braid>> =
             Arc::new(RwLock::new(braid::Braid::new(genesis_beads)));
         let mining_job_map = Arc::new(Mutex::new(std::collections::HashMap::new()));
-        let notify_tx = mpsc::channel::<NotifyCmd>(32).0;
+        let notify_tx = mpsc::unbounded_channel::<NotifyCmd>().0;
         let (_test_db_handler, test_db_tx) = DBHandler::new().await.unwrap();
         let (swarm_handler, mut swarm_command_receiver) =
             SwarmHandler::new(Arc::clone(&test_braid), test_db_tx);
@@ -2252,16 +2304,20 @@ mod test {
 
         let port = config.port;
         let mut server = Server::new(config, connection_mapping, None);
-        tokio::spawn(async move {
-            let _ = server
-                .run_stratum_service(
-                    mining_job_map,
-                    notify_tx,
-                    swarm_handler_arc,
-                    ibd_spinlock.clone(),
-                )
-                .await;
-        });
+        let test_task_manager = Arc::new(TaskManager::new());
+        let test_token = CancellationToken::new();
+        let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel::<()>(1);
+        server
+            .run_stratum_service(
+                mining_job_map,
+                notify_tx,
+                swarm_handler_arc.clone(),
+                test_ibd_spinlock.clone(),
+                test_token.clone(),
+                shutdown_complete_tx.clone(),
+                test_task_manager.clone(),
+            )
+            .await;
 
         tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -2284,14 +2340,14 @@ mod test {
     #[tokio::test]
     async fn test_mining_set_difficulty_response() {
         let ibd_or_not: AtomicBool = AtomicBool::new(false);
-        let ibd_spinlock = Arc::new(ibd_or_not);
+        let test_ibd_spinlock = Arc::new(ibd_or_not);
         let connection_mapping = Arc::new(Mutex::new(ConnectionMapping::new()));
         let genesis_beads = Vec::from([]);
         let test_braid: Arc<RwLock<braid::Braid>> =
             Arc::new(RwLock::new(braid::Braid::new(genesis_beads)));
         let (_test_db_handler, test_db_tx) = DBHandler::new().await.unwrap();
         let mining_job_map = Arc::new(Mutex::new(std::collections::HashMap::new()));
-        let notify_tx = mpsc::channel::<NotifyCmd>(32).0;
+        let notify_tx = mpsc::unbounded_channel::<NotifyCmd>().0;
         let (swarm_handler, mut swarm_command_receiver) =
             SwarmHandler::new(Arc::clone(&test_braid), test_db_tx);
         let swarm_handler_arc = Arc::new(Mutex::new(swarm_handler));
@@ -2302,16 +2358,20 @@ mod test {
         };
         let port = config.port;
         let mut server = Server::new(config, connection_mapping, None);
-        tokio::spawn(async move {
-            let _ = server
-                .run_stratum_service(
-                    mining_job_map,
-                    notify_tx,
-                    swarm_handler_arc,
-                    ibd_spinlock.clone(),
-                )
-                .await;
-        });
+        let test_task_manager = Arc::new(TaskManager::new());
+        let test_token = CancellationToken::new();
+        let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel::<()>(1);
+        server
+            .run_stratum_service(
+                mining_job_map,
+                notify_tx,
+                swarm_handler_arc.clone(),
+                test_ibd_spinlock.clone(),
+                test_token.clone(),
+                shutdown_complete_tx.clone(),
+                test_task_manager.clone(),
+            )
+            .await;
         tokio::time::sleep(Duration::from_millis(300)).await;
         let addr = format!("127.0.0.1:{}", port);
         let mut stream = TcpStream::connect(&addr).await.unwrap();
@@ -2327,7 +2387,7 @@ mod test {
     #[tokio::test]
     async fn test_invalid_json() {
         let ibd_or_not: AtomicBool = AtomicBool::new(false);
-        let ibd_spinlock = Arc::new(ibd_or_not);
+        let test_ibd_spinlock = Arc::new(ibd_or_not);
         let connection_mapping = Arc::new(Mutex::new(ConnectionMapping::new()));
         let genesis_beads = Vec::from([]);
         let test_braid: Arc<RwLock<braid::Braid>> =
@@ -2335,7 +2395,7 @@ mod test {
         let (_test_db_handler, test_db_tx) = DBHandler::new().await.unwrap();
         let mining_job_map: Arc<Mutex<HashMap<String, Arc<Mutex<MiningJobMap>>>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        let (notify_tx, _notify_rx) = mpsc::channel::<NotifyCmd>(32);
+        let notify_tx = mpsc::unbounded_channel::<NotifyCmd>().0;
         let (swarm_handler, mut swarm_command_receiver) =
             SwarmHandler::new(Arc::clone(&test_braid), test_db_tx);
         let swarm_handler_arc = Arc::new(Mutex::new(swarm_handler));
@@ -2348,31 +2408,36 @@ mod test {
         let mut server = Server::new(config, connection_mapping.clone(), None);
         let mining_job_map_clone = mining_job_map.clone();
         let notify_tx_clone = notify_tx.clone();
-        tokio::spawn(async move {
-            server
-                .run_stratum_service(
-                    mining_job_map_clone,
-                    notify_tx_clone,
-                    swarm_handler_arc,
-                    ibd_spinlock,
-                )
-                .await
-                .unwrap();
-        });
+        let test_task_manager = Arc::new(TaskManager::new());
+        let test_token = CancellationToken::new();
+        let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel::<()>(1);
+        server
+            .run_stratum_service(
+                mining_job_map,
+                notify_tx,
+                swarm_handler_arc.clone(),
+                test_ibd_spinlock.clone(),
+                test_token.clone(),
+                shutdown_complete_tx.clone(),
+                test_task_manager.clone(),
+            )
+            .await;
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         let mut stream = TcpStream::connect("127.0.0.1:5050").await.unwrap();
-
+        //Invalid request format (connection will be dropped)
         stream
             .write_all(b"{\"method\":\"mining.subscribe\", \"params\": [\"test\", 1]\n")
             .await
             .unwrap();
         stream.flush().await.unwrap();
-
+        //Invalid request format (connection will be dropped)
         stream.write_all(b"not a json at all\n").await.unwrap();
         stream.flush().await.unwrap();
 
+        //Reconnecting as peer connection is dropped due to invalid request
+        let mut stream = TcpStream::connect("127.0.0.1:5050").await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         let valid_msg = r#"{"id": 1, "method": "mining.subscribe", "params": []}"#;

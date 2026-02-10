@@ -1,9 +1,9 @@
-use std::{collections::HashMap, u64};
-
 use libp2p::PeerId;
+use std::{collections::HashMap, u64};
 use tokio::task::JoinHandle;
+use tracing::warn;
 
-use crate::utils::BeadHash;
+use crate::{task_manager::TaskManager, utils::BeadHash};
 pub const IBD_BATCH_SIZE: usize = 500;
 pub const MAX_IBD_RETRIES: u64 = 10;
 pub const IBD_TRIGGER_AFTER: u64 = 20;
@@ -118,8 +118,19 @@ impl IBDManager {
             ibd_tx,
         )
     }
-    pub async fn run_ibd_handler(&mut self) {
-        while let Some(ibd_command) = self.command_receiver.recv().await {
+    pub async fn run_ibd_handler(
+        mut self,
+        shutdown_tx: tokio::sync::mpsc::Sender<()>,
+        cancellation_token: tokio_util::sync::CancellationToken,
+        task_manager: std::sync::Arc<TaskManager>,
+    ) {
+        task_manager.spawn(async move {
+            loop {
+            tokio::select! {
+                ibd_command = self.command_receiver.recv() => {
+                    let Some(ibd_command) = ibd_command else {
+                        break;
+                    };
             match ibd_command {
                 IBDCommands::UpdateAndFetchBatchOffset {
                     peer_id,
@@ -308,7 +319,16 @@ impl IBDManager {
                         incoming_mapping.1 = None;
                     };
                 }
+                    }
+                }
+                _ = cancellation_token.cancelled() => {
+                    tracing::info!(component = "ibd_handler", "Shutdown signal received, exiting gracefully");
+                    break;
+                }
             }
         }
+        drop(shutdown_tx);
+        warn!("IBD manager loop exited");
+        });
     }
 }
