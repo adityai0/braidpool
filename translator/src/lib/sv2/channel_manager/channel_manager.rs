@@ -724,12 +724,11 @@ impl ChannelManager {
     /// - In aggregated mode: use upstream channel ID (single counter for all shares)
     /// - In non-aggregated mode: use downstream channel ID (one counter per channel)
     pub fn next_share_sequence_number(&self, counter_key: u32) -> u32 {
-        let mut counter = self.share_sequence_counters.entry(counter_key).or_insert(1);
+        let mut counter = self.share_sequence_counters.entry(counter_key).or_insert(0);
         let counter = counter.value_mut();
 
-        let current = *counter;
         *counter += 1;
-        current
+        *counter
     }
 }
 

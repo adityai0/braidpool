@@ -28,6 +28,14 @@ impl ServerMonitoring for ChannelManager {
                     let user_identity = aggregated_extended_channel.get_user_identity();
                     let share_accounting = aggregated_extended_channel.get_share_accounting();
 
+                    // Get the actual upstream sequence counter (shares submitted upstream)
+                    // In aggregated mode, we use the upstream channel_id as the counter key
+                    let shares_submitted = self
+                        .share_sequence_counters
+                        .get(&channel_id)
+                        .map(|v| *v)
+                        .unwrap_or(0);
+
                     extended_channels.push(ServerExtendedChannelInfo {
                         channel_id,
                         user_identity: user_identity.clone(),
@@ -41,8 +49,7 @@ impl ServerMonitoring for ChannelManager {
                         version_rolling: aggregated_extended_channel.is_version_rolling(),
                         shares_accepted: share_accounting.get_shares_accepted(),
                         share_work_sum: share_accounting.get_share_work_sum(),
-                        last_share_sequence_number: share_accounting
-                            .get_last_share_sequence_number(),
+                        shares_submitted,
                         best_diff: share_accounting.get_best_diff(),
                     });
                 }
@@ -59,6 +66,14 @@ impl ServerMonitoring for ChannelManager {
                     let user_identity = extended_channel.get_user_identity();
                     let share_accounting = extended_channel.get_share_accounting();
 
+                    // Get the actual upstream sequence counter (shares submitted upstream)
+                    // In non-aggregated mode, each channel has its own counter
+                    let shares_submitted = self
+                        .share_sequence_counters
+                        .get(&channel_id)
+                        .map(|v| *v)
+                        .unwrap_or(0);
+
                     extended_channels.push(ServerExtendedChannelInfo {
                         channel_id,
                         user_identity: user_identity.clone(),
@@ -70,8 +85,7 @@ impl ServerMonitoring for ChannelManager {
                         version_rolling: extended_channel.is_version_rolling(),
                         shares_accepted: share_accounting.get_shares_accepted(),
                         share_work_sum: share_accounting.get_share_work_sum(),
-                        last_share_sequence_number: share_accounting
-                            .get_last_share_sequence_number(),
+                        shares_submitted,
                         best_diff: share_accounting.get_best_diff(),
                     });
                 }

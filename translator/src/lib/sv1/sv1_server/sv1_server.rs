@@ -114,7 +114,7 @@ impl Sv1Server {
             listener_addr,
             shares_per_minute,
             miner_counter: Arc::new(AtomicU32::new(0)),
-            sequence_counter: Arc::new(AtomicU32::new(0)),
+            sequence_counter: Arc::new(AtomicU32::new(1)),
             keepalive_job_id_counter: Arc::new(AtomicU32::new(0)),
             downstream_id_factory: Arc::new(AtomicUsize::new(1)),
             request_id_factory: Arc::new(AtomicU32::new(1)),
@@ -451,10 +451,13 @@ impl Sv1Server {
             }
         }
 
+        // Increment and return the value for this share
+        let sequence_number = self.sequence_counter.fetch_add(1, Ordering::SeqCst);
+
         let submit_share_extended = build_sv2_submit_shares_extended_from_sv1_submit(
             &share,
             message.channel_id,
-            self.sequence_counter.load(Ordering::SeqCst),
+            sequence_number,
             job_version,
             message.version_rolling_mask,
         )
@@ -485,8 +488,6 @@ impl Sv1Server {
             ))
             .await
             .map_err(|_| TproxyError::shutdown(TproxyErrorKind::ChannelErrorSender))?;
-
-        self.sequence_counter.fetch_add(1, Ordering::SeqCst);
 
         Ok(())
     }
@@ -1278,15 +1279,16 @@ mod tests {
 
         // Test initial values
         assert_eq!(server.miner_counter.load(Ordering::SeqCst), 0);
-        assert_eq!(server.sequence_counter.load(Ordering::SeqCst), 0);
+        assert_eq!(server.sequence_counter.load(Ordering::SeqCst), 1);
 
         // Test incrementing
         let miner_id = server.miner_counter.fetch_add(1, Ordering::SeqCst);
         assert_eq!(miner_id, 0);
         assert_eq!(server.miner_counter.load(Ordering::SeqCst), 1);
 
+        // sequence_counter starts at 1, so first share gets sequence 1
         let seq_id = server.sequence_counter.fetch_add(1, Ordering::SeqCst);
-        assert_eq!(seq_id, 0);
-        assert_eq!(server.sequence_counter.load(Ordering::SeqCst), 1);
+        assert_eq!(seq_id, 1);
+        assert_eq!(server.sequence_counter.load(Ordering::SeqCst), 2);
     }
 }

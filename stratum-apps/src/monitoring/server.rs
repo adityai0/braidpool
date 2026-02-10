@@ -19,7 +19,7 @@ pub struct ServerExtendedChannelInfo {
     pub version_rolling: bool,
     pub shares_accepted: u32,
     pub share_work_sum: f64,
-    pub last_share_sequence_number: u32,
+    pub shares_submitted: u32,
     pub best_diff: f64,
 }
 
@@ -33,7 +33,7 @@ pub struct ServerStandardChannelInfo {
     pub extranonce_prefix_hex: String,
     pub shares_accepted: u32,
     pub share_work_sum: f64,
-    pub last_share_sequence_number: u32,
+    pub shares_submitted: u32,
     pub best_diff: f64,
 }
 
