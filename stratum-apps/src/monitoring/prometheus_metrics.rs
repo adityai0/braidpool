@@ -10,15 +10,13 @@ pub struct PrometheusMetrics {
     // System metrics
     pub sv2_uptime_seconds: Gauge,
     // Server metrics (upstream connection)
-    pub sv2_server_channels_extended: Option<Gauge>,
-    pub sv2_server_channels_standard: Option<Gauge>,
+    pub sv2_server_channels: Option<GaugeVec>,
     pub sv2_server_hashrate_total: Option<Gauge>,
     pub sv2_server_channel_hashrate: Option<GaugeVec>,
     pub sv2_server_shares_accepted_total: Option<GaugeVec>,
     // Clients metrics (downstream connections)
     pub sv2_clients_total: Option<Gauge>,
-    pub sv2_client_channels_extended: Option<Gauge>,
-    pub sv2_client_channels_standard: Option<Gauge>,
+    pub sv2_client_channels: Option<GaugeVec>,
     pub sv2_client_hashrate_total: Option<Gauge>,
     pub sv2_client_channel_hashrate: Option<GaugeVec>,
     pub sv2_client_shares_accepted_total: Option<GaugeVec>,
@@ -41,23 +39,16 @@ impl PrometheusMetrics {
 
         // Server metrics (upstream connection)
         let (
-            sv2_server_channels_extended,
-            sv2_server_channels_standard,
+            sv2_server_channels,
             sv2_server_hashrate_total,
             sv2_server_channel_hashrate,
             sv2_server_shares_accepted_total,
         ) = if enable_server_metrics {
-            let extended = Gauge::new(
-                "sv2_server_channels_extended",
-                "Number of extended channels opened with the server",
+            let channels = GaugeVec::new(
+                Opts::new("sv2_server_channels", "Number of server channels by type"),
+                &["channel_type"],
             )?;
-            registry.register(Box::new(extended.clone()))?;
-
-            let standard = Gauge::new(
-                "sv2_server_channels_standard",
-                "Number of standard channels opened with the server",
-            )?;
-            registry.register(Box::new(standard.clone()))?;
+            registry.register(Box::new(channels.clone()))?;
 
             let hashrate = Gauge::new(
                 "sv2_server_hashrate_total",
@@ -84,21 +75,19 @@ impl PrometheusMetrics {
             registry.register(Box::new(shares_accepted.clone()))?;
 
             (
-                Some(extended),
-                Some(standard),
+                Some(channels),
                 Some(hashrate),
                 Some(channel_hashrate),
                 Some(shares_accepted),
             )
         } else {
-            (None, None, None, None, None)
+            (None, None, None, None)
         };
 
         // Clients metrics (downstream connections)
         let (
             sv2_clients_total,
-            sv2_client_channels_extended,
-            sv2_client_channels_standard,
+            sv2_client_channels,
             sv2_client_hashrate_total,
             sv2_client_channel_hashrate,
             sv2_client_shares_accepted_total,
@@ -107,17 +96,11 @@ impl PrometheusMetrics {
                 Gauge::new("sv2_clients_total", "Total number of connected clients")?;
             registry.register(Box::new(clients_total.clone()))?;
 
-            let extended = Gauge::new(
-                "sv2_client_channels_extended",
-                "Number of extended channels opened with clients",
+            let channels = GaugeVec::new(
+                Opts::new("sv2_client_channels", "Number of client channels by type"),
+                &["channel_type"],
             )?;
-            registry.register(Box::new(extended.clone()))?;
-
-            let standard = Gauge::new(
-                "sv2_client_channels_standard",
-                "Number of standard channels opened with clients",
-            )?;
-            registry.register(Box::new(standard.clone()))?;
+            registry.register(Box::new(channels.clone()))?;
 
             let hashrate = Gauge::new(
                 "sv2_client_hashrate_total",
@@ -145,14 +128,13 @@ impl PrometheusMetrics {
 
             (
                 Some(clients_total),
-                Some(extended),
-                Some(standard),
+                Some(channels),
                 Some(hashrate),
                 Some(channel_hashrate),
                 Some(shares_accepted),
             )
         } else {
-            (None, None, None, None, None, None)
+            (None, None, None, None, None)
         };
 
         // SV1 metrics
@@ -171,14 +153,12 @@ impl PrometheusMetrics {
         Ok(Self {
             registry,
             sv2_uptime_seconds,
-            sv2_server_channels_extended,
-            sv2_server_channels_standard,
+            sv2_server_channels,
             sv2_server_hashrate_total,
             sv2_server_channel_hashrate,
             sv2_server_shares_accepted_total,
             sv2_clients_total,
-            sv2_client_channels_extended,
-            sv2_client_channels_standard,
+            sv2_client_channels,
             sv2_client_hashrate_total,
             sv2_client_channel_hashrate,
             sv2_client_shares_accepted_total,
