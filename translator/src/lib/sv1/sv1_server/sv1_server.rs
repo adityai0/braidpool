@@ -83,8 +83,18 @@ pub struct Sv1Server {
 
 #[cfg_attr(not(test), hotpath::measure_all)]
 impl Sv1Server {
-    /// Drops the server's channel state, cleaning up resources.
-    pub fn drop(&self) {
+    /// Cleans up server state and closes communication channels.
+    pub fn cleanup(&self) {
+        self.prevhashes.clear();
+        self.valid_sv1_jobs.clear();
+        if self.config.downstream_difficulty_config.enable_vardiff {
+            self.vardiff.clear();
+        }
+        self.downstreams.clear();
+        self.request_id_to_downstream_id.clear();
+        self.pending_target_updates
+            .safe_lock(|updates| updates.clear())
+            .ok();
         self.sv1_server_channel_state.drop();
     }
 
@@ -200,17 +210,14 @@ impl Sv1Server {
                     // Handle app shutdown signal
                     _ = cancellation_token.cancelled() => {
                         debug!("SV1 Server: received shutdown signal. Exiting.");
-                        self.sv1_server_channel_state.drop();
+                        self.cleanup();
                         break;
                     }
 
                     // Handle fallback trigger
                     _ = fallback_token.cancelled() => {
                         info!("SV1 Server: fallback triggered, clearing state");
-                        if self.config.downstream_difficulty_config.enable_vardiff {
-                            self.vardiff.clear();
-                        }
-                        self.downstreams.clear();
+                        self.cleanup();
                         break;
                     }
                     result = listener.accept() => {
@@ -264,7 +271,7 @@ impl Sv1Server {
                     res = self.handle_downstream_message() => {
                         if let Err(e) = res {
                             if handle_error(&sv1_status_sender, e).await {
-                                self.sv1_server_channel_state.drop();
+                                self.cleanup();
                                 break;
                             }
                         }
@@ -274,7 +281,7 @@ impl Sv1Server {
                     ) => {
                         if let Err(e) = res {
                             if handle_error(&sv1_status_sender, e).await {
-                                self.sv1_server_channel_state.drop();
+                                self.cleanup();
                                 break;
                             }
                         }
