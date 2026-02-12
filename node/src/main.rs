@@ -16,6 +16,7 @@ use libp2p::{
 };
 use node::db::db_handlers::{fetch_beads_in_batch, prepare_bead_tuple_data};
 use node::ibd_manager::{IBD_TRIGGER_AFTER, MAX_IBD_INCOMING_THRESHOLD, MAX_IBD_RETRIES};
+use node::status::{ShutdownMessage, Status};
 use node::task_manager::TaskManager;
 use node::utils::BeadHash;
 use node::SwarmHandler;
@@ -47,6 +48,8 @@ use tracing::{debug, error, info, trace, warn};
 use behaviour::{BraidPoolBehaviour, BraidPoolBehaviourEvent};
 
 use crate::behaviour::KADPROTOCOLNAME;
+//Broadcast channel capacity required to avoid lagged state while broadcast
+const BROADCAST_CHANNEL_CAPACITY: usize = 1024 * 10;
 const LATENCY_ALPHA: u64 = 10; // seconds
                                //boot nodes peerIds
 const BOOTNODES: [&str; 1] = ["12D3KooWG9z8TziaNuYyEcc9FeUC3FTtrEf2XSnSdDpLvx4Jh2w3"];
@@ -63,6 +66,14 @@ use tokio::sync::{
 async fn main() -> Result<(), Box<dyn Error>> {
     // Initialize tracing with colors and module prefixes
     setup_tracing()?;
+
+    // Status reporting channel - tasks send status updates to main loop
+    let (status_tx, mut status_rx) = mpsc::unbounded_channel::<Status>();
+
+    // Shutdown broadcast channel - main loop broadcasts shutdown signals to all tasks
+    let (shutdown_notify_tx, _shutdown_notify_rx) =
+        tokio::sync::broadcast::channel::<ShutdownMessage>(BROADCAST_CHANNEL_CAPACITY);
+
     //Shutdown channel being shared that will be dropped as soon as all the sub-ordinate tasks have shutdown
     let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel::<()>(1);
     //Main task token that will be shared across to trigger the hierarichal shudown of tasks
@@ -71,11 +82,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let task_manager = Arc::new(TaskManager::new());
     let (ibd_manager, ibd_command_tx) = IBDManager::new();
     //IBD cache handler
+    let ibd_status_tx = status_tx.clone();
+    let ibd_shutdown_rx = shutdown_notify_tx.subscribe();
     ibd_manager
         .run_ibd_handler(
             shutdown_complete_tx.clone(),
             main_task_token.clone(),
             task_manager.clone(),
+            ibd_status_tx,
+            ibd_shutdown_rx,
         )
         .await;
     //False if not under ibd otherwise true at start will be in IBD by default
@@ -98,7 +113,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // FIXME instead we should look 144 blocks back from the bitcoin tip (1 day) and load beads
     // starting from that block as genesis
     {
-        let fetched_beads = fetch_beads_in_batch(db_connection_pool_ref, 1000).await?;
+        let fetched_beads = fetch_beads_in_batch(db_connection_pool_ref, 1000).await.unwrap();
         let mut guard = braid_ref.write().await;
         for bead in &fetched_beads {
             let curr_bead_status = guard.extend(&bead);
@@ -115,11 +130,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let latest_template_id_for_notifier = latest_template_id.clone();
     let latest_template_id_for_consumer = latest_template_id.clone();
     //Starting the `query_handler` task
+    let db_status_tx = status_tx.clone();
+    let db_shutdown_rx = shutdown_notify_tx.subscribe();
     _db_handler
         .insert_query_handler(
             shutdown_complete_tx.clone(),
             main_task_token.clone(),
             task_manager.clone(),
+            db_status_tx,
+            db_shutdown_rx,
         )
         .await;
     //latest available template to be cached for the newest connection until new job is received
@@ -177,6 +196,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Some(block_submission_tx),
     );
     //Running the notification service
+    let notifier_status_tx = status_tx.clone();
+    let notifier_shutdown_rx = shutdown_notify_tx.subscribe();
     notifier
         .run_notifier(
             connection_mapping.clone(),
@@ -186,9 +207,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             shutdown_complete_tx.clone(),
             main_task_token.clone(),
             task_manager.clone(),
+            notifier_status_tx,
+            notifier_shutdown_rx,
         )
         .await;
     //Running the stratum service
+    let stratum_status_tx = status_tx.clone();
+    let stratum_shutdown_rx = shutdown_notify_tx.subscribe();
     stratum_server
         .run_stratum_service(
             mining_job_map,
@@ -198,6 +223,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             main_task_token.clone(),
             shutdown_complete_tx.clone(),
             task_manager.clone(),
+            stratum_status_tx,
+            stratum_shutdown_rx,
         )
         .await;
 
@@ -408,6 +435,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let notification_tx_for_ipc = notification_tx.clone();
     let latest_template_for_ipc = latest_template.clone();
     let latest_template_merkle_branch_for_ipc = latest_template_merkle_branch.clone();
+    let _ipc_status_tx = status_tx.clone();
+    let _ipc_shutdown_rx = shutdown_notify_tx.subscribe();
 
     // Spawn IPC handler
     let _ipc_handler = tokio::task::spawn_blocking(move || {
@@ -511,6 +540,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     //Required for child tasks shutdown spawned insided swarm loop
     let child_token = main_task_token.clone();
     let task_manager_ref = task_manager.clone();
+    let swarm_status_tx = status_tx.clone();
+    let mut swarm_shutdown_rx = shutdown_notify_tx.subscribe();
     task_manager_ref.spawn(async move {
         let braid = std::sync::Arc::clone(&braid);
         loop {
@@ -1479,47 +1510,155 @@ async fn main() -> Result<(), Box<dyn Error>> {
                  }
              }
                _ = swarm_task_token.cancelled() => {
-                    info!(" Main swarm network handler task shutting down - cancellation token triggered");
+                    info!("Main swarm network handler task shutting down - cancellation token triggered");
                     break;
+                }
+                shutdown_msg = swarm_shutdown_rx.recv() => {
+                    match shutdown_msg {
+                        Ok(ShutdownMessage::ShutdownAll) => {
+                            info!("Swarm task received shutdown signal");
+                            break;
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
     });
 
-    //graceful shutdown via `Cancellation token`
-    let shutdown_signal = tokio::signal::ctrl_c().await;
-    match shutdown_signal {
-        Ok(_) => {
-            //Cancelling the main token and notifying sub-ordinate tasks to shut gracefully
-            main_task_token.cancel();
-            drop(shutdown_complete_tx);
-            info!(component = "database", "Closing connection pool");
-            let pool = db_connection_pool.lock().await;
-            //Closing all the existing connections to pool and committing from .db-wal to .db
-            pool.close().await;
-            info!(component = "database", "Connections closed");
-            info!("Waiting for shutdown completion signals from subsystems...");
-            let shutdown_timeout = tokio::time::Duration::from_secs(5);
-            tokio::select! {
-                _ = shutdown_complete_rx.recv() => {
-                    info!("All subsystems reported shutdown complete.");
-                }
-                _ = tokio::time::sleep(shutdown_timeout) => {
-                    warn!("Graceful shutdown timed out after {shutdown_timeout:?} — forcing shutdown.");
-                    task_manager_ref.abort_all().await;
+    //Status monitoring and graceful shutdown loop
+    let mut shutdown_initiated = false;
+
+    loop {
+        tokio::select! {
+            Some(status) = status_rx.recv() => {
+                use node::status::State;
+
+                match status.state {
+                    State::Error { component, error, timestamp } => {
+                        error!(
+                            component = %component,
+                            error = ?error,
+                            timestamp = ?timestamp,
+                            "Component error"
+                        );
+
+                        // Check if this is a critical error requiring shutdown
+                        if node::status::determine_action(&error) == node::status::ErrorAction::Shutdown {
+                            warn!(
+                                component = %component,
+                                "Critical error detected, initiating shutdown"
+                            );
+                            if let Err(e) = shutdown_notify_tx.send(ShutdownMessage::ShutdownAll) {
+                                error!(error = ?e, "Failed to broadcast shutdown signal");
+                            }
+                            shutdown_initiated = true;
+                            break;
+                        }
+                    }
+                    State::DownstreamShutdown { connection_id, peer_addr, reason } => {
+                        info!(
+                            connection_id = connection_id,
+                            peer = %peer_addr,
+                            reason = ?reason,
+                            "Downstream connection closed"
+                        );
+                        // Send targeted shutdown for this specific downstream
+                        if let Err(e) = shutdown_notify_tx.send(ShutdownMessage::DownstreamShutdown(peer_addr.to_string())) {
+                            warn!(error = ?e, connection_id = connection_id, "Failed to send downstream shutdown");
+                        }
+                    }
+                    State::StratumServerShutdown { reason } => {
+                        error!(reason = ?reason, "Stratum server shutdown");
+                        if let Err(e) = shutdown_notify_tx.send(ShutdownMessage::ShutdownAll) {
+                            error!(error = ?e, "Failed to broadcast shutdown signal");
+                        }
+                        shutdown_initiated = true;
+                        break;
+                    }
+                    State::StratumNotifierShutdown { reason } => {
+                        error!(reason = ?reason, "Stratum notifier shutdown");
+                        if let Err(e) = shutdown_notify_tx.send(ShutdownMessage::ShutdownAll) {
+                            error!(error = ?e, "Failed to broadcast shutdown signal");
+                        }
+                        shutdown_initiated = true;
+                        break;
+                    }
+                    State::SwarmShutdown { reason } => {
+                        warn!(reason = ?reason, "Swarm handler shutdown");
+                        // Swarm shutdown is typically a fallback, not necessarily critical
+                    }
+                    State::PeerManagerShutdown { reason } => {
+                        warn!(reason = ?reason, "Peer manager shutdown");
+                    }
+                    State::IBDManagerShutdown { reason } => {
+                        warn!(reason = ?reason, "IBD manager shutdown");
+                    }
+                    State::DatabaseShutdown { reason } => {
+                        error!(reason = ?reason, "Database handler shutdown - CRITICAL");
+                        if let Err(e) = shutdown_notify_tx.send(ShutdownMessage::ShutdownAll) {
+                            error!(error = ?e, "Failed to broadcast shutdown signal");
+                        }
+                        shutdown_initiated = true;
+                        break;
+                    }
+                    State::IPCTaskShutdown { reason } => {
+                        error!(reason = ?reason, "IPC task shutdown");
+                        if let Err(e) = shutdown_notify_tx.send(ShutdownMessage::ShutdownAll) {
+                            error!(error = ?e, "Failed to broadcast shutdown signal");
+                        }
+                        shutdown_initiated = true;
+                        break;
+                    }
+                    State::RPCServerShutdown { reason } => {
+                        warn!(reason = ?reason, "RPC server shutdown");
+                    }
                 }
             }
-            info!("Joining remaining tasks...");
-            task_manager_ref.join_all().await;
-            info!("Braidpool shutdown complete.");
+
+            // Handle Ctrl-C graceful shutdown
+            _ = tokio::signal::ctrl_c() => {
+                info!("Ctrl-C received, initiating graceful shutdown");
+
+                // Broadcast shutdown to all tasks
+                if let Err(e) = shutdown_notify_tx.send(ShutdownMessage::ShutdownAll) {
+                    error!(error = ?e, "Failed to broadcast shutdown signal");
+                }
+                shutdown_initiated = true;
+                break;
+            }
         }
-        Err(error) => {
-            error!(
-                error = ?error,
-                component = "shutdown",
-                "Shutdown signal error"
-            );
+    }
+
+    // Graceful shutdown sequence
+    if shutdown_initiated {
+        info!("Shutdown sequence initiated");
+
+        // Cancel all tasks via cancellation token
+        main_task_token.cancel();
+        drop(shutdown_complete_tx);
+
+        info!(component = "database", "Closing connection pool");
+        let pool = db_connection_pool.lock().await;
+        //Closing all the existing connections to pool and committing from .db-wal to .db
+        pool.close().await;
+        info!(component = "database", "Connections closed");
+
+        info!("Waiting for shutdown completion signals from subsystems...");
+        let shutdown_timeout = tokio::time::Duration::from_secs(5);
+        tokio::select! {
+            _ = shutdown_complete_rx.recv() => {
+                info!("All subsystems reported shutdown complete.");
+            }
+            _ = tokio::time::sleep(shutdown_timeout) => {
+                warn!("Graceful shutdown timed out after {shutdown_timeout:?} — forcing shutdown.");
+                task_manager_ref.abort_all().await;
+            }
         }
+
+        info!("Joining remaining tasks...");
+        task_manager_ref.join_all().await;
+        info!("Braidpool shutdown complete.");
     }
 
     Ok(())

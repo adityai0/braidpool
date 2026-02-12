@@ -3,7 +3,11 @@ use std::{collections::HashMap, u64};
 use tokio::task::JoinHandle;
 use tracing::warn;
 
-use crate::{task_manager::TaskManager, utils::BeadHash};
+use crate::{
+    status::{ShutdownMessage, Status},
+    task_manager::TaskManager,
+    utils::BeadHash,
+};
 pub const IBD_BATCH_SIZE: usize = 500;
 pub const MAX_IBD_RETRIES: u64 = 10;
 pub const IBD_TRIGGER_AFTER: u64 = 20;
@@ -123,6 +127,8 @@ impl IBDManager {
         shutdown_tx: tokio::sync::mpsc::Sender<()>,
         cancellation_token: tokio_util::sync::CancellationToken,
         task_manager: std::sync::Arc<TaskManager>,
+        _status_tx: tokio::sync::mpsc::UnboundedSender<Status>,
+        _shutdown_rx: tokio::sync::broadcast::Receiver<ShutdownMessage>,
     ) {
         task_manager.spawn(async move {
             loop {

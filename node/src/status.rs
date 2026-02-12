@@ -224,7 +224,9 @@ pub enum ShutdownMessage {
     /// Shutdown all downstream connections
     DownstreamShutdownAll,
     /// Shutdown a specific downstream connection by ID
-    DownstreamShutdown(u32),
+    DownstreamShutdown(String),
+    ///Fallback in case of status sender reporting an error can be resumed
+    ComponentFallback,
 }
 
 /// Action to take in response to an error.
@@ -286,6 +288,7 @@ async fn send_status(sender: &StatusSender, error: TaskError) -> bool {
                     );
                 }
                 matches!(sender, StatusSender::DownstreamMiner { .. })
+                    || matches!(sender, StatusSender::StratumNotifier { .. })
             } else {
                 warn!(
                     "DisconnectDownstream action for non-downstream error: {:?}",

@@ -4,6 +4,7 @@ use crate::{
     bead::Bead,
     db::{init_db::init_db, BraidpoolDBTypes, InsertTupleTypes},
     error::DBErrors,
+    status::{handle_error, ShutdownMessage, Status, StatusSender, TaskError},
     task_manager::TaskManager,
     utils::BeadHash,
 };
@@ -168,13 +169,20 @@ impl DBHandler {
         shutdown_tx: tokio::sync::mpsc::Sender<()>,
         cancellation_token: tokio_util::sync::CancellationToken,
         task_manager: Arc<TaskManager>,
+        status_tx: tokio::sync::mpsc::UnboundedSender<Status>,
+        mut shutdown_rx: tokio::sync::broadcast::Receiver<ShutdownMessage>,
     ) {
         task_manager.spawn(async move {
             loop {
                 tokio::select! {
                     query_request = self.receiver.recv() => {
                         let Some(query_request) = query_request else {
-                            warn!("INVALID REQUEST BEING RECEIVED !");
+                            error!("DB query receiver channel closed");
+                            let status_sender = StatusSender::DatabaseHandler(status_tx.clone());
+                            let complete_shutdown_or_not = handle_error(&status_sender, TaskError::DatabaseError { error: "Query receiver channel closed".to_string() }).await;
+                            if complete_shutdown_or_not {
+                                warn!("DB handler channel closed, initiating shutdown");
+                            }
                             break;
                         };
                         match query_request {
@@ -211,11 +219,32 @@ impl DBHandler {
                                         bead_hash = %bead_hash,
                                         "Failed to insert bead"
                                     );
+                                    let status_sender = StatusSender::DatabaseHandler(status_tx.clone());
+                                    let _ = handle_error(&status_sender, TaskError::from_db_error(error)).await;
                                     continue;
                                 }
                             };
                         }
                     },
+                        }
+                    }
+                    shutdown_msg = shutdown_rx.recv() => {
+                        match shutdown_msg {
+                            Ok(msg) => {
+                                match msg {
+                                    ShutdownMessage::ShutdownAll => {
+                                        info!("DB handler received shutdown signal, stopping handler");
+                                        break;
+                                    }
+                                    _ => {
+                                        debug!("DB handler received shutdown variant: {:?}, continuing operation", msg);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!(error = ?e, "Error receiving shutdown signal in DB handler");
+                                break;
+                            }
                         }
                     }
                     _ = cancellation_token.cancelled() => {

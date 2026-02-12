@@ -1,4 +1,5 @@
 use crate::error::StratumErrors;
+use crate::status::{handle_error, ShutdownMessage, State, Status, StatusSender, TaskError};
 use crate::task_manager::TaskManager;
 use crate::template_creator::calculate_merkle_root;
 use crate::{SwarmHandler, TemplateId, EXTRANONCE1_SIZE, EXTRANONCE2_SIZE, EXTRANONCE_SEPARATOR};
@@ -1489,6 +1490,8 @@ impl Notifier {
         shutdown_tx: tokio::sync::mpsc::Sender<()>,
         cancellation_token: tokio_util::sync::CancellationToken,
         task_manager: Arc<TaskManager>,
+        status_tx: tokio::sync::mpsc::UnboundedSender<Status>,
+        mut shutdown_rx: tokio::sync::broadcast::Receiver<ShutdownMessage>,
     ) {
         debug!("Stratum notifier task started");
         task_manager.spawn(async move{
@@ -1497,6 +1500,11 @@ impl Notifier {
                     notification_command = self.notification_receiver.recv()=>{
                         let Some(notification_command) = notification_command else {
                             error!("An error occurred while receiving notification");
+                            let status_sender = StatusSender::StratumNotifier(status_tx.clone());
+                            let complete_shutdown_or_not = handle_error(&status_sender, TaskError::StratumServerError { error: "Notification receiver channel closed".to_string() }).await;
+                            if complete_shutdown_or_not {
+                                warn!("Stratum notifier channel closed, initiating shutdown");
+                            }
                             break;
                         };
                         match notification_command {
@@ -1527,7 +1535,11 @@ impl Notifier {
                                                 peer = %peer_adr,
                                                 "Peer not found in connection mapping during job notification - skipping notification"
                                             );
-                                            continue;
+                                        //Closing connection with downstream peer because this is possible deadlock which has occurred hence initiating complete shutdown of braid-node 
+                                        let status_sender = StatusSender::StratumNotifier(status_tx.clone());
+                                        let _ = handle_error(&status_sender,TaskError::StratumNotifierError { details: format!("Possible deadlock occurred since peer is connected but yet not      found in connection mapping") }
+                                        ).await;
+                                        continue;
                                         }
                                     };
                                     let connection_id_hex = format!("{:x}", connection_info.connection_id);
@@ -1622,6 +1634,14 @@ impl Notifier {
                                 error = %e,
                                 "Failed to send job to peer"
                             );
+                                        //Closing connection with downstream peer if error is there wrt sender channel
+                                        let peer_socket_addr: SocketAddr = peer_adr.parse().unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
+                                        let status_sender = StatusSender::StratumNotifier(status_tx.clone());
+                                        let _ = handle_error(&status_sender, TaskError::DownstreamDisconnected { 
+                                            connection_id: connection_info.connection_id, 
+                                            peer_addr: peer_socket_addr, 
+                                            details: format!("Failed to send job: {}", e) 
+                                        }).await;
                         } else {
                             trace!(
                                 connection_id = %connection_id_hex,
@@ -1648,6 +1668,10 @@ impl Notifier {
                                     Some(entry) => entry,
                                     None => {
                                         error!(peer = %new_downstream_addr, "Mining peer not found in connection mapping");
+                                        //Closing connection with downstream peer because this is possible deadlock which has occurred hence initiating complete shutdown of braid-node 
+                                        let status_sender = StatusSender::StratumNotifier(status_tx.clone());
+                                        let _ = handle_error(&status_sender,TaskError::StratumNotifierError { details: format!("Possible deadlock occurred since peer is connected but yet not      found in connection mapping") }
+                                        ).await;
                                         continue;
                                     }
                                 };
@@ -1764,12 +1788,42 @@ impl Notifier {
                                     }
                                     Err(error) => {
                                         error!("An error occurred while sending the notification via downstream sender channel {}",error.to_string());
+                                        //Closing connection with downstream peer if error is there wrt sender channel
+                                        let peer_socket_addr: SocketAddr = new_downstream_addr.parse().unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
+                                        let status_sender = StatusSender::StratumNotifier(status_tx.clone());
+                                        let _ = handle_error(&status_sender, TaskError::DownstreamDisconnected { 
+                                            connection_id: connection_entry.connection_id, 
+                                            peer_addr: peer_socket_addr, 
+                                            details: format!("Failed to send initial job upon connection: {}", error.to_string()) 
+                                        }).await;
                                         continue;
                                     }
                                 };
                             }
                         }
 
+                    }
+                    shutdown_msg = shutdown_rx.recv() => {
+                        match shutdown_msg {
+                            Ok(msg) => {
+                                match msg {
+                                    ShutdownMessage::ShutdownAll => {
+                                        info!(message = ?msg, "Stratum notifier received shutdown signal, stopping notifier");
+                                        break;
+                                    }
+                                    ShutdownMessage::DownstreamShutdownAll => {
+                                        debug!("Notifier received downstream shutdown signal, but notifier continues running");
+                                    }
+                                    _ => {
+                                        debug!("Notifier received shutdown variant: {:?}", msg);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!(error = ?e, "Error receiving shutdown signal in stratum notifier");
+                                break;
+                            }
+                        }
                     }
                     _ = cancellation_token.cancelled() => {
                         debug!(component = "notification_task", "Shutdown signal received, exiting gracefully");
@@ -1851,6 +1905,8 @@ impl Server {
         cancellation_token: CancellationToken,
         shutdown_completion_tx: tokio::sync::mpsc::Sender<()>,
         task_manager: Arc<TaskManager>,
+        status_tx: tokio::sync::mpsc::UnboundedSender<crate::status::Status>,
+        mut shutdown_rx: tokio::sync::broadcast::Receiver<crate::status::ShutdownMessage>,
     ) {
         debug!("Starting stratum server");
         let bind_address = format!(
@@ -1861,6 +1917,18 @@ impl Server {
             Ok(listener) => listener,
             Err(e) => {
                 error!(address = %bind_address, error = %e, "Failed to bind stratum server");
+                let status_sender = StatusSender::StratumServer(status_tx.clone());
+                let complete_shutdown_or_not = handle_error(
+                    &status_sender,
+                    TaskError::StratumServerError {
+                        error: e.to_string(),
+                    },
+                )
+                .await;
+                if complete_shutdown_or_not {
+                    warn!("Stratum server failed to start, initiating shutdown");
+                }
+
                 return;
             }
         };
@@ -1927,47 +1995,101 @@ impl Server {
                             );
                             let cancellation_token_ref = cancellation_token.clone();
                             let shutdown_complete_tx_ref = shutdown_completion_tx.clone();self_.downstream_ip = peer_addr.to_string();
-                            let connection_mapping_clone = Arc::clone(&self.downstream_connection_mapping);
-                            let mining_job_map_clone = Arc::clone(&mining_job_map);
-                            let peer_addr_string = peer_addr.to_string();
+                            let status_clone_downstream = status_tx.clone();
+                            let shutdown_notify_downstream = shutdown_rx.resubscribe();
                          // Catering each new connection as seperate process
                          task_manager_ref.spawn(async move{
-                             let _=  Self::handle_downstream_connection(self_.clone(),peer_addr,reader,writer,&mut downstream_rx,self_mining_map.clone(),downstream_tx,notification_sender,swarm_handler_arc_ref,cancellation_token_ref,shutdown_complete_tx_ref).await;
+                             let _=  Self::handle_downstream_connection(self_.clone(),peer_addr,reader,writer,&mut downstream_rx,self_mining_map.clone(),downstream_tx,notification_sender,swarm_handler_arc_ref,cancellation_token_ref,shutdown_complete_tx_ref,status_clone_downstream,shutdown_notify_downstream).await;
 
-                              debug!(
-                                    connection_id = %connection_id_hex,
-                                    peer = %peer_addr_string,
-                                    "Cleaning up disconnected miner"
-                                );
-
-                             // Cleanup after connection closes, remove from connection mapping
-                             connection_mapping_clone
-                                     .lock()
-                                     .await
-                                     .downstream_channel_mapping
-                                     .remove(&peer_addr_string);
-
-                             // Remove from job mapping
-                                 mining_job_map_clone
-                                     .lock()
-                                     .await
-                                     .remove(&peer_addr_string);
-
-                                    debug!(
-                                        connection_id = %connection_id_hex,
-                                        peer = %peer_addr_string,
-                                        "Miner cleanup complete"
-                                    );
 
                                 });
                             }
                             Err(error)=>{
-                                info!(
+                                error!(
                                     connection_id = %connection_id_hex,
                                     error = ?error,
                                     "Connection failed"
                                 );
+                                  let status_sender = StatusSender::StratumServer(status_tx.clone());
+                                  let complete_shutdown_or_not =  handle_error(&status_sender,TaskError::StratumServerError { error: error.to_string() }).await;
+                                  if complete_shutdown_or_not{
+                                    warn!("Stratum server encountered an error accepting connections, initiating shutdown");
+                                  }
+                                  break;
                             }
+                        }
+                    }
+                }
+                shutdown_msg = shutdown_rx.recv() => {
+                    match shutdown_msg {
+                        Ok(msg) => {
+                            match msg{
+                                // Cleanup all downstream connections and shutting stratum service
+                                ShutdownMessage::ShutdownAll=>{
+                                    debug!(message = ?msg, "Stratum service received shutdown signal for downstream connections, disconnecting all miners");
+                                    let mut conn_map = self.downstream_connection_mapping.lock().await;
+                                    let peer_addrs: Vec<String> = conn_map.downstream_channel_mapping.keys().cloned().collect();
+                                    
+                                    for peer_addr in peer_addrs {
+                                        debug!(peer = %peer_addr, "Disconnecting miner due to shutdown");
+                                        conn_map.downstream_channel_mapping.remove(&peer_addr);
+                                        mining_job_map.lock().await.remove(&peer_addr);
+                                    }
+                                    
+                                    info!("All miners disconnected, and stopping the stratum service");
+                                    break;
+                                },
+                                // Cleanup all downstream connections but not shutting stratum service
+                                ShutdownMessage::DownstreamShutdownAll=>{
+                                    debug!(message = ?msg, "Stratum service received shutdown signal for downstream connections, disconnecting all miners");
+                                    // Cleanup all downstream connections
+                                    let mut conn_map = self.downstream_connection_mapping.lock().await;
+                                    let peer_addrs: Vec<String> = conn_map.downstream_channel_mapping.keys().cloned().collect();
+                                    
+                                    for peer_addr in peer_addrs {
+                                        debug!(peer = %peer_addr, "Disconnecting miner due to shutdown");
+                                        conn_map.downstream_channel_mapping.remove(&peer_addr);
+                                        mining_job_map.lock().await.remove(&peer_addr);
+                                    }
+                                    
+                                    info!("All miners disconnected, but stratum service still runnning ");
+                                },
+                                //Cleaning up specific peer channel 
+                                ShutdownMessage::DownstreamShutdown(disconnected_peer_addr)=>{
+                                    let connection_mapping_clone = Arc::clone(&self.downstream_connection_mapping);
+                                    let mining_job_map_clone = Arc::clone(&mining_job_map);
+                                    //Removing the specific peer connection from connection mapping and job mapping                                        
+                                    debug!(
+                                        peer = %disconnected_peer_addr,
+                                        "Cleaning up disconnected miner"
+                                    );
+                                    // Cleanup after connection closes, remove from connection mapping
+                                    connection_mapping_clone
+                                            .lock()
+                                            .await
+                                            .downstream_channel_mapping
+                                            .remove(&disconnected_peer_addr);
+
+                                    // Remove from job mapping
+                                        mining_job_map_clone
+                                            .lock()
+                                            .await
+                                            .remove(&disconnected_peer_addr);
+
+                                        debug!(
+                                            peer = %disconnected_peer_addr,
+                                            "Miner cleanup complete"
+                                        );
+                                },
+                                _=>{
+                                    info!("Received fallback notification from status sender");
+                                }
+
+                            }
+                        }
+                        Err(e) => {
+                            error!(error = ?e, "Error receiving shutdown signal in stratum service");
+                            break;
                         }
                     }
                 }
@@ -2017,6 +2139,8 @@ impl Server {
         //per peer specific task shutdown and cancellation token
         cancellation_token: CancellationToken,
         shutdown_completion_tx: tokio::sync::mpsc::Sender<()>,
+        status_tx: tokio::sync::mpsc::UnboundedSender<Status>,
+        mut shutdown_rx: tokio::sync::broadcast::Receiver<ShutdownMessage>,
     ) {
         const MAX_LINE_LENGTH: usize = 2_usize.pow(16);
         //It can be excessively inefficient to work directly with a AsyncRead instance. A BufReader performs large, infrequent reads on the underlying AsyncRead and maintains an in-memory buffer of the results.
@@ -2029,7 +2153,6 @@ impl Server {
             peer = %peer_addr,
             "Handling new connection"
         );
-
         loop {
             tokio::select! {
                 Some(message) = downstream_receiver.recv()=>{
@@ -2057,6 +2180,14 @@ impl Server {
                                 peer = %peer_addr,
                                 "Failed to write to stream"
                             );
+                            let task_error_type = TaskError::DownstreamDisconnected { connection_id: downstream_client.connection_id, peer_addr, details: error.to_string() };
+                            let shutdown_status = Status{state:State::DownstreamShutdown { connection_id: downstream_client.connection_id, peer_addr, reason: task_error_type }};
+                            match status_tx.send(shutdown_status){
+                                Ok(_)=>{},
+                                Err(error)=>{
+                                    error!("Sending shutdown signal to status sender failed due to an error {:?}",error);
+                                }
+                            };
                             break;
                         }
                     }
@@ -2091,7 +2222,15 @@ impl Server {
                                                     error_type = "reader_task",
                                                     "Failed to process JSON request for downstream"
                                                 );
-                                                break;
+                                            let task_error_type = TaskError::from_stratum_error(error);
+                                            let shutdown_status = Status{state:State::DownstreamShutdown { connection_id: downstream_client.connection_id, peer_addr, reason: task_error_type }};
+                                            match status_tx.send(shutdown_status){
+                                                Ok(_)=>{},
+                                                Err(error)=>{
+                                                    error!("Sending shutdown signal to status sender failed due to an error {:?}",error);
+                                                }
+                                            };
+                                            break;
                                         }
                                     }
                                 }
@@ -2104,6 +2243,14 @@ impl Server {
                                             error_type = "json_parse",
                                             "Failed to parse JSON request"
                                         );
+                                        let task_error_type = TaskError::DownstreamDisconnected { connection_id: downstream_client.connection_id, peer_addr, details: e.to_string() };
+                                        let shutdown_status = Status{state:State::DownstreamShutdown { connection_id: downstream_client.connection_id, peer_addr, reason: task_error_type }};
+                                        match status_tx.send(shutdown_status){
+                                            Ok(_)=>{},
+                                            Err(error)=>{
+                                                error!("Sending shutdown signal to status sender failed due to an error {:?}",error);
+                                            }
+                                        };
                                         break;
                                     }
                                 }
@@ -2116,6 +2263,14 @@ impl Server {
                                 fatal = true,
                                 "Fatal error reading from stream closing connection with downstream"
                             );
+                            let task_error_type = TaskError::DownstreamDisconnected { connection_id: downstream_client.connection_id, peer_addr, details: e.to_string() };
+                            let shutdown_status = Status{state:State::DownstreamShutdown { connection_id: downstream_client.connection_id, peer_addr, reason: task_error_type }};
+                            match status_tx.send(shutdown_status){
+                                Ok(_)=>{},
+                                Err(error)=>{
+                                    error!("Sending shutdown signal to status sender failed due to an error {:?}",error);
+                                }
+                            };
                             break;
                         }
                         None => {
@@ -2124,6 +2279,23 @@ impl Server {
                                 peer = %peer_addr,
                                 "Connection closed by client"
                             );
+                            let task_error_type = TaskError::DownstreamDisconnected { connection_id: downstream_client.connection_id, peer_addr, details: "Downstream closed the connection !".to_string() };
+                            let shutdown_status = Status{state:State::DownstreamShutdown { connection_id: downstream_client.connection_id, peer_addr, reason: task_error_type }};
+                            match status_tx.send(shutdown_status){
+                                Ok(_)=>{},
+                                Err(error)=>{
+                                    error!("Sending shutdown signal to status sender failed due to an error {:?}",error);
+                                }
+                            };
+
+                            break;
+                        }
+                    }
+                }
+                shutdown_msg = shutdown_rx.recv()=>{
+                    match shutdown_msg{
+                        _=>{
+                            warn!("Received a shutdown signal from status sender shutting down new downstream connections !");
                             break;
                         }
                     }
@@ -2185,6 +2357,8 @@ mod test {
         let test_task_manager = Arc::new(TaskManager::new());
         let test_token = CancellationToken::new();
         let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel::<()>(1);
+        let (test_status_tx, _test_status_rx) = mpsc::unbounded_channel();
+        let (test_shutdown_tx, test_shutdown_rx) = tokio::sync::broadcast::channel(32);
         server
             .run_stratum_service(
                 mining_job_map,
@@ -2194,6 +2368,8 @@ mod test {
                 test_token.clone(),
                 shutdown_complete_tx.clone(),
                 test_task_manager.clone(),
+                test_status_tx,
+                test_shutdown_rx,
             )
             .await;
 
@@ -2254,6 +2430,8 @@ mod test {
         let test_task_manager = Arc::new(TaskManager::new());
         let test_token = CancellationToken::new();
         let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel::<()>(1);
+        let (test_status_tx, _test_status_rx) = mpsc::unbounded_channel();
+        let (test_shutdown_tx, test_shutdown_rx) = tokio::sync::broadcast::channel(32);
         server
             .run_stratum_service(
                 mining_job_map,
@@ -2263,6 +2441,8 @@ mod test {
                 test_token.clone(),
                 shutdown_complete_tx.clone(),
                 test_task_manager.clone(),
+                test_status_tx,
+                test_shutdown_rx,
             )
             .await;
 
@@ -2307,6 +2487,8 @@ mod test {
         let test_task_manager = Arc::new(TaskManager::new());
         let test_token = CancellationToken::new();
         let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel::<()>(1);
+        let (test_status_tx, _test_status_rx) = mpsc::unbounded_channel();
+        let (test_shutdown_tx, test_shutdown_rx) = tokio::sync::broadcast::channel(32);
         server
             .run_stratum_service(
                 mining_job_map,
@@ -2316,6 +2498,8 @@ mod test {
                 test_token.clone(),
                 shutdown_complete_tx.clone(),
                 test_task_manager.clone(),
+                test_status_tx,
+                test_shutdown_rx,
             )
             .await;
 
@@ -2361,6 +2545,8 @@ mod test {
         let test_task_manager = Arc::new(TaskManager::new());
         let test_token = CancellationToken::new();
         let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel::<()>(1);
+        let (test_status_tx, _test_status_rx) = mpsc::unbounded_channel();
+        let (test_shutdown_tx, test_shutdown_rx) = tokio::sync::broadcast::channel(32);
         server
             .run_stratum_service(
                 mining_job_map,
@@ -2370,6 +2556,8 @@ mod test {
                 test_token.clone(),
                 shutdown_complete_tx.clone(),
                 test_task_manager.clone(),
+                test_status_tx,
+                test_shutdown_rx,
             )
             .await;
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -2411,6 +2599,8 @@ mod test {
         let test_task_manager = Arc::new(TaskManager::new());
         let test_token = CancellationToken::new();
         let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel::<()>(1);
+        let (test_status_tx, _test_status_rx) = mpsc::unbounded_channel();
+        let (test_shutdown_tx, test_shutdown_rx) = tokio::sync::broadcast::channel(32);
         server
             .run_stratum_service(
                 mining_job_map,
@@ -2420,6 +2610,8 @@ mod test {
                 test_token.clone(),
                 shutdown_complete_tx.clone(),
                 test_task_manager.clone(),
+                test_status_tx,
+                test_shutdown_rx,
             )
             .await;
 
