@@ -9,6 +9,7 @@ use super::{
     server::{
         ServerExtendedChannelInfo, ServerMonitoring, ServerStandardChannelInfo, ServerSummary,
     },
+    snapshot_cache::SnapshotCache,
     sv1::{Sv1ClientInfo, Sv1ClientsMonitoring, Sv1ClientsSummary},
     GlobalInfo,
 };
@@ -25,7 +26,7 @@ use std::{
     future::Future,
     net::SocketAddr,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::net::TcpListener;
 use tracing::info;
@@ -84,9 +85,7 @@ struct ApiDoc;
 /// Shared state for all HTTP handlers
 #[derive(Clone)]
 struct ServerState {
-    server_monitoring: Option<Arc<dyn ServerMonitoring + Send + Sync + 'static>>,
-    clients_monitoring: Option<Arc<dyn ClientsMonitoring + Send + Sync + 'static>>,
-    sv1_monitoring: Option<Arc<dyn Sv1ClientsMonitoring + Send + Sync + 'static>>,
+    cache: Arc<SnapshotCache>,
     start_time: u64,
     metrics: PrometheusMetrics,
 }
@@ -129,55 +128,87 @@ fn paginate<T: Clone>(items: &[T], params: &Pagination) -> (usize, Vec<T>) {
 pub struct MonitoringServer {
     bind_address: SocketAddr,
     state: ServerState,
+    refresh_interval: Duration,
 }
 
 impl MonitoringServer {
-    /// Create a new monitoring server
+    /// Create a new monitoring server with automatic cache refresh.
     ///
-    /// Returns a server that exposes monitoring data via HTTP JSON API. Chain with
-    /// `with_sv1_monitoring()` for SV1 support, then call `run()` to start.
+    /// This constructor creates a snapshot cache that decouples monitoring API
+    /// requests from business logic locks, eliminating the DoS vulnerability where
+    /// rapid API requests could cause lock contention with share validation and
+    /// job distribution.
+    ///
+    /// The cache is automatically refreshed in the background at the specified interval.
+    ///
+    /// # Arguments
+    ///
+    /// * `bind_address` - Address to bind the HTTP server to
+    /// * `server_monitoring` - Optional server (upstream) monitoring trait object
+    /// * `clients_monitoring` - Optional clients (downstream) monitoring trait object
+    /// * `refresh_interval` - How often to refresh the cache (e.g., Duration::from_secs(15))
     pub fn new(
         bind_address: SocketAddr,
         server_monitoring: Option<Arc<dyn ServerMonitoring + Send + Sync + 'static>>,
         clients_monitoring: Option<Arc<dyn ClientsMonitoring + Send + Sync + 'static>>,
+        refresh_interval: Duration,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let start_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
-        // Only register metrics for available monitoring types
-        let metrics = PrometheusMetrics::new(
-            server_monitoring.is_some(),
-            clients_monitoring.is_some(),
-            false, // SV1 metrics added later via with_sv1_monitoring
-        )?;
+        let has_server = server_monitoring.is_some();
+        let has_clients = clients_monitoring.is_some();
+
+        // Create the snapshot cache
+        let cache = Arc::new(SnapshotCache::new(
+            refresh_interval,
+            server_monitoring,
+            clients_monitoring,
+        ));
+
+        // Do initial refresh
+        cache.refresh();
+
+        let metrics = PrometheusMetrics::new(has_server, has_clients, false)?;
 
         Ok(Self {
             bind_address,
+            refresh_interval,
             state: ServerState {
-                server_monitoring,
-                clients_monitoring,
-                sv1_monitoring: None,
+                cache,
                 start_time,
                 metrics,
             },
         })
     }
 
-    /// Add SV1 client monitoring (optional, for Translator Proxy only)
+    /// Add Sv1 clients monitoring (optional, for Translator Proxy only)
+    ///
+    /// This must be called before `run()` if you want SV1 monitoring.
     pub fn with_sv1_monitoring(
         mut self,
         sv1_monitoring: Arc<dyn Sv1ClientsMonitoring + Send + Sync + 'static>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        self.state.sv1_monitoring = Some(sv1_monitoring);
+        // Determine what sources the cache already has
+        let snapshot = self.state.cache.get_snapshot();
+        let has_server = snapshot.server_info.is_some();
+        let has_clients = snapshot.clients_summary.is_some();
+
+        // Add Sv1 clients source to the cache
+        let cache = Arc::new(
+            Arc::try_unwrap(self.state.cache)
+                .unwrap_or_else(|arc| (*arc).clone())
+                .with_sv1_clients_source(sv1_monitoring),
+        );
+
+        // Refresh cache with new SV1 data
+        cache.refresh();
 
         // Re-create metrics with SV1 enabled
-        self.state.metrics = PrometheusMetrics::new(
-            self.state.server_monitoring.is_some(),
-            self.state.clients_monitoring.is_some(),
-            true, // Enable SV1 metrics
-        )?;
+        self.state.metrics = PrometheusMetrics::new(has_server, has_clients, true)?;
+        self.state.cache = cache;
 
         Ok(self)
     }
@@ -185,7 +216,8 @@ impl MonitoringServer {
     /// Run the monitoring server until the shutdown signal completes
     ///
     /// Starts an HTTP server that exposes monitoring data as JSON.
-    /// The server shuts down gracefully when `shutdown_signal` completes.
+    /// Also starts a background task that refreshes the snapshot cache periodically.
+    /// Both tasks shut down gracefully when `shutdown_signal` completes.
     ///
     /// Automatically exposes:
     /// - Swagger UI at `/swagger-ui`
@@ -196,6 +228,18 @@ impl MonitoringServer {
         shutdown_signal: impl Future<Output = ()> + Send + 'static,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!("Starting monitoring server on http://{}", self.bind_address);
+        info!("Cache refresh interval: {:?}", self.refresh_interval);
+
+        // Spawn background task to refresh cache periodically
+        let cache_for_refresh = self.state.cache.clone();
+        let refresh_interval = self.refresh_interval;
+        let refresh_handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(refresh_interval);
+            loop {
+                interval.tick().await;
+                cache_for_refresh.refresh();
+            }
+        });
 
         // Versioned JSON API under /api/v1
         let api_v1 = Router::new()
@@ -227,15 +271,19 @@ impl MonitoringServer {
             self.bind_address
         );
 
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                shutdown_signal.await;
-                info!("Monitoring server received shutdown signal, stopping...");
-            })
-            .await?;
+        let server_handle = axum::serve(listener, app).with_graceful_shutdown(async move {
+            shutdown_signal.await;
+            info!("Monitoring server received shutdown signal, stopping...");
+        });
+
+        // Run server and wait for shutdown
+        let result = server_handle.await;
+
+        // Stop the refresh task
+        refresh_handle.abort();
 
         info!("Monitoring server stopped");
-        Ok(())
+        result.map_err(|e| e.into())
     }
 }
 
@@ -361,28 +409,22 @@ async fn handle_global(State(state): State<ServerState>) -> Json<GlobalInfo> {
         .as_secs()
         - state.start_time;
 
-    let clients = state
-        .clients_monitoring
-        .as_ref()
-        .map(|m| m.get_clients_summary())
-        .unwrap_or_else(|| ClientsSummary {
-            total_clients: 0,
-            total_channels: 0,
-            extended_channels: 0,
-            standard_channels: 0,
-            total_hashrate: 0.0,
-        });
+    let snapshot = state.cache.get_snapshot();
 
-    let server = state
-        .server_monitoring
-        .as_ref()
-        .map(|m| m.get_server_summary())
-        .unwrap_or_else(|| ServerSummary {
-            total_channels: 0,
-            extended_channels: 0,
-            standard_channels: 0,
-            total_hashrate: 0.0,
-        });
+    let clients = snapshot.clients_summary.unwrap_or(ClientsSummary {
+        total_clients: 0,
+        total_channels: 0,
+        extended_channels: 0,
+        standard_channels: 0,
+        total_hashrate: 0.0,
+    });
+
+    let server = snapshot.server_summary.unwrap_or(ServerSummary {
+        total_channels: 0,
+        extended_channels: 0,
+        standard_channels: 0,
+        total_hashrate: 0.0,
+    });
 
     Json(GlobalInfo {
         server,
@@ -402,17 +444,15 @@ async fn handle_global(State(state): State<ServerState>) -> Json<GlobalInfo> {
     )
 )]
 async fn handle_server(State(state): State<ServerState>) -> Response {
-    match &state.server_monitoring {
-        Some(monitoring) => {
-            let summary = monitoring.get_server_summary();
+    let snapshot = state.cache.get_snapshot();
 
-            Json(ServerResponse {
-                extended_channels_count: summary.extended_channels,
-                standard_channels_count: summary.standard_channels,
-                total_hashrate: summary.total_hashrate,
-            })
-            .into_response()
-        }
+    match snapshot.server_summary {
+        Some(summary) => Json(ServerResponse {
+            extended_channels_count: summary.extended_channels,
+            standard_channels_count: summary.standard_channels,
+            total_hashrate: summary.total_hashrate,
+        })
+        .into_response(),
         None => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -438,10 +478,10 @@ async fn handle_server_channels(
     Query(params): Query<Pagination>,
     State(state): State<ServerState>,
 ) -> Response {
-    match &state.server_monitoring {
-        Some(monitoring) => {
-            let server = monitoring.get_server();
+    let snapshot = state.cache.get_snapshot();
 
+    match snapshot.server_info {
+        Some(server) => {
             let (total_extended, extended_channels) = paginate(&server.extended_channels, &params);
             let (total_standard, standard_channels) = paginate(&server.standard_channels, &params);
 
@@ -480,14 +520,12 @@ async fn handle_clients(
     Query(params): Query<Pagination>,
     State(state): State<ServerState>,
 ) -> Response {
-    match &state.clients_monitoring {
-        Some(monitoring) => {
-            let clients: Vec<ClientMetadata> = monitoring
-                .get_clients()
-                .iter()
-                .map(|c| c.to_metadata())
-                .collect();
-            let (total, items) = paginate(&clients, &params);
+    let snapshot = state.cache.get_snapshot();
+
+    match snapshot.clients {
+        Some(ref clients) => {
+            let metadata: Vec<ClientMetadata> = clients.iter().map(|c| c.to_metadata()).collect();
+            let (total, items) = paginate(&metadata, &params);
 
             Json(ClientsResponse {
                 offset: params.offset,
@@ -524,27 +562,33 @@ async fn handle_client_by_id(
     Path(client_id): Path<usize>,
     State(state): State<ServerState>,
 ) -> Response {
-    match &state.clients_monitoring {
-        Some(monitoring) => match monitoring.get_client_by_id(client_id) {
-            Some(client) => Json(ClientResponse {
-                client_id,
-                extended_channels_count: client.extended_channels.len(),
-                standard_channels_count: client.standard_channels.len(),
-                total_hashrate: client.total_hashrate(),
-            })
-            .into_response(),
-            None => (
+    let snapshot = state.cache.get_snapshot();
+
+    let clients = match snapshot.clients {
+        Some(ref clients) => clients,
+        None => {
+            return (
                 StatusCode::NOT_FOUND,
                 Json(ErrorResponse {
-                    error: format!("Client {} not found", client_id),
+                    error: "Clients monitoring not available".to_string(),
                 }),
             )
-                .into_response(),
-        },
+                .into_response();
+        }
+    };
+
+    match clients.iter().find(|c| c.client_id == client_id) {
+        Some(client) => Json(ClientResponse {
+            client_id,
+            extended_channels_count: client.extended_channels.len(),
+            standard_channels_count: client.standard_channels.len(),
+            total_hashrate: client.total_hashrate(),
+        })
+        .into_response(),
         None => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: "Clients monitoring not available".to_string(),
+                error: format!("Client {} not found", client_id),
             }),
         )
             .into_response(),
@@ -570,37 +614,41 @@ async fn handle_client_channels(
     Query(params): Query<Pagination>,
     State(state): State<ServerState>,
 ) -> Response {
-    match &state.clients_monitoring {
-        Some(monitoring) => match monitoring.get_client_by_id(client_id) {
-            Some(client) => {
-                let (total_extended, extended_channels) =
-                    paginate(&client.extended_channels, &params);
-                let (total_standard, standard_channels) =
-                    paginate(&client.standard_channels, &params);
+    let snapshot = state.cache.get_snapshot();
 
-                Json(ClientChannelsResponse {
-                    client_id,
-                    offset: params.offset,
-                    limit: params.effective_limit(),
-                    total_extended,
-                    total_standard,
-                    extended_channels,
-                    standard_channels,
-                })
-                .into_response()
-            }
-            None => (
+    let clients = match snapshot.clients {
+        Some(ref clients) => clients,
+        None => {
+            return (
                 StatusCode::NOT_FOUND,
                 Json(ErrorResponse {
-                    error: format!("Client {} not found", client_id),
+                    error: "Clients monitoring not available".to_string(),
                 }),
             )
-                .into_response(),
-        },
+                .into_response();
+        }
+    };
+
+    match clients.iter().find(|c| c.client_id == client_id) {
+        Some(client) => {
+            let (total_extended, extended_channels) = paginate(&client.extended_channels, &params);
+            let (total_standard, standard_channels) = paginate(&client.standard_channels, &params);
+
+            Json(ClientChannelsResponse {
+                client_id,
+                offset: params.offset,
+                limit: params.effective_limit(),
+                total_extended,
+                total_standard,
+                extended_channels,
+                standard_channels,
+            })
+            .into_response()
+        }
         None => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: "Clients monitoring not available".to_string(),
+                error: format!("Client {} not found", client_id),
             }),
         )
             .into_response(),
@@ -622,10 +670,11 @@ async fn handle_sv1_clients(
     Query(params): Query<Pagination>,
     State(state): State<ServerState>,
 ) -> Response {
-    match &state.sv1_monitoring {
-        Some(monitoring) => {
-            let clients = monitoring.get_sv1_clients();
-            let (total, items) = paginate(&clients, &params);
+    let snapshot = state.cache.get_snapshot();
+
+    match snapshot.sv1_clients {
+        Some(ref sv1_clients) => {
+            let (total, items) = paginate(sv1_clients, &params);
 
             Json(Sv1ClientsResponse {
                 offset: params.offset,
@@ -638,7 +687,7 @@ async fn handle_sv1_clients(
         None => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: "SV1 client monitoring not available".to_string(),
+                error: "Sv1 client monitoring not available".to_string(),
             }),
         )
             .into_response(),
@@ -662,21 +711,27 @@ async fn handle_sv1_client_by_id(
     Path(client_id): Path<usize>,
     State(state): State<ServerState>,
 ) -> Response {
-    match &state.sv1_monitoring {
-        Some(monitoring) => match monitoring.get_sv1_client_by_id(client_id) {
-            Some(client) => Json(client).into_response(),
-            None => (
+    let snapshot = state.cache.get_snapshot();
+
+    let sv1_clients = match snapshot.sv1_clients {
+        Some(ref clients) => clients,
+        None => {
+            return (
                 StatusCode::NOT_FOUND,
                 Json(ErrorResponse {
-                    error: format!("Sv1 client {} not found", client_id),
+                    error: "Sv1 client monitoring not available".to_string(),
                 }),
             )
-                .into_response(),
-        },
+                .into_response();
+        }
+    };
+
+    match sv1_clients.iter().find(|c| c.client_id == client_id) {
+        Some(client) => Json(client.clone()).into_response(),
         None => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: "SV1 client monitoring not available".to_string(),
+                error: format!("Sv1 client {} not found", client_id),
             }),
         )
             .into_response(),
@@ -685,6 +740,8 @@ async fn handle_sv1_client_by_id(
 
 /// Handler for Prometheus metrics endpoint
 async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response {
+    let snapshot = state.cache.get_snapshot();
+
     let uptime_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -707,8 +764,7 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
     }
 
     // Collect server metrics
-    if let Some(monitoring) = &state.server_monitoring {
-        let summary = monitoring.get_server_summary();
+    if let Some(ref summary) = snapshot.server_summary {
         if let Some(ref metric) = state.metrics.sv2_server_channels {
             metric
                 .with_label_values(&["extended"])
@@ -720,8 +776,9 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
         if let Some(ref metric) = state.metrics.sv2_server_hashrate_total {
             metric.set(summary.total_hashrate as f64);
         }
+    }
 
-        let server = monitoring.get_server();
+    if let Some(ref server) = snapshot.server_info {
         for channel in &server.extended_channels {
             let channel_id = channel.channel_id.to_string();
             let user = &channel.user_identity;
@@ -756,8 +813,7 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
     }
 
     // Collect clients metrics
-    if let Some(monitoring) = &state.clients_monitoring {
-        let summary = monitoring.get_clients_summary();
+    if let Some(ref summary) = snapshot.clients_summary {
         if let Some(ref metric) = state.metrics.sv2_clients_total {
             metric.set(summary.total_clients as f64);
         }
@@ -773,8 +829,7 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
             metric.set(summary.total_hashrate as f64);
         }
 
-        let clients = monitoring.get_clients();
-        for client in &clients {
+        for client in snapshot.clients.as_deref().unwrap_or(&[]) {
             let client_id = client.client_id.to_string();
 
             for channel in &client.extended_channels {
@@ -812,8 +867,7 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
     }
 
     // Collect SV1 client metrics
-    if let Some(monitoring) = &state.sv1_monitoring {
-        let summary = monitoring.get_sv1_clients_summary();
+    if let Some(ref summary) = snapshot.sv1_summary {
         if let Some(ref metric) = state.metrics.sv1_clients_total {
             metric.set(summary.total_clients as f64);
         }
