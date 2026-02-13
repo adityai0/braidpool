@@ -5,7 +5,7 @@ use async_channel::unbounded;
 use bitcoin_core_sv2::CancellationToken;
 use stratum_apps::{
     stratum_core::bitcoin::consensus::Encodable, task_manager::TaskManager,
-    tp_type::TemplateProviderType,
+    tp_type::TemplateProviderType, utils::types::GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,
 };
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
@@ -247,10 +247,31 @@ impl PoolSv2 {
             }
         }
 
-        warn!("Graceful shutdown");
-        task_manager.abort_all().await;
-        info!("Joining remaining tasks...");
-        task_manager.join_all().await;
+        warn!(
+            "Graceful shutdown: waiting {} seconds for tasks to finish",
+            GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS
+        );
+
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS),
+            task_manager.join_all(),
+        )
+        .await
+        {
+            Ok(_) => {
+                info!("All tasks joined cleanly");
+            }
+            Err(_) => {
+                warn!(
+                    "Tasks did not finish within {} seconds, aborting",
+                    GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS
+                );
+                task_manager.abort_all().await;
+                info!("Joining aborted tasks...");
+                task_manager.join_all().await;
+                warn!("Forced shutdown complete");
+            }
+        }
         info!("Pool shutdown complete.");
         Ok(())
     }

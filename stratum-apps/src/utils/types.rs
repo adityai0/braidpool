@@ -1,5 +1,7 @@
 use stratum_core::{codec_sv2::StandardSv2Frame, parsers_sv2::AnyMessage};
 
+pub const GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS: u64 = 5;
+
 pub type TemplateId = u64;
 pub type UpstreamJobId = u32;
 pub type JobId = u32;

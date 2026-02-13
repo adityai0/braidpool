@@ -18,7 +18,9 @@ use std::{
     time::Duration,
 };
 use stratum_apps::{
-    fallback_coordinator::FallbackCoordinator, task_manager::TaskManager, utils::types::Sv2Frame,
+    fallback_coordinator::FallbackCoordinator,
+    task_manager::TaskManager,
+    utils::types::{Sv2Frame, GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS},
 };
 use tokio::select;
 use tokio_util::sync::CancellationToken;
@@ -349,10 +351,30 @@ impl TranslatorSv2 {
             }
         }
 
-        warn!("Graceful shutdown");
-        task_manager.abort_all().await;
-        info!("Joining remaining tasks...");
-        task_manager.join_all().await;
+        warn!(
+            "Graceful shutdown: waiting {} seconds for tasks to finish",
+            GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS
+        );
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS),
+            task_manager.join_all(),
+        )
+        .await
+        {
+            Ok(_) => {
+                info!("All tasks joined cleanly");
+            }
+            Err(_) => {
+                warn!(
+                    "Tasks did not finish within {} seconds, aborting",
+                    GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS
+                );
+                task_manager.abort_all().await;
+                info!("Joining aborted tasks...");
+                task_manager.join_all().await;
+                warn!("Forced shutdown complete");
+            }
+        }
         info!("TranslatorSv2 shutdown complete.");
     }
 
