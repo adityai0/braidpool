@@ -71,6 +71,9 @@ impl TranslatorSv2 {
         TPROXY_MODE
             .set(self.config.aggregate_channels.into())
             .expect("TPROXY_MODE initialized more than once");
+        VARDIFF_ENABLED
+            .set(self.config.downstream_difficulty_config.enable_vardiff)
+            .expect("VARDIFF_ENABLED initialized more than once");
 
         let (notify_shutdown, _) =
             broadcast::channel::<ShutdownMessage>(SHUTDOWN_BROADCAST_CAPACITY);
@@ -424,6 +427,7 @@ impl From<bool> for TproxyMode {
 }
 
 static TPROXY_MODE: OnceLock<TproxyMode> = OnceLock::new();
+static VARDIFF_ENABLED: OnceLock<bool> = OnceLock::new();
 
 #[cfg(not(test))]
 pub fn tproxy_mode() -> TproxyMode {
@@ -447,4 +451,14 @@ pub fn is_aggregated() -> bool {
 #[inline]
 pub fn is_non_aggregated() -> bool {
     matches!(tproxy_mode(), TproxyMode::NonAggregated)
+}
+
+#[cfg(not(test))]
+pub fn vardiff_enabled() -> bool {
+    *VARDIFF_ENABLED.get().expect("VARDIFF_ENABLED has to exist")
+}
+
+#[cfg(test)]
+pub fn vardiff_enabled() -> bool {
+    *VARDIFF_ENABLED.get_or_init(|| true)
 }

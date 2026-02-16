@@ -7,13 +7,15 @@
 use stratum_apps::monitoring::server::{ServerExtendedChannelInfo, ServerInfo, ServerMonitoring};
 
 use crate::{
-    sv2::channel_manager::ChannelManager, tproxy_mode, utils::AGGREGATED_CHANNEL_ID, TproxyMode,
+    sv2::channel_manager::ChannelManager, tproxy_mode, utils::AGGREGATED_CHANNEL_ID,
+    vardiff_enabled, TproxyMode,
 };
 
 impl ServerMonitoring for ChannelManager {
     fn get_server(&self) -> ServerInfo {
         let mut extended_channels = Vec::new();
         let standard_channels = Vec::new(); // tProxy only uses extended channels
+        let report_hashrate = vardiff_enabled();
 
         match tproxy_mode() {
             TproxyMode::Aggregated => {
@@ -39,7 +41,11 @@ impl ServerMonitoring for ChannelManager {
                     extended_channels.push(ServerExtendedChannelInfo {
                         channel_id,
                         user_identity: user_identity.clone(),
-                        nominal_hashrate: aggregated_extended_channel.get_nominal_hashrate(),
+                        nominal_hashrate: if report_hashrate {
+                            Some(aggregated_extended_channel.get_nominal_hashrate())
+                        } else {
+                            None
+                        },
                         target_hex: hex::encode(target.to_be_bytes()),
                         extranonce_prefix_hex: hex::encode(extranonce_prefix),
                         full_extranonce_size: aggregated_extended_channel
@@ -77,7 +83,11 @@ impl ServerMonitoring for ChannelManager {
                     extended_channels.push(ServerExtendedChannelInfo {
                         channel_id,
                         user_identity: user_identity.clone(),
-                        nominal_hashrate: extended_channel.get_nominal_hashrate(),
+                        nominal_hashrate: if report_hashrate {
+                            Some(extended_channel.get_nominal_hashrate())
+                        } else {
+                            None
+                        },
                         target_hex: hex::encode(target.to_be_bytes()),
                         extranonce_prefix_hex: hex::encode(extranonce_prefix),
                         full_extranonce_size: extended_channel.get_full_extranonce_size(),

@@ -11,7 +11,8 @@ use utoipa::ToSchema;
 pub struct ServerExtendedChannelInfo {
     pub channel_id: u32,
     pub user_identity: String,
-    pub nominal_hashrate: f32,
+    /// None when vardiff is disabled and hashrate cannot be reliably tracked
+    pub nominal_hashrate: Option<f32>,
     pub target_hex: String,
     pub extranonce_prefix_hex: String,
     pub full_extranonce_size: usize,
@@ -28,7 +29,8 @@ pub struct ServerExtendedChannelInfo {
 pub struct ServerStandardChannelInfo {
     pub channel_id: u32,
     pub user_identity: String,
-    pub nominal_hashrate: f32,
+    /// None when vardiff is disabled and hashrate cannot be reliably tracked
+    pub nominal_hashrate: Option<f32>,
     pub target_hex: String,
     pub extranonce_prefix_hex: String,
     pub shares_accepted: u32,
@@ -54,12 +56,12 @@ impl ServerInfo {
     pub fn total_hashrate(&self) -> f32 {
         self.extended_channels
             .iter()
-            .map(|c| c.nominal_hashrate)
+            .filter_map(|c| c.nominal_hashrate)
             .sum::<f32>()
             + self
                 .standard_channels
                 .iter()
-                .map(|c| c.nominal_hashrate)
+                .filter_map(|c| c.nominal_hashrate)
                 .sum::<f32>()
     }
 }

@@ -788,10 +788,13 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
                     .with_label_values(&[&channel_id, user])
                     .set(channel.shares_accepted as f64);
             }
-            if let Some(ref metric) = state.metrics.sv2_server_channel_hashrate {
+            if let (Some(ref metric), Some(hashrate)) = (
+                &state.metrics.sv2_server_channel_hashrate,
+                channel.nominal_hashrate,
+            ) {
                 metric
                     .with_label_values(&[&channel_id, user])
-                    .set(channel.nominal_hashrate as f64);
+                    .set(hashrate as f64);
             }
         }
 
@@ -804,10 +807,13 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
                     .with_label_values(&[&channel_id, user])
                     .set(channel.shares_accepted as f64);
             }
-            if let Some(ref metric) = state.metrics.sv2_server_channel_hashrate {
+            if let (Some(ref metric), Some(hashrate)) = (
+                &state.metrics.sv2_server_channel_hashrate,
+                channel.nominal_hashrate,
+            ) {
                 metric
                     .with_label_values(&[&channel_id, user])
-                    .set(channel.nominal_hashrate as f64);
+                    .set(hashrate as f64);
             }
         }
     }

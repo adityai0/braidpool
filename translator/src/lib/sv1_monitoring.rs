@@ -3,10 +3,14 @@
 //! This module implements the Sv1ClientsMonitoring trait on `Sv1Server`.
 use stratum_apps::monitoring::sv1::{Sv1ClientInfo, Sv1ClientsMonitoring};
 
-use crate::sv1::{downstream::downstream::Downstream, sv1_server::sv1_server::Sv1Server};
+use crate::{
+    sv1::{downstream::downstream::Downstream, sv1_server::sv1_server::Sv1Server},
+    vardiff_enabled,
+};
 
 /// Helper to convert a Downstream to Sv1ClientInfo
 fn downstream_to_sv1_client_info(downstream: &Downstream) -> Option<Sv1ClientInfo> {
+    let report_hashrate = vardiff_enabled();
     downstream
         .downstream_data
         .safe_lock(|dd| Sv1ClientInfo {
@@ -15,7 +19,7 @@ fn downstream_to_sv1_client_info(downstream: &Downstream) -> Option<Sv1ClientInf
             authorized_worker_name: dd.authorized_worker_name.clone(),
             user_identity: dd.user_identity.clone(),
             target_hex: hex::encode(dd.target.to_be_bytes()),
-            hashrate: dd.hashrate,
+            hashrate: if report_hashrate { dd.hashrate } else { None },
             extranonce1_hex: hex::encode(&dd.extranonce1),
             extranonce2_len: dd.extranonce2_len,
             version_rolling_mask: dd

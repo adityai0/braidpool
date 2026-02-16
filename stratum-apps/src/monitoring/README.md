@@ -41,6 +41,7 @@ let server = MonitoringServer::new(
     "127.0.0.1:9090".parse()?,
     Some(Arc::new(channel_manager.clone())), // server monitoring
     Some(Arc::new(channel_manager.clone())), // clients monitoring
+    std::time::Duration::from_secs(15),      // cache refresh interval
 )?;
 
 // For Translator, add SV1 monitoring
