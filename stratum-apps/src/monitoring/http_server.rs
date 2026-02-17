@@ -394,6 +394,13 @@ async fn handle_health() -> Json<HealthResponse> {
 }
 
 /// Get global statistics
+///
+/// Returns aggregated statistics for the server (upstream) and clients (downstream).
+/// Fields are omitted from the response if that type of monitoring is not enabled.
+///
+/// **Typical responses:**
+/// - **Pool/JDC**: `server` + `clients` (Sv2 downstream)
+/// - **tProxy**: `server` + `sv1_clients` (Sv1 miners)
 #[utoipa::path(
     get,
     path = "/api/v1/global",
@@ -411,24 +418,10 @@ async fn handle_global(State(state): State<ServerState>) -> Json<GlobalInfo> {
 
     let snapshot = state.cache.get_snapshot();
 
-    let clients = snapshot.clients_summary.unwrap_or(ClientsSummary {
-        total_clients: 0,
-        total_channels: 0,
-        extended_channels: 0,
-        standard_channels: 0,
-        total_hashrate: 0.0,
-    });
-
-    let server = snapshot.server_summary.unwrap_or(ServerSummary {
-        total_channels: 0,
-        extended_channels: 0,
-        standard_channels: 0,
-        total_hashrate: 0.0,
-    });
-
     Json(GlobalInfo {
-        server,
-        clients,
+        server: snapshot.server_summary,
+        clients: snapshot.clients_summary,
+        sv1_clients: snapshot.sv1_summary,
         uptime_secs,
     })
 }

@@ -36,12 +36,16 @@
 //!              └───────────┘       └───────────┘       └───────────┘
 //! ```
 
-use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::{
+    sync::{Arc, RwLock},
+    time::{Duration, Instant},
+};
 
-use super::client::{ClientInfo, ClientsMonitoring, ClientsSummary};
-use super::server::{ServerInfo, ServerMonitoring, ServerSummary};
-use super::sv1::{Sv1ClientInfo, Sv1ClientsMonitoring, Sv1ClientsSummary};
+use super::{
+    client::{ClientInfo, ClientsMonitoring, ClientsSummary},
+    server::{ServerInfo, ServerMonitoring, ServerSummary},
+    sv1::{Sv1ClientInfo, Sv1ClientsMonitoring, Sv1ClientsSummary},
+};
 
 /// Cached snapshot of monitoring data.
 ///
