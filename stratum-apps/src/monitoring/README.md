@@ -28,8 +28,8 @@ Server and client endpoints return metadata only (counts, hashrate). Use `/chann
 Applications implement these traits on their data structures:
 
 - `ServerMonitoring` - For upstream connection info
-- `ClientsMonitoring` - For downstream client info  
-- `Sv1ClientsMonitoring` - For Sv1 clients (Translator Proxy only)
+- `Sv2ClientsMonitoring` - For Sv2 downstream client info (Pool, JDC)
+- `Sv1ClientsMonitoring` - For Sv1 downstream client info (Translator Proxy only)
 
 ## Usage
 
@@ -40,7 +40,7 @@ use std::sync::Arc;
 let server = MonitoringServer::new(
     "127.0.0.1:9090".parse()?,
     Some(Arc::new(channel_manager.clone())), // server monitoring
-    Some(Arc::new(channel_manager.clone())), // clients monitoring
+    Some(Arc::new(channel_manager.clone())), // Sv2 clients monitoring
     std::time::Duration::from_secs(15),      // cache refresh interval
 )?;
 

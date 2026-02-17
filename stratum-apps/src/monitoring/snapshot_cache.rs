@@ -42,7 +42,7 @@ use std::{
 };
 
 use super::{
-    client::{ClientInfo, ClientsMonitoring, ClientsSummary},
+    client::{Sv2ClientInfo, Sv2ClientsMonitoring, Sv2ClientsSummary},
     server::{ServerInfo, ServerMonitoring, ServerSummary},
     sv1::{Sv1ClientInfo, Sv1ClientsMonitoring, Sv1ClientsSummary},
 };
@@ -56,10 +56,10 @@ pub struct MonitoringSnapshot {
     pub timestamp: Option<Instant>,
     pub server_info: Option<ServerInfo>,
     pub server_summary: Option<ServerSummary>,
-    pub clients: Option<Vec<ClientInfo>>,
-    pub clients_summary: Option<ClientsSummary>,
+    pub sv2_clients: Option<Vec<Sv2ClientInfo>>,
+    pub sv2_clients_summary: Option<Sv2ClientsSummary>,
     pub sv1_clients: Option<Vec<Sv1ClientInfo>>,
-    pub sv1_summary: Option<Sv1ClientsSummary>,
+    pub sv1_clients_summary: Option<Sv1ClientsSummary>,
 }
 
 impl MonitoringSnapshot {
@@ -82,7 +82,7 @@ pub struct SnapshotCache {
     snapshot: RwLock<MonitoringSnapshot>,
     refresh_interval: Duration,
     server_source: Option<Arc<dyn ServerMonitoring + Send + Sync>>,
-    sv2_clients_source: Option<Arc<dyn ClientsMonitoring + Send + Sync>>,
+    sv2_clients_source: Option<Arc<dyn Sv2ClientsMonitoring + Send + Sync>>,
     sv1_clients_source: Option<Arc<dyn Sv1ClientsMonitoring + Send + Sync>>,
 }
 
@@ -107,17 +107,17 @@ impl SnapshotCache {
     ///
     /// * `refresh_interval` - How often to refresh the cache (e.g., 15 seconds)
     /// * `server_source` - Optional server monitoring trait object
-    /// * `clients_source` - Optional clients monitoring trait object
+    /// * `sv2_clients_source` - Optional Sv2 clients monitoring trait object
     pub fn new(
         refresh_interval: Duration,
         server_source: Option<Arc<dyn ServerMonitoring + Send + Sync>>,
-        clients_source: Option<Arc<dyn ClientsMonitoring + Send + Sync>>,
+        sv2_clients_source: Option<Arc<dyn Sv2ClientsMonitoring + Send + Sync>>,
     ) -> Self {
         Self {
             snapshot: RwLock::new(MonitoringSnapshot::default()),
             refresh_interval,
             server_source,
-            sv2_clients_source: clients_source,
+            sv2_clients_source,
             sv1_clients_source: None,
         }
     }
@@ -157,14 +157,14 @@ impl SnapshotCache {
 
         // Collect Sv2 clients data
         if let Some(ref source) = self.sv2_clients_source {
-            new_snapshot.clients = Some(source.get_clients());
-            new_snapshot.clients_summary = Some(source.get_clients_summary());
+            new_snapshot.sv2_clients = Some(source.get_sv2_clients());
+            new_snapshot.sv2_clients_summary = Some(source.get_sv2_clients_summary());
         }
 
         // Collect Sv1 clients data
         if let Some(ref source) = self.sv1_clients_source {
             new_snapshot.sv1_clients = Some(source.get_sv1_clients());
-            new_snapshot.sv1_summary = Some(source.get_sv1_clients_summary());
+            new_snapshot.sv1_clients_summary = Some(source.get_sv1_clients_summary());
         }
 
         // Update the cache
@@ -191,9 +191,9 @@ mod tests {
         }
     }
 
-    struct MockClientsMonitoring;
-    impl ClientsMonitoring for MockClientsMonitoring {
-        fn get_clients(&self) -> Vec<ClientInfo> {
+    struct MockSv2ClientsMonitoring;
+    impl Sv2ClientsMonitoring for MockSv2ClientsMonitoring {
+        fn get_sv2_clients(&self) -> Vec<Sv2ClientInfo> {
             vec![]
         }
     }
@@ -203,7 +203,7 @@ mod tests {
         let cache = SnapshotCache::new(
             Duration::from_secs(5),
             Some(Arc::new(MockServerMonitoring)),
-            Some(Arc::new(MockClientsMonitoring)),
+            Some(Arc::new(MockSv2ClientsMonitoring)),
         );
 
         // Before refresh, snapshot has no timestamp
@@ -217,7 +217,7 @@ mod tests {
         let cache = SnapshotCache::new(
             Duration::from_secs(5),
             Some(Arc::new(MockServerMonitoring)),
-            Some(Arc::new(MockClientsMonitoring)),
+            Some(Arc::new(MockSv2ClientsMonitoring)),
         );
 
         // Before refresh, snapshot has no data
@@ -231,8 +231,8 @@ mod tests {
         assert!(snapshot.timestamp.is_some());
         assert!(snapshot.age().unwrap() < Duration::from_millis(100));
         assert!(snapshot.server_info.is_some());
-        assert!(snapshot.clients.is_some());
-        assert!(snapshot.clients_summary.is_some());
+        assert!(snapshot.sv2_clients.is_some());
+        assert!(snapshot.sv2_clients_summary.is_some());
     }
 
     /// Mock monitoring that simulates lock contention with business logic.
@@ -265,8 +265,8 @@ mod tests {
         }
     }
 
-    impl ClientsMonitoring for ContendedMonitoring {
-        fn get_clients(&self) -> Vec<ClientInfo> {
+    impl Sv2ClientsMonitoring for ContendedMonitoring {
+        fn get_sv2_clients(&self) -> Vec<Sv2ClientInfo> {
             let _guard = self.business_lock.lock().unwrap();
             self.monitoring_lock_acquisitions
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -303,7 +303,7 @@ mod tests {
         let cache = Arc::new(SnapshotCache::new(
             Duration::from_secs(5),
             None,
-            Some(real_monitoring.clone() as Arc<dyn ClientsMonitoring + Send + Sync>),
+            Some(real_monitoring.clone() as Arc<dyn Sv2ClientsMonitoring + Send + Sync>),
         ));
 
         cache.refresh();

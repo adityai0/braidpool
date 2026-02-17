@@ -2,8 +2,8 @@
 
 use super::{
     client::{
-        ClientInfo, ClientMetadata, ClientsMonitoring, ClientsSummary, ExtendedChannelInfo,
-        StandardChannelInfo,
+        ExtendedChannelInfo, StandardChannelInfo, Sv2ClientInfo, Sv2ClientMetadata,
+        Sv2ClientsMonitoring, Sv2ClientsSummary,
     },
     prometheus_metrics::PrometheusMetrics,
     server::{
@@ -54,11 +54,11 @@ use utoipa_swagger_ui::SwaggerUi;
     components(schemas(
         GlobalInfo,
         ServerSummary,
-        ClientsSummary,
+        Sv2ClientsSummary,
         ServerExtendedChannelInfo,
         ServerStandardChannelInfo,
-        ClientInfo,
-        ClientMetadata,
+        Sv2ClientInfo,
+        Sv2ClientMetadata,
         ExtendedChannelInfo,
         StandardChannelInfo,
         Sv1ClientInfo,
@@ -67,9 +67,9 @@ use utoipa_swagger_ui::SwaggerUi;
         ErrorResponse,
         ServerResponse,
         ServerChannelsResponse,
-        ClientsResponse,
-        ClientResponse,
-        ClientChannelsResponse,
+        Sv2ClientsResponse,
+        Sv2ClientResponse,
+        Sv2ClientChannelsResponse,
         Sv1ClientsResponse,
     )),
     tags(
@@ -145,12 +145,12 @@ impl MonitoringServer {
     ///
     /// * `bind_address` - Address to bind the HTTP server to
     /// * `server_monitoring` - Optional server (upstream) monitoring trait object
-    /// * `clients_monitoring` - Optional clients (downstream) monitoring trait object
+    /// * `sv2_clients_monitoring` - Optional Sv2 clients (downstream) monitoring trait object
     /// * `refresh_interval` - How often to refresh the cache (e.g., Duration::from_secs(15))
     pub fn new(
         bind_address: SocketAddr,
         server_monitoring: Option<Arc<dyn ServerMonitoring + Send + Sync + 'static>>,
-        clients_monitoring: Option<Arc<dyn ClientsMonitoring + Send + Sync + 'static>>,
+        sv2_clients_monitoring: Option<Arc<dyn Sv2ClientsMonitoring + Send + Sync + 'static>>,
         refresh_interval: Duration,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let start_time = SystemTime::now()
@@ -159,19 +159,19 @@ impl MonitoringServer {
             .as_secs();
 
         let has_server = server_monitoring.is_some();
-        let has_clients = clients_monitoring.is_some();
+        let has_sv2_clients = sv2_clients_monitoring.is_some();
 
         // Create the snapshot cache
         let cache = Arc::new(SnapshotCache::new(
             refresh_interval,
             server_monitoring,
-            clients_monitoring,
+            sv2_clients_monitoring,
         ));
 
         // Do initial refresh
         cache.refresh();
 
-        let metrics = PrometheusMetrics::new(has_server, has_clients, false)?;
+        let metrics = PrometheusMetrics::new(has_server, has_sv2_clients, false)?;
 
         Ok(Self {
             bind_address,
@@ -194,7 +194,7 @@ impl MonitoringServer {
         // Determine what sources the cache already has
         let snapshot = self.state.cache.get_snapshot();
         let has_server = snapshot.server_info.is_some();
-        let has_clients = snapshot.clients_summary.is_some();
+        let has_sv2_clients = snapshot.sv2_clients_summary.is_some();
 
         // Add Sv1 clients source to the cache
         let cache = Arc::new(
@@ -207,7 +207,7 @@ impl MonitoringServer {
         cache.refresh();
 
         // Re-create metrics with SV1 enabled
-        self.state.metrics = PrometheusMetrics::new(has_server, has_clients, true)?;
+        self.state.metrics = PrometheusMetrics::new(has_server, has_sv2_clients, true)?;
         self.state.cache = cache;
 
         Ok(self)
@@ -317,15 +317,15 @@ struct ServerChannelsResponse {
 }
 
 #[derive(serde::Serialize, ToSchema)]
-struct ClientsResponse {
+struct Sv2ClientsResponse {
     offset: usize,
     limit: usize,
     total: usize,
-    items: Vec<ClientMetadata>,
+    items: Vec<Sv2ClientMetadata>,
 }
 
 #[derive(serde::Serialize, ToSchema)]
-struct ClientResponse {
+struct Sv2ClientResponse {
     client_id: usize,
     extended_channels_count: usize,
     standard_channels_count: usize,
@@ -333,7 +333,7 @@ struct ClientResponse {
 }
 
 #[derive(serde::Serialize, ToSchema)]
-struct ClientChannelsResponse {
+struct Sv2ClientChannelsResponse {
     client_id: usize,
     offset: usize,
     limit: usize,
@@ -420,8 +420,8 @@ async fn handle_global(State(state): State<ServerState>) -> Json<GlobalInfo> {
 
     Json(GlobalInfo {
         server: snapshot.server_summary,
-        clients: snapshot.clients_summary,
-        sv1_clients: snapshot.sv1_summary,
+        sv2_clients: snapshot.sv2_clients_summary,
+        sv1_clients: snapshot.sv1_clients_summary,
         uptime_secs,
     })
 }
@@ -498,15 +498,16 @@ async fn handle_server_channels(
     }
 }
 
-/// Get all clients (downstream) - returns metadata only, use /clients/{id}/channels for channels
+/// Get all Sv2 clients (downstream) - returns metadata only, use /clients/{id}/channels for
+/// channels
 #[utoipa::path(
     get,
     path = "/api/v1/clients",
     tag = "clients",
     params(Pagination),
     responses(
-        (status = 200, description = "List of clients (metadata only)", body = ClientsResponse),
-        (status = 404, description = "Clients monitoring not available", body = ErrorResponse)
+        (status = 200, description = "List of Sv2 clients (metadata only)", body = Sv2ClientsResponse),
+        (status = 404, description = "Sv2 clients monitoring not available", body = ErrorResponse)
     )
 )]
 async fn handle_clients(
@@ -515,12 +516,13 @@ async fn handle_clients(
 ) -> Response {
     let snapshot = state.cache.get_snapshot();
 
-    match snapshot.clients {
-        Some(ref clients) => {
-            let metadata: Vec<ClientMetadata> = clients.iter().map(|c| c.to_metadata()).collect();
+    match snapshot.sv2_clients {
+        Some(ref sv2_clients) => {
+            let metadata: Vec<Sv2ClientMetadata> =
+                sv2_clients.iter().map(|c| c.to_metadata()).collect();
             let (total, items) = paginate(&metadata, &params);
 
-            Json(ClientsResponse {
+            Json(Sv2ClientsResponse {
                 offset: params.offset,
                 limit: params.effective_limit(),
                 total,
@@ -531,24 +533,24 @@ async fn handle_clients(
         None => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: "Clients monitoring not available".to_string(),
+                error: "Sv2 clients monitoring not available".to_string(),
             }),
         )
             .into_response(),
     }
 }
 
-/// Get a single client by ID - returns metadata only, use /clients/{id}/channels for channels
+/// Get a single Sv2 client by ID - returns metadata only, use /clients/{id}/channels for channels
 #[utoipa::path(
     get,
     path = "/api/v1/clients/{client_id}",
     tag = "clients",
     params(
-        ("client_id" = usize, Path, description = "Client ID")
+        ("client_id" = usize, Path, description = "Sv2 Client ID")
     ),
     responses(
-        (status = 200, description = "Client metadata", body = ClientResponse),
-        (status = 404, description = "Client not found", body = ErrorResponse)
+        (status = 200, description = "Sv2 client metadata", body = Sv2ClientResponse),
+        (status = 404, description = "Sv2 client not found", body = ErrorResponse)
     )
 )]
 async fn handle_client_by_id(
@@ -557,21 +559,21 @@ async fn handle_client_by_id(
 ) -> Response {
     let snapshot = state.cache.get_snapshot();
 
-    let clients = match snapshot.clients {
+    let sv2_clients = match snapshot.sv2_clients {
         Some(ref clients) => clients,
         None => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(ErrorResponse {
-                    error: "Clients monitoring not available".to_string(),
+                    error: "Sv2 clients monitoring not available".to_string(),
                 }),
             )
                 .into_response();
         }
     };
 
-    match clients.iter().find(|c| c.client_id == client_id) {
-        Some(client) => Json(ClientResponse {
+    match sv2_clients.iter().find(|c| c.client_id == client_id) {
+        Some(client) => Json(Sv2ClientResponse {
             client_id,
             extended_channels_count: client.extended_channels.len(),
             standard_channels_count: client.standard_channels.len(),
@@ -581,25 +583,25 @@ async fn handle_client_by_id(
         None => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: format!("Client {} not found", client_id),
+                error: format!("Sv2 client {} not found", client_id),
             }),
         )
             .into_response(),
     }
 }
 
-/// Get channels for a specific client (paginated)
+/// Get channels for a specific Sv2 client (paginated)
 #[utoipa::path(
     get,
     path = "/api/v1/clients/{client_id}/channels",
     tag = "clients",
     params(
-        ("client_id" = usize, Path, description = "Client ID"),
+        ("client_id" = usize, Path, description = "Sv2 Client ID"),
         Pagination
     ),
     responses(
-        (status = 200, description = "Client channels (paginated)", body = ClientChannelsResponse),
-        (status = 404, description = "Client not found", body = ErrorResponse)
+        (status = 200, description = "Sv2 client channels (paginated)", body = Sv2ClientChannelsResponse),
+        (status = 404, description = "Sv2 client not found", body = ErrorResponse)
     )
 )]
 async fn handle_client_channels(
@@ -609,25 +611,25 @@ async fn handle_client_channels(
 ) -> Response {
     let snapshot = state.cache.get_snapshot();
 
-    let clients = match snapshot.clients {
+    let sv2_clients = match snapshot.sv2_clients {
         Some(ref clients) => clients,
         None => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(ErrorResponse {
-                    error: "Clients monitoring not available".to_string(),
+                    error: "Sv2 clients monitoring not available".to_string(),
                 }),
             )
                 .into_response();
         }
     };
 
-    match clients.iter().find(|c| c.client_id == client_id) {
+    match sv2_clients.iter().find(|c| c.client_id == client_id) {
         Some(client) => {
             let (total_extended, extended_channels) = paginate(&client.extended_channels, &params);
             let (total_standard, standard_channels) = paginate(&client.standard_channels, &params);
 
-            Json(ClientChannelsResponse {
+            Json(Sv2ClientChannelsResponse {
                 client_id,
                 offset: params.offset,
                 limit: params.effective_limit(),
@@ -641,7 +643,7 @@ async fn handle_client_channels(
         None => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: format!("Client {} not found", client_id),
+                error: format!("Sv2 client {} not found", client_id),
             }),
         )
             .into_response(),
@@ -811,8 +813,8 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
         }
     }
 
-    // Collect clients metrics
-    if let Some(ref summary) = snapshot.clients_summary {
+    // Collect Sv2 clients metrics
+    if let Some(ref summary) = snapshot.sv2_clients_summary {
         if let Some(ref metric) = state.metrics.sv2_clients_total {
             metric.set(summary.total_clients as f64);
         }
@@ -828,7 +830,7 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
             metric.set(summary.total_hashrate as f64);
         }
 
-        for client in snapshot.clients.as_deref().unwrap_or(&[]) {
+        for client in snapshot.sv2_clients.as_deref().unwrap_or(&[]) {
             let client_id = client.client_id.to_string();
 
             for channel in &client.extended_channels {
@@ -866,7 +868,7 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
     }
 
     // Collect SV1 client metrics
-    if let Some(ref summary) = snapshot.sv1_summary {
+    if let Some(ref summary) = snapshot.sv1_clients_summary {
         if let Some(ref metric) = state.metrics.sv1_clients_total {
             metric.set(summary.total_clients as f64);
         }

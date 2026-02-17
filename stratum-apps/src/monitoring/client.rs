@@ -1,6 +1,6 @@
-//! Client monitoring types
+//! Sv2 client monitoring types
 //!
-//! These types are for monitoring **clients** (downstream connections).
+//! These types are for monitoring **Sv2 clients** (downstream connections).
 //! Each client can have multiple channels opened with the app.
 
 use serde::{Deserialize, Serialize};
@@ -46,15 +46,15 @@ pub struct StandardChannelInfo {
     pub share_batch_size: usize,
 }
 
-/// Full information about a single client including all channels
+/// Full information about a single Sv2 client including all channels
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct ClientInfo {
+pub struct Sv2ClientInfo {
     pub client_id: usize,
     pub extended_channels: Vec<ExtendedChannelInfo>,
     pub standard_channels: Vec<StandardChannelInfo>,
 }
 
-impl ClientInfo {
+impl Sv2ClientInfo {
     /// Get total number of channels for this client
     pub fn total_channels(&self) -> usize {
         self.extended_channels.len() + self.standard_channels.len()
@@ -74,8 +74,8 @@ impl ClientInfo {
     }
 
     /// Convert to metadata (without channel arrays)
-    pub fn to_metadata(&self) -> ClientMetadata {
-        ClientMetadata {
+    pub fn to_metadata(&self) -> Sv2ClientMetadata {
+        Sv2ClientMetadata {
             client_id: self.client_id,
             extended_channels_count: self.extended_channels.len(),
             standard_channels_count: self.standard_channels.len(),
@@ -84,18 +84,18 @@ impl ClientInfo {
     }
 }
 
-/// Client metadata without channel arrays (for listings)
+/// Sv2 client metadata without channel arrays (for listings)
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct ClientMetadata {
+pub struct Sv2ClientMetadata {
     pub client_id: usize,
     pub extended_channels_count: usize,
     pub standard_channels_count: usize,
     pub total_hashrate: f32,
 }
 
-/// Aggregate information about all clients
+/// Aggregate information about all Sv2 clients
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct ClientsSummary {
+pub struct Sv2ClientsSummary {
     pub total_clients: usize,
     pub total_channels: usize,
     pub extended_channels: usize,
@@ -103,28 +103,28 @@ pub struct ClientsSummary {
     pub total_hashrate: f32,
 }
 
-/// Trait for monitoring clients (downstream connections)
-pub trait ClientsMonitoring: Send + Sync {
-    /// Get all clients with their channels
-    fn get_clients(&self) -> Vec<ClientInfo>;
+/// Trait for monitoring Sv2 clients (downstream connections)
+pub trait Sv2ClientsMonitoring: Send + Sync {
+    /// Get all Sv2 clients with their channels
+    fn get_sv2_clients(&self) -> Vec<Sv2ClientInfo>;
 
-    /// Get a single client by client_id
+    /// Get a single Sv2 client by client_id
     ///
     /// Default implementation does O(n) scan. Override for O(1) lookup
     /// if your implementation uses a HashMap internally.
-    fn get_client_by_id(&self, client_id: usize) -> Option<ClientInfo> {
-        self.get_clients()
+    fn get_sv2_client_by_id(&self, client_id: usize) -> Option<Sv2ClientInfo> {
+        self.get_sv2_clients()
             .into_iter()
             .find(|c| c.client_id == client_id)
     }
 
-    /// Get summary of all clients
-    fn get_clients_summary(&self) -> ClientsSummary {
-        let clients = self.get_clients();
+    /// Get summary of all Sv2 clients
+    fn get_sv2_clients_summary(&self) -> Sv2ClientsSummary {
+        let clients = self.get_sv2_clients();
         let extended: usize = clients.iter().map(|c| c.extended_channels.len()).sum();
         let standard: usize = clients.iter().map(|c| c.standard_channels.len()).sum();
 
-        ClientsSummary {
+        Sv2ClientsSummary {
             total_clients: clients.len(),
             total_channels: extended + standard,
             extended_channels: extended,
