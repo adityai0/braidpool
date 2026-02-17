@@ -5,7 +5,10 @@ use tokio::{
     io::{AsyncWriteExt, BufReader, BufWriter},
     net::TcpStream,
 };
-use tokio_util::codec::{FramedRead, LinesCodec};
+use tokio_util::{
+    codec::{FramedRead, LinesCodec},
+    sync::CancellationToken,
+};
 use tracing::{error, trace, warn};
 
 /// Represents a connection between two roles communicating using SV1 protocol.
@@ -53,7 +56,7 @@ impl ConnectionState {
 const MAX_LINE_LENGTH: usize = 1 << 16;
 
 impl ConnectionSV1 {
-    pub async fn new(stream: TcpStream) -> Self {
+    pub async fn new(stream: TcpStream, cancellation_token: CancellationToken) -> Self {
         let (read_half, write_half) = stream.into_split();
         let (sender_incoming, receiver_incoming) = unbounded();
         let (sender_outgoing, receiver_outgoing) = unbounded();
@@ -70,6 +73,10 @@ impl ConnectionSV1 {
 
         tokio::spawn(async move {
             tokio::select! {
+                _ = cancellation_token.cancelled() => {
+                    trace!("ConnectionSV1: received cancellation signal.");
+                    connection_state.close();
+                }
                 _ = Self::run_reader(buffer_read_half, sender_incoming.clone()) => {
                     trace!("Reader task exited. Closing writer sender.");
                     connection_state.close();
@@ -172,8 +179,10 @@ mod tests {
         let downstream_stream = TcpStream::connect(addr).await.unwrap();
         let (upstream_stream, _) = listener.accept().await.unwrap();
 
-        let upstream_connection = ConnectionSV1::new(upstream_stream).await;
-        let downstream_connection = ConnectionSV1::new(downstream_stream).await;
+        let upstream_connection =
+            ConnectionSV1::new(upstream_stream, CancellationToken::new()).await;
+        let downstream_connection =
+            ConnectionSV1::new(downstream_stream, CancellationToken::new()).await;
         let message = json_rpc::Message::StandardRequest(json_rpc::StandardRequest {
             id: 1,
             method: "test".to_string(),
