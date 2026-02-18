@@ -359,6 +359,20 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
         _tlv_fields: Option<&[Tlv]>,
     ) -> Result<(), Self::Error> {
         info!("Received: {} ✅", m);
+
+        // In aggregated mode, the Pool responds with the upstream channel ID, but the
+        // channel is stored under AGGREGATED_CHANNEL_ID in the DashMap.
+        // In non-aggregated mode, m.channel_id matches the DashMap key directly.
+        let key = if is_aggregated() {
+            AGGREGATED_CHANNEL_ID
+        } else {
+            m.channel_id
+        };
+
+        if let Some(mut ch) = self.extended_channels.get_mut(&key) {
+            ch.on_share_acknowledgement(m.new_submits_accepted_count, m.new_shares_sum as f64);
+        }
+
         Ok(())
     }
 
