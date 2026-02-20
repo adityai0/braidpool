@@ -22,6 +22,7 @@ pub struct ServerExtendedChannelInfo {
     pub share_work_sum: f64,
     pub shares_submitted: u32,
     pub best_diff: f64,
+    pub blocks_found: u32,
 }
 
 /// Information about a standard channel opened with the server
@@ -37,6 +38,7 @@ pub struct ServerStandardChannelInfo {
     pub share_work_sum: f64,
     pub shares_submitted: u32,
     pub best_diff: f64,
+    pub blocks_found: u32,
 }
 
 /// Information about the server (upstream connection)

@@ -25,6 +25,7 @@ pub struct ExtendedChannelInfo {
     pub last_batch_accepted: u32,
     pub last_batch_work_sum: f64,
     pub share_batch_size: usize,
+    pub blocks_found: u32,
 }
 
 /// Information about a standard channel
@@ -44,6 +45,7 @@ pub struct StandardChannelInfo {
     pub last_batch_accepted: u32,
     pub last_batch_work_sum: f64,
     pub share_batch_size: usize,
+    pub blocks_found: u32,
 }
 
 /// Full information about a single Sv2 client including all channels

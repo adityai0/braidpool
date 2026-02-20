@@ -310,7 +310,7 @@ impl TranslatorSv2 {
                                         monitoring_addr,
                                         Some(channel_manager.clone()),
                                         None,
-                                        std::time::Duration::from_secs(self.config.monitoring_cache_refresh_secs())
+                                        std::time::Duration::from_secs(self.config.monitoring_cache_refresh_secs()),
                                     )
                                     .expect("Failed to initialize monitoring server")
                                     .with_sv1_monitoring(sv1_server.clone())

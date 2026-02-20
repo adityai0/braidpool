@@ -74,6 +74,7 @@ tokio::spawn(async move {
 - `sv2_server_hashrate_total` - Total server hashrate
 - `sv2_server_channel_hashrate{channel_id, user_identity}` - Per-channel hashrate
 - `sv2_server_shares_accepted_total{channel_id, user_identity}` - Per-channel shares
+- `sv2_server_blocks_found_total` - Total blocks found across all current server channels
 
 **Clients:**
 - `sv2_clients_total` - Connected client count
@@ -81,6 +82,7 @@ tokio::spawn(async move {
 - `sv2_client_hashrate_total` - Total client hashrate
 - `sv2_client_channel_hashrate{client_id, channel_id, user_identity}` - Per-channel hashrate
 - `sv2_client_shares_accepted_total{client_id, channel_id, user_identity}` - Per-channel shares
+- `sv2_client_blocks_found_total` - Total blocks found across all current client channels
 
 **Sv1 (Translator Proxy only):**
 - `sv1_clients_total` - Sv1 client count

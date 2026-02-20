@@ -811,6 +811,21 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
                     .set(hashrate as f64);
             }
         }
+
+        if let Some(ref metric) = state.metrics.sv2_server_blocks_found_total {
+            let total: u64 = server
+                .extended_channels
+                .iter()
+                .map(|c| c.blocks_found as u64)
+                .chain(
+                    server
+                        .standard_channels
+                        .iter()
+                        .map(|c| c.blocks_found as u64),
+                )
+                .sum();
+            metric.set(total as f64);
+        }
     }
 
     // Collect Sv2 clients metrics
@@ -830,6 +845,8 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
             metric.set(summary.total_hashrate as f64);
         }
 
+        let mut client_blocks_total: u64 = 0;
+
         for client in snapshot.sv2_clients.as_deref().unwrap_or(&[]) {
             let client_id = client.client_id.to_string();
 
@@ -847,6 +864,7 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
                         .with_label_values(&[&client_id, &channel_id, user])
                         .set(channel.nominal_hashrate as f64);
                 }
+                client_blocks_total += channel.blocks_found as u64;
             }
 
             for channel in &client.standard_channels {
@@ -863,7 +881,12 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
                         .with_label_values(&[&client_id, &channel_id, user])
                         .set(channel.nominal_hashrate as f64);
                 }
+                client_blocks_total += channel.blocks_found as u64;
             }
+        }
+
+        if let Some(ref metric) = state.metrics.sv2_client_blocks_found_total {
+            metric.set(client_blocks_total as f64);
         }
     }
 

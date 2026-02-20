@@ -57,6 +57,7 @@ impl ServerMonitoring for ChannelManager {
                         share_work_sum: share_accounting.get_share_work_sum(),
                         shares_submitted,
                         best_diff: share_accounting.get_best_diff(),
+                        blocks_found: share_accounting.get_blocks_found(),
                     });
                 }
             }
@@ -97,6 +98,7 @@ impl ServerMonitoring for ChannelManager {
                         share_work_sum: share_accounting.get_share_work_sum(),
                         shares_submitted,
                         best_diff: share_accounting.get_best_diff(),
+                        blocks_found: share_accounting.get_blocks_found(),
                     });
                 }
             }
