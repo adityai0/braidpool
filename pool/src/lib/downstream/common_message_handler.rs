@@ -73,9 +73,22 @@ impl HandleCommonMessagesFromClientAsync for Downstream {
         self.requires_standard_jobs
             .store(has_requires_std_job(msg.flags), Ordering::SeqCst);
 
+        // SetupConnection.Success.flags for Mining Protocol (server -> client):
+        // Bit 0: REQUIRES_FIXED_VERSION (upstream won't accept version changes)
+        // Bit 1: REQUIRES_EXTENDED_CHANNELS (upstream won't accept standard channels)
+        //
+        // When the downstream requests work selection, the pool requires extended channels,
+        // since custom work (job declaration) uses extended channels.
+        //
+        // TODO: replace magic numbers with named constants once
+        // https://github.com/stratum-mining/stratum/issues/2075 is resolved.
+        let mut response_flags: u32 = 0;
+        if has_work_selection(msg.flags) {
+            response_flags |= 0x02; // REQUIRES_EXTENDED_CHANNELS
+        }
         let response = SetupConnectionSuccess {
             used_version: 2,
-            flags: msg.flags,
+            flags: response_flags,
         };
         let frame: Sv2Frame = AnyMessage::Common(response.into_static().into())
             .try_into()
