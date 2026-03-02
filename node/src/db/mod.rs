@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
 use crate::bead::Bead;
+pub mod audit_db_handlers;
 pub mod db_handlers;
 pub mod init_db;
 

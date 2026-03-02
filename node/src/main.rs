@@ -80,53 +80,66 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Initializing the braid object with read write lock
     //for supporting concurrent readers and single writer
     let braid: Arc<RwLock<braid::Braid>> = Arc::new(RwLock::new(braid::Braid::new(Vec::from([]))));
-    //Initializing DB and db command handler
-    let (mut _db_handler, db_tx) = DBHandler::new().await.map_err(|e| {
-        std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Database initialization failed: {:?}", e),
-        )
-    })?;
-    let db_connection_pool = _db_handler.db_connection_pool.clone();
-    //Reconstructing local braid upon startup
-    let db_connection_pool_ref = _db_handler.db_connection_pool.clone();
-    let braid_ref = braid.clone();
-    // FIXME instead we should look 144 blocks back from the bitcoin tip (1 day) and load beads
-    // starting from that block as genesis
-    let initial_bead_fetch_handle = tokio::spawn(async move {
-        let mut guard = braid_ref.write().await;
-        let fetched_beads = fetch_beads_in_batch(db_connection_pool_ref, 1000).await?;
-        for bead in &fetched_beads {
-            let curr_bead_status = guard.extend(&bead);
-            debug!(
-                hash = ?bead.block_header.block_hash(),
-                status = ?curr_bead_status,
-                "Bead inserted"
-            );
+    let mut optional_db_pool = None;
+    let db_tx;
+
+    if !args.audit {
+        //Initializing DB and db command handler
+        let (mut db_handler, tx) = DBHandler::new().await.map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Database initialization failed: {:?}", e),
+            )
+        })?;
+        db_tx = tx;
+        optional_db_pool = Some(db_handler.db_connection_pool.clone());
+        //Reconstructing local braid upon startup
+        let db_connection_pool_ref = db_handler.db_connection_pool.clone();
+
+        //Starting the `query_handler` task
+        tokio::spawn(async move {
+            let _res = db_handler.insert_query_handler().await;
+        });
+
+        let braid_ref = braid.clone();
+        // FIXME instead we should look 144 blocks back from the bitcoin tip (1 day) and load beads
+        // starting from that block as genesis
+        let initial_bead_fetch_handle = tokio::spawn(async move {
+            let mut guard = braid_ref.write().await;
+            let fetched_beads = fetch_beads_in_batch(db_connection_pool_ref, 1000).await?;
+            for bead in &fetched_beads {
+                let curr_bead_status = guard.extend(&bead);
+                debug!(hash = ?bead.block_header.block_hash(), status = ?curr_bead_status, "Bead inserted");
+            }
+            info!(beads = fetched_beads.len(), "Beads loaded from DB");
+            Ok::<(), node::error::DBErrors>(())
+        });
+
+        match initial_bead_fetch_handle.await {
+            Ok(Ok(())) => info!("Initial bead fetch completed successfully"),
+            Ok(Err(e)) => {
+                error!(error = ?e, "Failed to fetch beads from DB during startup");
+                return Err(format!("Database bead fetch failed: {:?}", e).into());
+            }
+            Err(e) => {
+                return Err(format!("Initial bead fetch task failed: {}", e).into());
+            }
         }
-        info!(beads = fetched_beads.len(), "Beads loaded from DB");
-        Ok::<(), node::error::DBErrors>(())
-    });
-    match initial_bead_fetch_handle.await {
-        Ok(Ok(())) => {
-            info!("Initial bead fetch completed successfully");
-        }
-        Ok(Err(e)) => {
-            error!(error = ?e, "Failed to fetch beads from DB during startup");
-            return Err(format!("Database bead fetch failed: {:?}", e).into());
-        }
-        Err(e) => {
-            error!(error = ?e, "Initial bead fetch task panicked");
-            return Err(format!("Initial bead fetch task panicked: {}", e).into());
-        }
+    } else {
+        // Create a dummy channel for SwarmHandler so it doesn't crash when it tries to broadcast in audit mode
+        let (tx, mut rx) = mpsc::channel(1);
+        db_tx = tx;
+
+        // Keep the receiver alive in a background sink so channel sends don't fail
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                trace!(message = ?msg, "Audit dummy sink; Dropping standard DB message");
+            }
+        });
     }
     let latest_template_id = Arc::new(Mutex::new(TemplateId::default()));
     let latest_template_id_for_notifier = latest_template_id.clone();
     let latest_template_id_for_consumer = latest_template_id.clone();
-    //Starting the `query_handler` task
-    tokio::spawn(async move {
-        let _res = _db_handler.insert_query_handler().await;
-    });
     //latest available template to be cached for the newest connection until new job is received
     let latest_template = Arc::new(Mutex::new(BlockTemplate::default()));
     //latest available template merkle branch
@@ -215,7 +228,37 @@ async fn main() -> Result<(), Box<dyn Error>> {
         );
 
         // Initialize audit records
-        let audit_dag = Arc::new(Mutex::new(audit::AuditDAG::new(Arc::clone(&braid))));
+        let audit_dag = match audit::AuditDAG::new_with_db(Arc::clone(&braid)).await {
+            Ok(dag) => Arc::new(Mutex::new(dag)),
+            Err(e) => {
+                error!("Failed to initialize audit DAG with database: {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        match audit_dag.lock().await.load_from_db().await {
+            Ok(Some(latest_composite_hash)) => {
+                let commitment_bytes = latest_composite_hash.to_byte_array()
+                    [..crate::audit::COMMITMENT_BYTES]
+                    .to_vec();
+                let mut conn_map = connection_mapping.lock().await;
+                conn_map.current_bead_commitment = commitment_bytes.clone();
+                drop(conn_map);
+
+                info!(
+                    commitment = %hex::encode(&commitment_bytes),
+                    composite_hash = %latest_composite_hash,
+                    "Restored global bead commitment from database"
+                );
+            }
+            Ok(None) => {
+                info!("No previous beads in database, starting from genesis commitment");
+            }
+            Err(e) => {
+                warn!("Failed to load bead from database: {}", e);
+            }
+        }
+
         let audit_dag_for_notifier_inner: Option<Arc<Mutex<audit::AuditDAG>>> =
             Some(audit_dag.clone());
         let audit_dag_for_stratum = audit_dag.clone();
@@ -428,7 +471,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let connection_mapping_for_upstream = connection_mapping.clone();
         let upstream_task_token = main_task_token.clone();
         let mut upstream_ready_tx_option = Some(upstream_ready_tx);
-        let braid_for_upstream = braid.clone();
         tokio::spawn(async move {
             // Reconnection state
             let mut retry_count: u32 = 0;
@@ -529,8 +571,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     Some(upstream_difficulty_tx),
                     configure_rx.clone(),
                     upstream_cache_clone.clone(),
-                    Arc::clone(&braid_for_upstream),
                     audit_log_tx.clone(),
+                    audit_dag.clone(),
                 );
 
                 // Mark upstream as connected
@@ -841,35 +883,38 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     //adding the boot nodes for peer discovery
     swarm.listen_on(multi_addr.clone())?;
-    for boot_peer in BOOTNODES {
-        let peer_id = match boot_peer.parse::<PeerId>() {
-            Ok(id) => id,
-            Err(e) => {
-                error!(boot_peer = %boot_peer, error = %e, "Failed to parse boot peer ID, skipping");
-                continue;
-            }
-        };
-        let seed_addr = match SEED_DNS.parse::<Multiaddr>() {
-            Ok(addr) => addr,
-            Err(e) => {
-                error!(seed_dns = %SEED_DNS, error = %e, "Failed to parse seed DNS, skipping");
-                continue;
-            }
-        };
-        swarm
-            .behaviour_mut()
-            .kademlia
-            .add_address(&peer_id, seed_addr);
+    if !args.audit {
+        for boot_peer in BOOTNODES {
+            let peer_id = match boot_peer.parse::<PeerId>() {
+                Ok(id) => id,
+                Err(e) => {
+                    error!(boot_peer = %boot_peer, error = %e, "Failed to parse boot peer ID, skipping");
+                    continue;
+                }
+            };
+            let seed_addr = match SEED_DNS.parse::<Multiaddr>() {
+                Ok(addr) => addr,
+                Err(e) => {
+                    error!(seed_dns = %SEED_DNS, error = %e, "Failed to parse seed DNS, skipping");
+                    continue;
+                }
+            };
+            swarm
+                .behaviour_mut()
+                .kademlia
+                .add_address(&peer_id, seed_addr);
+        }
+
+        info!(boot_node_count = %BOOTNODES.len(), "Boot nodes added to DHT");
+        let boot_addr: Multiaddr = ADDR_REFRENCE.parse().map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Failed to parse boot address: {}", e),
+            )
+        })?;
+        swarm.dial(boot_addr)?;
+        info!(address = %ADDR_REFRENCE, "Dialed boot node");
     }
-    info!(boot_node_count = %BOOTNODES.len(), "Boot nodes added to DHT");
-    let boot_addr: Multiaddr = ADDR_REFRENCE.parse().map_err(|e| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("Failed to parse boot address: {}", e),
-        )
-    })?;
-    swarm.dial(boot_addr)?;
-    info!(address = %ADDR_REFRENCE, "Dialed boot node");
     //IPC(inter process communication) based `getblocktemplate` and `notification` to send to the downstream via the `cmempoold` architecture
     info!(socket = %args.ipc_socket, "IPC socket path");
 
@@ -1042,6 +1087,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                      SwarmEvent::Behaviour(BraidPoolBehaviourEvent::BeadAnnounce(
                          floodsub::FloodsubEvent::Message(message),
                      )) => {
+                        if args.audit {
+                            trace!(source = ?message.source, "Audit mode: Ignoring gossip bead");
+                            continue;
+                        }
                          info!(
                              topics = ?message.topics,
                              source = ?message.source,
@@ -1096,40 +1145,42 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         // update the peer manager about the invalid bead
                                         peer_manager.penalize_for_invalid_bead(&message.source);
                                     } else if let braid::AddBeadStatus::BeadAdded = status {
-                                     //Considering the index of the beads in braid will be same as the (insertion ids-1)
-                                        let bead_id = match braid_data
-                                            .bead_index_mapping
-                                            .get(&bead.block_header.block_hash()) {
-                                            Some(id) => id,
-                                            None => {
-                                                error!(bead_hash = ?bead.block_header.block_hash(), "Bead ID not found in index mapping");
-                                                continue;
-                                            }
-                                        };
-                                        let (txs_json, relative_json, parent_timestamp_json) = match prepare_bead_tuple_data(
-                                            &braid_data.beads,
-                                            &braid_data.bead_index_mapping,
-                                            &bead,
-                                        ){
-                                            Ok(received_tuples)=>received_tuples,
+                                        if !args.audit {
+                                            //Considering the index of the beads in braid will be same as the (insertion ids-1)
+                                            let bead_id = match braid_data
+                                                .bead_index_mapping
+                                                .get(&bead.block_header.block_hash()) {
+                                                Some(id) => id,
+                                                None => {
+                                                    error!(bead_hash = ?bead.block_header.block_hash(), "Bead ID not found in index mapping");
+                                                    continue;
+                                                }
+                                            };
+                                            let (txs_json, relative_json, parent_timestamp_json) = match prepare_bead_tuple_data(
+                                                &braid_data.beads,
+                                                &braid_data.bead_index_mapping,
+                                                &bead,
+                                            ){
+                                                Ok(received_tuples)=>received_tuples,
+                                                Err(error)=>{
+                                                    error!("An error occurred while preparing bead tuple data for bead with beadhash - {:?} due to {:?}",bead.block_header.block_hash(),error);
+                                                    continue;
+                                                }
+                                            };
+                                            // update score of the peer and adding to local db store
+                                            let _query_send_result = match db_tx.send(node::db::BraidpoolDBTypes::InsertTupleTypes { query: node::db::InsertTupleTypes::InsertBeadSequentially { bead_to_insert: bead,txs_json:txs_json,relative_json:relative_json,parent_timestamp_json:parent_timestamp_json,bead_id:*bead_id } }).await{
+                                            Ok(_)=>{
+                                                debug!("Insert command sent successfully to db handler after receiving bead from peer");
+                                            },
                                             Err(error)=>{
-                                                error!("An error occurred while preparing bead tuple data for bead with beadhash - {:?} due to {:?}",bead.block_header.block_hash(),error);
-                                                continue;
+                                                error!(
+                                                    source = ?message.source,
+                                                    err = ?error.0,
+                                                    "An error occurred while sending insert bead command received from peer"
+                                                );
                                             }
                                         };
-                                        // update score of the peer and adding to local db store
-                                        let _query_send_result = match db_tx.send(node::db::BraidpoolDBTypes::InsertTupleTypes { query: node::db::InsertTupleTypes::InsertBeadSequentially { bead_to_insert: bead,txs_json:txs_json,relative_json:relative_json,parent_timestamp_json:parent_timestamp_json,bead_id:*bead_id } }).await{
-                                           Ok(_)=>{
-                                               debug!("Insert command sent successfully to db handler after receiving bead from peer");
-                                           },
-                                           Err(error)=>{
-                                               error!(
-                                                   source = ?message.source,
-                                                   err = ?error.0,
-                                                   "An error occurred while sending insert bead command received from peer"
-                                               );
-                                           }
-                                        };
+                                    }
                                         peer_manager.update_score(&message.source, 1.0);
                                     }
                                     for (sync_peer, ibd_ts) in timestamp_map.iter() {
@@ -1203,39 +1254,41 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         // update the peer manager about the invalid bead
                                         peer_manager.penalize_for_invalid_bead(&message.source);
                                     } else if let braid::AddBeadStatus::BeadAdded = status {
-                                        let bead_id = match braid_data
-                                            .bead_index_mapping
-                                            .get(&bead.block_header.block_hash()) {
-                                            Some(id) => id,
-                                            None => {
-                                                error!(bead_hash = ?bead.block_header.block_hash(), "Bead ID not found in index mapping (GetAllBeads)");
-                                                continue;
-                                            }
-                                        };
-                                        let (txs_json, relative_json, parent_timestamp_json) = match prepare_bead_tuple_data(
-                                            &braid_data.beads,
-                                            &braid_data.bead_index_mapping,
-                                            &bead,
-                                        ){
-                                            Ok(received_tuples)=>received_tuples,
+                                        if !args.audit {
+                                            let bead_id = match braid_data
+                                                .bead_index_mapping
+                                                .get(&bead.block_header.block_hash()) {
+                                                Some(id) => id,
+                                                None => {
+                                                    error!(bead_hash = ?bead.block_header.block_hash(), "Bead ID not found in index mapping (GetAllBeads)");
+                                                    continue;
+                                                }
+                                            };
+                                            let (txs_json, relative_json, parent_timestamp_json) = match prepare_bead_tuple_data(
+                                                &braid_data.beads,
+                                                &braid_data.bead_index_mapping,
+                                                &bead,
+                                            ){
+                                                Ok(received_tuples)=>received_tuples,
+                                                Err(error)=>{
+                                                    error!("An error occurred while preparing bead tuple data for bead with beadhash - {:?} due to {:?}",bead.block_header.block_hash(),error);
+                                                    continue;
+                                                }
+                                            };
+                                            // update score of the peer and adding to local db store
+                                            let _query_send_result = match db_tx.send(node::db::BraidpoolDBTypes::InsertTupleTypes { query: node::db::InsertTupleTypes::InsertBeadSequentially { bead_to_insert: bead,txs_json:txs_json,relative_json:relative_json,parent_timestamp_json:parent_timestamp_json,bead_id:*bead_id } }).await{
+                                                Ok(_)=>{
+                                                debug!("Insert command sent successfully to db handler after receiving bead from peer");
+                                            },
                                             Err(error)=>{
-                                                error!("An error occurred while preparing bead tuple data for bead with beadhash - {:?} due to {:?}",bead.block_header.block_hash(),error);
-                                                continue;
+                                                error!(
+                                                    source = ?message.source,
+                                                    err = ?error.0,
+                                                    "An error occurred while sending insert bead command received from peer"
+                                                );
                                             }
-                                        };
-                                        // update score of the peer and adding to local db store
-                                        let _query_send_result = match db_tx.send(node::db::BraidpoolDBTypes::InsertTupleTypes { query: node::db::InsertTupleTypes::InsertBeadSequentially { bead_to_insert: bead,txs_json:txs_json,relative_json:relative_json,parent_timestamp_json:parent_timestamp_json,bead_id:*bead_id } }).await{
-                                            Ok(_)=>{
-                                               debug!("Insert command sent successfully to db handler after receiving bead from peer");
-                                           },
-                                           Err(error)=>{
-                                               error!(
-                                                   source = ?message.source,
-                                                   err = ?error.0,
-                                                   "An error occurred while sending insert bead command received from peer"
-                                               );
-                                           }
-                                        };
+                                            };
+                                        }
                                         peer_manager.update_score(&message.source, 1.0);
                                     }
                                 }
@@ -1525,41 +1578,43 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                             // update the peer manager about the invalid bead
                                             peer_manager.penalize_for_invalid_bead(&peer);
                                         } else if let braid::AddBeadStatus::BeadAdded = status {
-                                            let bead_id = match braid_data
-                                                .bead_index_mapping
-                                                .get(&bead.block_header.block_hash()) {
-                                                Some(id) => id,
-                                                None => {
-                                                    error!(bead_hash = ?bead.block_header.block_hash(), "Bead ID not found in index mapping (GetBeadsAfter)");
-                                                    continue;
-                                                }
-                                            };
-                                            let (txs_json, relative_json, parent_timestamp_json) = match prepare_bead_tuple_data(
-                                                &braid_data.beads,
-                                                &braid_data.bead_index_mapping,
-                                                &bead,
-                                            ){
-                                                Ok(received_tuples)=>received_tuples,
-                                                Err(error)=>{
-                                                    error!("An error occurred while preparing bead tuple data for bead with beadhash - {:?} due to {:?}",curr_beadhash,error);
-                                                    continue;
-                                                }
-                                            };
-                                            // update score of the peer
-                                            peer_manager.update_score(&peer, 1.0);
-                                            //persisting the received beads from peer onto DB(disk)
-                                            match db_tx.send(node::db::BraidpoolDBTypes::InsertTupleTypes { query: node::db::InsertTupleTypes::InsertBeadSequentially { bead_to_insert: bead,txs_json:txs_json,parent_timestamp_json:parent_timestamp_json,relative_json:relative_json,bead_id:*bead_id } }).await{
-                                                Ok(_)=>{
-                                                    debug!(beadhash=?curr_beadhash,"Bead received in IBD persisted over disk with beadhash and status BeadAdded");
-                                                },
-                                                Err(error)=>{
-                                                    tracing::error!(
-                                                        peer = %peer,
-                                                        err = ?error.0,
-                                                        "An error occurred while persisting received bead from peer"
-                                                    );
-                                                }
-                                            };
+                                            if !args.audit {
+                                                let bead_id = match braid_data
+                                                    .bead_index_mapping
+                                                    .get(&bead.block_header.block_hash()) {
+                                                    Some(id) => id,
+                                                    None => {
+                                                        error!(bead_hash = ?bead.block_header.block_hash(), "Bead ID not found in index mapping (GetBeadsAfter)");
+                                                        continue;
+                                                    }
+                                                };
+                                                let (txs_json, relative_json, parent_timestamp_json) = match prepare_bead_tuple_data(
+                                                    &braid_data.beads,
+                                                    &braid_data.bead_index_mapping,
+                                                    &bead,
+                                                ){
+                                                    Ok(received_tuples)=>received_tuples,
+                                                    Err(error)=>{
+                                                        error!("An error occurred while preparing bead tuple data for bead with beadhash - {:?} due to {:?}",curr_beadhash,error);
+                                                        continue;
+                                                    }
+                                                };
+                                                // update score of the peer
+                                                peer_manager.update_score(&peer, 1.0);
+                                                //persisting the received beads from peer onto DB(disk)
+                                                match db_tx.send(node::db::BraidpoolDBTypes::InsertTupleTypes { query: node::db::InsertTupleTypes::InsertBeadSequentially { bead_to_insert: bead,txs_json:txs_json,parent_timestamp_json:parent_timestamp_json,relative_json:relative_json,bead_id:*bead_id } }).await{
+                                                    Ok(_)=>{
+                                                        debug!(beadhash=?curr_beadhash,"Bead received in IBD persisted over disk with beadhash and status BeadAdded");
+                                                    },
+                                                    Err(error)=>{
+                                                        tracing::error!(
+                                                            peer = %peer,
+                                                            err = ?error.0,
+                                                            "An error occurred while persisting received bead from peer"
+                                                        );
+                                                    }
+                                                };
+                                            }
                                         }
                                     }
                                     //Preparing next batch request to be sent to the sync node
@@ -1993,11 +2048,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             main_task_token.cancel();
 
             info!(component = "database", "Closing connection pool");
-            let pool = db_connection_pool.lock().await;
-            //Closing all the existing connections to pool and committing from .db-wal to .db
-            pool.close().await;
-            info!(component = "database", "Connections closed");
-
+            if let Some(pool_arc) = optional_db_pool {
+                let pool = pool_arc.lock().await;
+                // Closing all the existing connections to pool and committing from .db-wal to .db
+                pool.close().await;
+                info!(component = "database", "Connections closed");
+            }
             // Give tasks time to drain
             tokio::time::sleep(Duration::from_millis(100)).await;
 

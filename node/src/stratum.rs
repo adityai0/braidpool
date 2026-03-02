@@ -697,7 +697,6 @@ impl DownstreamClient {
                     audit_dag,
                     upstream_share_tx,
                     upstream_difficulty,
-                    swarm_handler,
                 )
                 .await;
         }
@@ -1065,7 +1064,6 @@ impl DownstreamClient {
         audit_dag: Option<Arc<Mutex<crate::audit::AuditDAG>>>,
         upstream_share_tx: Option<mpsc::Sender<crate::upstream_pool::UpstreamShare>>,
         upstream_difficulty: Option<f64>,
-        swarm_handler: Arc<Mutex<SwarmHandler>>,
     ) -> Result<StratumResponses, StratumErrors> {
         let ntime_u32 =
             u32::from_str_radix(ntime, 16).map_err(|e| StratumErrors::InvalidMethodParams {
@@ -1193,7 +1191,6 @@ impl DownstreamClient {
             let share_id = block_hash;
 
             let bead = {
-                let swarm = swarm_handler.lock().await;
                 let payout_address = self
                     .payout_address
                     .as_ref()
@@ -1225,16 +1222,14 @@ impl DownstreamClient {
                     .to_string();
 
                 let (parent_hash_set, time_hash_set) = {
-                    let braid = swarm.braid_arc.read().await;
                     let mut parents = std::collections::HashSet::new();
                     let mut timestamps = crate::committed_metadata::TimeVec(Vec::new());
-                    for &tip_idx in braid.tips.iter() {
-                        if let Some(tip_bead) = braid.beads.get(tip_idx) {
-                            let standard_hash = tip_bead.block_header.block_hash();
-                            parents.insert(crate::utils::BeadHash::from(standard_hash));
-                            timestamps
-                                .0
-                                .push(tip_bead.committed_metadata.start_timestamp);
+
+                    if let Some(ref dag_mutex) = audit_dag {
+                        let dag = dag_mutex.lock().await;
+                        for &(_comp_hash, block_hash, parent_time) in &dag.active_parents {
+                            parents.insert(crate::utils::BeadHash::from(block_hash));
+                            timestamps.0.push(parent_time);
                         }
                     }
                     if parents.is_empty() {
