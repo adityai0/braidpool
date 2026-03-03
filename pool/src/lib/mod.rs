@@ -21,6 +21,7 @@ use crate::{
     },
 };
 
+pub mod braidpool;
 pub mod channel_manager;
 pub mod config;
 pub mod downstream;
@@ -111,6 +112,45 @@ impl PoolSv2 {
         let channel_manager_clone = channel_manager.clone();
         let channel_manager_for_cleanup = channel_manager.clone();
         let mut bitcoin_core_sv2_join_handle: Option<JoinHandle<()>> = None;
+
+        // Initialize Braidpool P2P if configured
+        let mut braidpool_handle: Option<tokio::task::JoinHandle<()>> = None;
+        let mut _braidpool_cmd_tx: Option<tokio::sync::mpsc::Sender<braidpool::SwarmCommand>> =
+            None;
+        let mut _braidpool_db_tx: Option<tokio::sync::mpsc::Sender<braidpool::BraidpoolDBTypes>> =
+            None;
+        let mut _braidpool_braid: Option<std::sync::Arc<tokio::sync::RwLock<braidpool::Braid>>> =
+            None;
+
+        if let Some(bind_addr) = self.config.braidpool_bind_addr() {
+            info!("Initializing Braidpool P2P on {}", bind_addr);
+
+            let braidpool_config = braidpool::BraidpoolConfig {
+                bind_addr: bind_addr.to_string(),
+                max_peers: self.config.braidpool_max_peers(),
+                keystore_path: self
+                    .config
+                    .braidpool_keystore_path()
+                    .map(|p| p.to_path_buf()),
+                addnodes: self.config.braidpool_addnodes().to_vec(),
+            };
+
+            let braidpool_p2p =
+                braidpool::BraidpoolP2P::new(braidpool_config, cancellation_token.clone());
+            //Spawning the p2p handlers/event_loop for handling braidpool p2p events
+            match braidpool_p2p.spawn().await {
+                Ok((handle, cmd_tx, db_tx, braid)) => {
+                    braidpool_handle = Some(handle);
+                    _braidpool_cmd_tx = Some(cmd_tx);
+                    _braidpool_db_tx = Some(db_tx);
+                    _braidpool_braid = Some(braid);
+                    info!("Braidpool P2P initialized successfully");
+                }
+                Err(e) => {
+                    error!("Failed to initialize Braidpool P2P: {}", e);
+                }
+            }
+        }
 
         match self.config.template_provider_type().clone() {
             TemplateProviderType::Sv2Tp {
@@ -244,6 +284,15 @@ impl PoolSv2 {
             match bitcoin_core_sv2_join_handle.join() {
                 Ok(_) => info!("BitcoinCoreSv2 dedicated thread shutdown complete."),
                 Err(e) => error!("BitcoinCoreSv2 dedicated thread error: {e:?}"),
+            }
+        }
+
+        // Wait for Braidpool P2P to shutdown
+        if let Some(handle) = braidpool_handle {
+            info!("Waiting for Braidpool P2P to shutdown...");
+            match handle.await {
+                Ok(_) => info!("Braidpool P2P shutdown complete."),
+                Err(e) => error!("Braidpool P2P task error: {e:?}"),
             }
         }
 

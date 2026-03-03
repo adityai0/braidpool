@@ -43,6 +43,9 @@ required_extensions = [
 monitoring_address = "127.0.0.1:9090"
 monitoring_cache_refresh_secs = 15
 
+#Braidpool config for spawn listening
+braidpool_bind_addr="0.0.0.0:6680"
+
 # Bitcoin Core IPC config
 # Supported networks: mainnet, testnet4, signet, regtest
 # Default data_dir: ~/.bitcoin (Linux) or ~/Library/Application Support/Bitcoin (macOS)

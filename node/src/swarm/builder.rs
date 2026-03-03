@@ -6,6 +6,7 @@ use crate::behaviour::BraidPoolBehaviour;
 
 use super::config::IDLE_CONNECTION_TIMEOUT;
 
+#[derive(Debug)]
 /// Configuration for building a swarm.
 pub struct SwarmConfig {
     /// The node's cryptographic identity.

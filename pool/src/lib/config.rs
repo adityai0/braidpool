@@ -42,6 +42,18 @@ pub struct PoolConfig {
     monitoring_address: Option<SocketAddr>,
     #[serde(default = "default_monitoring_cache_refresh_secs")]
     monitoring_cache_refresh_secs: u64,
+    #[serde(default)]
+    braidpool_bind_addr: Option<String>,
+    #[serde(default = "default_braidpool_max_peers")]
+    braidpool_max_peers: usize,
+    #[serde(default, deserialize_with = "opt_path_from_toml")]
+    braidpool_keystore_path: Option<PathBuf>,
+    #[serde(default)]
+    braidpool_addnodes: Vec<String>,
+}
+
+fn default_braidpool_max_peers() -> usize {
+    8
 }
 
 fn default_monitoring_cache_refresh_secs() -> u64 {
@@ -82,6 +94,10 @@ impl PoolConfig {
             required_extensions,
             monitoring_address: None,
             monitoring_cache_refresh_secs: 15,
+            braidpool_bind_addr: None,
+            braidpool_max_peers: 8,
+            braidpool_keystore_path: None,
+            braidpool_addnodes: Vec::new(),
         }
     }
 
@@ -176,6 +192,26 @@ impl PoolConfig {
     /// Returns the monitoring cache refresh interval in seconds.
     pub fn monitoring_cache_refresh_secs(&self) -> u64 {
         self.monitoring_cache_refresh_secs
+    }
+
+    /// Returns the braidpool P2P bind address (if P2P is enabled).
+    pub fn braidpool_bind_addr(&self) -> Option<&str> {
+        self.braidpool_bind_addr.as_deref()
+    }
+
+    /// Returns the maximum braidpool P2P peers.
+    pub fn braidpool_max_peers(&self) -> usize {
+        self.braidpool_max_peers
+    }
+
+    /// Returns the braidpool keystore path.
+    pub fn braidpool_keystore_path(&self) -> Option<&Path> {
+        self.braidpool_keystore_path.as_deref()
+    }
+
+    /// Returns the braidpool additional nodes to dial.
+    pub fn braidpool_addnodes(&self) -> &[String] {
+        &self.braidpool_addnodes
     }
 }
 
