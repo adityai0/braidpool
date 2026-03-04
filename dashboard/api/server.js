@@ -10,11 +10,79 @@ import { fetchBlockDetails } from './utils/fetchBlockDetails.js';
 import { fetchAllNodeData } from './utils/fetchBlockChainInfo.js';
 import { fetchPoolInfo } from './utils/fetchPoolInfo.js';
 import { fetchMempoolStats } from './utils/fetchMempoolStats.js';
+import { fetchLatestTransactions, fetchLatestRBFTransactions ,fetchBlockDetailsByHash,fetchTxInfo,fetchLatestBlocks } from './utils/fetchLatestTransactions.js';
+
+
+async function broadcastLatestBlocks() {
+  try {
+    const data = await fetchLatestBlocks();
+    const message = { type: 'latest_blocks', data };
+    console.log('Broadcasting latest blocks:', data);
+    wss.clients.forEach((client) => {
+      if (client.readyState === client.OPEN) {
+        client.send(JSON.stringify(message));
+      }
+    });
+  } catch (error) {
+    console.error('Error broadcasting latest blocks:', error);
+  }
+}
 
 dotenv.config();
 
 const PORT = process.env.WS_PORT || 5000;
 const wss = new WebSocketServer({ port: PORT });
+async function broadcastLatestTransactions() {
+  try {
+    const data = await fetchLatestTransactions();
+    const message = { type: 'latest_transactions', data };
+    console.log('Broadcasting latest transactions:', data);
+    wss.clients.forEach((client) => {
+      if (client.readyState === client.OPEN) {
+        client.send(JSON.stringify(message));
+      }
+    });
+  } catch (error) {
+    console.error('Error broadcasting latest transactions:', error);
+  }
+}
+
+async function broadcastLatestRBFTransactions() {
+  try {
+    const data = await fetchLatestRBFTransactions();
+    const message = { type: 'latest_rbf_transactions', data };
+    console.log('Broadcasting latest RBF transactions:', data);
+    wss.clients.forEach((client) => {
+      if (client.readyState === client.OPEN) {
+        client.send(JSON.stringify(message));
+      }
+    });
+  } catch (error) {
+    console.error('Error broadcasting latest RBF transactions:', error);
+  }
+}
+wss.on('connection', (ws) => {
+  handleWebSocketConnection(ws, wss);
+
+  ws.on('message', async (message) => {
+    try {
+      const data = JSON.parse(message);
+      if (data.type === 'get_block_details' && data.hash) {
+        const blockDetails = await fetchBlockDetailsByHash(data.hash);
+        ws.send(JSON.stringify({ type: 'block_details', hash: data.hash, data: blockDetails }));
+        console.log('Sent block details for hash:', data.hash);
+      }
+      if (data.type === 'get_tx_info' && data.txid) {
+        const txInfo = await fetchTxInfo(data.txid);
+        ws.send(JSON.stringify({ type: 'tx_info', txid: data.txid, data: txInfo }));
+        console.log('Sent transaction info for txid:', data.txid);
+      }
+    } catch (err) {
+      console.error('Error handling WebSocket request:', err);
+    }
+  });
+});
+
 
 const BITCOIN_PRICE_URL = process.env.BITCOIN_PRICE_URL;
 const BITCOIN_PRICE_URL_SUFFIX = process.env.BITCOIN_PRICE_URL_SUFFIX;
@@ -150,6 +218,8 @@ setInterval(() => {
   );
   sendPoolInfo();
   sendMempoolData();
-}, 30000); // 30-second interval
-
+    broadcastLatestTransactions();
+    broadcastLatestRBFTransactions();
+    broadcastLatestBlocks();
+  }, 10000); // 10-second interval
 console.log(`WebSocket server running on ws://localhost:${PORT}`);

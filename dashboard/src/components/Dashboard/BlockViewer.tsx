@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import RecentBlocksTable from './RecentBlocksTable';
 import colors from '../../theme/colors';
 import { Block } from './Types';
-import { fetchPreviousBlocks } from './Utils';
+
 import BlockInfoDialog from './BlockDialog';
 import { WEBSOCKET_URLS } from '../../URLs';
 import { Loader } from 'lucide-react';
@@ -14,72 +14,57 @@ const BlockViewer: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [selectedBlock, setSelectedBlock] = useState<string | null>(null);
 
+
   useEffect(() => {
-    const getBlocks = async () => {
-      setIsLoading(true);
-      try {
-        const data = await fetchPreviousBlocks();
-        setPreviousBlocks(data);
-      } catch (err) {
-        console.log('Could not load blocks');
-      } finally {
-        setIsLoading(false);
-      }
-    };
+    setIsLoading(true);
+    const websocket = new WebSocket(WEBSOCKET_URLS.MAIN_WEBSOCKET);
+    let isMounted = true;
 
-    getBlocks();
-  }, []);
-
-  // Setup WebSocket for next block updates via mempool API - Note - it shows 8080but works as backend for API's websocket
-  useEffect(() => {
-    const socket = new WebSocket(WEBSOCKET_URLS.BLOCK_VIEWER_WEBSOCKET);
-
-    socket.onopen = () => {
+    websocket.onopen = () => {
+      if (!isMounted) return;
       setIsConnected(true);
-      socket.send(
-        JSON.stringify({
-          action: 'want',
-          data: ['blocks'],
-        })
-      );
+      setIsLoading(false);
+      console.log('Connected to WebSocket server');
     };
 
-    socket.onmessage = (event: MessageEvent) => {
+    websocket.onmessage = (event) => {
+      if (!isMounted) return;
       try {
         const data = JSON.parse(event.data);
-
-        if (data.block) {
-          setNextBlock(data.block);
-          // Add to previous blocks if not already there
-          setPreviousBlocks((prev) => {
-            const exists = prev.some((b) => b.id === data.block.id);
-            if (!exists) {
-              return [data.block, ...prev.slice(0, 14)]; // Keep only 15 blocks
-            }
-            return prev;
-          });
+        if (data.type === 'latest_blocks') {
+          if (Array.isArray(data.data)) {
+            setPreviousBlocks(data.data);
+            setIsLoading(false);
+            console.log('Received latest blocks:', data.data);
+          } else if (data.data && Array.isArray(data.data.blocks)) {
+            setPreviousBlocks(data.data.blocks);
+            setIsLoading(false);
+            console.log('Received latest blocks:', data.data.blocks);
+          }
         }
       } catch (err) {
         console.error('Failed to parse WS message', err);
       }
     };
 
-    socket.onerror = (err) => {
+    websocket.onerror = (err) => {
       console.error('WebSocket error:', err);
       setIsConnected(false);
     };
 
-    socket.onclose = () => {
+    websocket.onclose = () => {
       setIsConnected(false);
       console.log('WebSocket disconnected');
     };
 
     return () => {
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.close();
+      isMounted = false;
+      if (websocket.readyState === WebSocket.OPEN) {
+        websocket.close();
       }
     };
   }, []);
+
 
   if (isLoading) {
     return (

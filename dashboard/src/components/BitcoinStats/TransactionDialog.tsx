@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
-import { getTxInfo, useCopyToClipboard } from './Utils';
+import { useCopyToClipboard } from './Utils';
 import { CopyIcon } from 'lucide-react';
+import { WEBSOCKET_URLS } from '@/URLs';
 
 const TransactionDialog = ({
   txid,
@@ -17,19 +18,36 @@ const TransactionDialog = ({
   useEffect(() => {
     setLoading(true);
     setError(null);
-    const fetchData = async () => {
+    setTxInfo(null);
+
+    const websocket = new WebSocket(WEBSOCKET_URLS.MAIN_WEBSOCKET);
+    websocket.onopen = () => {
+      websocket.send(JSON.stringify({ type: 'get_tx_info', txid }));
+    };
+    websocket.onmessage = (event) => {
       try {
-        const data = await getTxInfo(txid);
-        setTxInfo(data);
+        const data = JSON.parse(event.data);
+        if (data.type === 'tx_info' && data.txid === txid) {
+          setTxInfo(data.data);
+          setLoading(false);
+          console.log('Received transaction info:', data.data);
+        }
       } catch (err) {
         setError('Failed to load transaction details');
-        console.error(err);
-      } finally {
         setLoading(false);
+        console.error(err);
       }
     };
-
-    fetchData();
+    websocket.onerror = (err) => {
+      setError('WebSocket error');
+      setLoading(false);
+      console.error(err);
+    };
+    return () => {
+      if (websocket.readyState === WebSocket.OPEN) {
+        websocket.close();
+      }
+    };
   }, [txid]);
 
   return (

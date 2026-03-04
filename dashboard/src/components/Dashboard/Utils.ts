@@ -1,30 +1,5 @@
-import axios from 'axios';
 import { useState } from 'react';
-import { getBraidPoolBlockUrl, getBraidPoolBlocksUrl } from '../../URLs';
 
-// via mempool api
-export const getBlockInfo = async (hash: string): Promise<any> => {
-  try {
-    const response = await axios.get(getBraidPoolBlockUrl(hash));
-    console.log(response.data);
-    return response.data;
-  } catch (error) {
-    console.error('Error fetching block info:', error);
-    throw error;
-  }
-};
-
-export const fetchPreviousBlocks = async () => {
-  try {
-    const response = await fetch(getBraidPoolBlocksUrl());
-    if (!response.ok) throw new Error('Network response was not ok');
-    const data = await response.json();
-    return data;
-  } catch (err) {
-    console.error('Failed to fetch previous blocks', err);
-    throw err;
-  }
-};
 
 export function formatUnixTimestamp(timestamp: number): string {
   const date = new Date(timestamp * 1000);

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
-import { formatTimestamp, getBlockInfo, useCopyToClipboard } from './Utils';
+import { formatTimestamp, useCopyToClipboard } from './Utils';
 import { CopyIcon } from 'lucide-react';
+import { WEBSOCKET_URLS } from '@/URLs';
 
 const BlockInfoDialog = ({
   hash,
@@ -17,20 +18,36 @@ const BlockInfoDialog = ({
   useEffect(() => {
     setLoading(true);
     setError(null);
+    setBlockInfo(null);
 
-    const fetchData = async () => {
+    const websocket = new WebSocket(WEBSOCKET_URLS.MAIN_WEBSOCKET);
+    websocket.onopen = () => {
+      websocket.send(JSON.stringify({ type: 'get_block_details', hash }));
+    };
+    websocket.onmessage = (event) => {
       try {
-        const data = await getBlockInfo(hash);
-        setBlockInfo(data);
+        const data = JSON.parse(event.data);
+        if (data.type === 'block_details' && data.hash === hash) {
+          setBlockInfo(data.data);
+          setLoading(false);
+          console.log('Received block details:', data.data);
+        }
       } catch (err) {
         setError('Failed to load block details');
-        console.error(err);
-      } finally {
         setLoading(false);
+        console.error(err);
       }
     };
-
-    fetchData();
+    websocket.onerror = (err) => {
+      setError('WebSocket error');
+      setLoading(false);
+      console.error(err);
+    };
+    return () => {
+      if (websocket.readyState === WebSocket.OPEN) {
+        websocket.close();
+      }
+    };
   }, [hash]);
 
   return (

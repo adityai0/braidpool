@@ -16,8 +16,7 @@ import {
   formatLargeNumber,
   formatPrice,
   getCurrencySymbol,
-  getLatestTransactions,
-  latestRBFTransactions,
+  
 } from './Utils';
 import TransactionTable from './TransactionTable';
 import RBFTransactionTable from './RBFTransactionTable';
@@ -50,23 +49,9 @@ const BitcoinPriceTracker: React.FC = () => {
     currencyRef.current = currency;
   }, [currency]);
 
-  useEffect(() => {
-    const fetchTransactions = async () => {
-      const data = await getLatestTransactions();
-      setTransactions(data as any[]);
-    };
-    fetchTransactions();
-    const fetchRbfTransactions = async () => {
-      const data = await latestRBFTransactions();
-      setrbfTransactions(data as any[]);
-    };
-    fetchRbfTransactions();
-    const intervalId = setInterval(() => {
-      fetchTransactions();
-      fetchRbfTransactions();
-    }, 5000);
-    return () => clearInterval(intervalId);
-  }, []);
+  
+    
+
 
   useEffect(() => {
     const websocket = new WebSocket(WEBSOCKET_URLS.MAIN_WEBSOCKET);
@@ -83,6 +68,14 @@ const BitcoinPriceTracker: React.FC = () => {
       if (!isMounted) return;
       try {
         const data = JSON.parse(event.data);
+         if (data.type === 'latest_transactions') {
+          setTransactions(data.data as any[]);
+          console.log('Received latest transactions:', data.data);
+        }
+        if (data.type === 'latest_rbf_transactions') {
+          setrbfTransactions(data.data as any[]);
+          console.log('Received latest RBF transactions:', data.data);
+        }
         if (data.type === 'bitcoin_update') {
           const selectedCurrency = currencyRef.current;
           const currentPrice = data.data.price?.[selectedCurrency]?.current;
