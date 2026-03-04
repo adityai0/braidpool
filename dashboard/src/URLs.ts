@@ -10,17 +10,13 @@ export const WEBSOCKET_URLS = {
 
   // WebSocket for BraidPool DAG visualization (simulator API)
   BRAIDPOOL_DAG_WEBSOCKET: 'ws://localhost:65433/',
-
-  
 } as const;
 
 // HTTP API URLs for data fetching
 export const API_URLS = {
-  
   // Miner Device Api endpoints
   MINER_DEVICE_URL: 'http://localhost:5001',
 } as const;
-
 
 export const EXTERNAL_LINKS = {
   // Project Info

@@ -1,5 +1,3 @@
-
-
 import axios from 'axios';
 import { getCached, setCached } from './cache.js';
 
@@ -19,8 +17,11 @@ export async function fetchLatestTransactions() {
     } catch (error) {
       lastError = error;
       if (error.response && error.response.status === 429) {
-        const retryAfter = parseInt(error.response.headers['retry-after'] || '2', 10);
-        await new Promise(res => setTimeout(res, retryAfter * 1000));
+        const retryAfter = parseInt(
+          error.response.headers['retry-after'] || '2',
+          10
+        );
+        await new Promise((res) => setTimeout(res, retryAfter * 1000));
       } else {
         break;
       }
@@ -29,7 +30,6 @@ export async function fetchLatestTransactions() {
   console.error('Error fetching latest transactions:', lastError);
   throw lastError;
 }
-
 
 // Fetch latest RBF transaction
 export async function fetchLatestRBFTransactions() {
@@ -48,8 +48,11 @@ export async function fetchLatestRBFTransactions() {
     } catch (error) {
       lastError = error;
       if (error.response && error.response.status === 429) {
-        const retryAfter = parseInt(error.response.headers['retry-after'] || '2', 10);
-        await new Promise(res => setTimeout(res, retryAfter * 1000));
+        const retryAfter = parseInt(
+          error.response.headers['retry-after'] || '2',
+          10
+        );
+        await new Promise((res) => setTimeout(res, retryAfter * 1000));
       } else {
         break;
       }
@@ -58,7 +61,6 @@ export async function fetchLatestRBFTransactions() {
   console.error('Error fetching latest RBF transactions:', lastError);
   throw lastError;
 }
-
 
 export async function fetchLatestBlocks() {
   const cacheKey = 'latestBlocks';
@@ -76,8 +78,11 @@ export async function fetchLatestBlocks() {
     } catch (error) {
       lastError = error;
       if (error.response && error.response.status === 429) {
-        const retryAfter = parseInt(error.response.headers['retry-after'] || '2', 10);
-        await new Promise(res => setTimeout(res, retryAfter * 1000));
+        const retryAfter = parseInt(
+          error.response.headers['retry-after'] || '2',
+          10
+        );
+        await new Promise((res) => setTimeout(res, retryAfter * 1000));
       } else {
         break;
       }

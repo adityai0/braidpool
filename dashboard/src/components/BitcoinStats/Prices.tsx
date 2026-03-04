@@ -12,12 +12,7 @@ import {
   CartesianGrid,
 } from 'recharts';
 import { GlobalStats, PriceData } from './Types';
-import {
-  formatLargeNumber,
-  formatPrice,
-  getCurrencySymbol,
-  
-} from './Utils';
+import { formatLargeNumber, formatPrice, getCurrencySymbol } from './Utils';
 import TransactionTable from './TransactionTable';
 import RBFTransactionTable from './RBFTransactionTable';
 import { useRef } from 'react';
@@ -49,10 +44,6 @@ const BitcoinPriceTracker: React.FC = () => {
     currencyRef.current = currency;
   }, [currency]);
 
-  
-    
-
-
   useEffect(() => {
     const websocket = new WebSocket(WEBSOCKET_URLS.MAIN_WEBSOCKET);
     let isMounted = true;
@@ -68,7 +59,7 @@ const BitcoinPriceTracker: React.FC = () => {
       if (!isMounted) return;
       try {
         const data = JSON.parse(event.data);
-         if (data.type === 'latest_transactions') {
+        if (data.type === 'latest_transactions') {
           setTransactions(data.data as any[]);
           console.log('Received latest transactions:', data.data);
         }

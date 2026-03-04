@@ -1,6 +1,5 @@
 import { useState } from 'react';
 
-
 export function formatUnixTimestamp(timestamp: number): string {
   const date = new Date(timestamp * 1000);
   return date.toTimeString().slice(0, 8); // "HH:MM:SS"

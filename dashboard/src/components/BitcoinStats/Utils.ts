@@ -1,6 +1,5 @@
 import { useState } from 'react';
 
-
 export const getCurrencySymbol = (curr: string) => {
   switch (curr) {
     case 'EUR':
@@ -35,7 +34,6 @@ export const shortenAddress = (value: string): string => {
   else if (value.length < 15) return value;
   return value.slice(0, 7) + '....' + value.slice(-7);
 };
-
 
 export const useCopyToClipboard = (
   timeout: number = 1500

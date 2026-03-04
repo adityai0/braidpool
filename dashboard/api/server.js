@@ -10,8 +10,13 @@ import { fetchBlockDetails } from './utils/fetchBlockDetails.js';
 import { fetchAllNodeData } from './utils/fetchBlockChainInfo.js';
 import { fetchPoolInfo } from './utils/fetchPoolInfo.js';
 import { fetchMempoolStats } from './utils/fetchMempoolStats.js';
-import { fetchLatestTransactions, fetchLatestRBFTransactions ,fetchBlockDetailsByHash,fetchTxInfo,fetchLatestBlocks } from './utils/fetchLatestTransactions.js';
-
+import {
+  fetchLatestTransactions,
+  fetchLatestRBFTransactions,
+  fetchBlockDetailsByHash,
+  fetchTxInfo,
+  fetchLatestBlocks,
+} from './utils/fetchLatestTransactions.js';
 
 async function broadcastLatestBlocks() {
   try {
@@ -69,12 +74,20 @@ wss.on('connection', (ws) => {
       const data = JSON.parse(message);
       if (data.type === 'get_block_details' && data.hash) {
         const blockDetails = await fetchBlockDetailsByHash(data.hash);
-        ws.send(JSON.stringify({ type: 'block_details', hash: data.hash, data: blockDetails }));
+        ws.send(
+          JSON.stringify({
+            type: 'block_details',
+            hash: data.hash,
+            data: blockDetails,
+          })
+        );
         console.log('Sent block details for hash:', data.hash);
       }
       if (data.type === 'get_tx_info' && data.txid) {
         const txInfo = await fetchTxInfo(data.txid);
-        ws.send(JSON.stringify({ type: 'tx_info', txid: data.txid, data: txInfo }));
+        ws.send(
+          JSON.stringify({ type: 'tx_info', txid: data.txid, data: txInfo })
+        );
         console.log('Sent transaction info for txid:', data.txid);
       }
     } catch (err) {
@@ -82,7 +95,6 @@ wss.on('connection', (ws) => {
     }
   });
 });
-
 
 const BITCOIN_PRICE_URL = process.env.BITCOIN_PRICE_URL;
 const BITCOIN_PRICE_URL_SUFFIX = process.env.BITCOIN_PRICE_URL_SUFFIX;
@@ -218,8 +230,8 @@ setInterval(() => {
   );
   sendPoolInfo();
   sendMempoolData();
-    broadcastLatestTransactions();
-    broadcastLatestRBFTransactions();
-    broadcastLatestBlocks();
-  }, 10000); // 10-second interval
+  broadcastLatestTransactions();
+  broadcastLatestRBFTransactions();
+  broadcastLatestBlocks();
+}, 10000); // 10-second interval
 console.log(`WebSocket server running on ws://localhost:${PORT}`);

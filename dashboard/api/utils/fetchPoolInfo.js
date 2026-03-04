@@ -1,4 +1,3 @@
-
 import axios from 'axios';
 import { getCached, setCached } from './cache.js';
 
@@ -68,13 +67,16 @@ export async function fetchPoolInfo() {
           };
         })
       );
-      setCached(cacheKey, structuredData, 30000); 
+      setCached(cacheKey, structuredData, 30000);
       return structuredData;
     } catch (err) {
       lastError = err;
       if (err.response && err.response.status === 429) {
-        const retryAfter = parseInt(err.response.headers['retry-after'] || '2', 10);
-        await new Promise(res => setTimeout(res, retryAfter * 1000));
+        const retryAfter = parseInt(
+          err.response.headers['retry-after'] || '2',
+          10
+        );
+        await new Promise((res) => setTimeout(res, retryAfter * 1000));
       } else {
         break;
       }

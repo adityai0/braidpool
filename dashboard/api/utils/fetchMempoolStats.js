@@ -1,4 +1,3 @@
-
 import axios from 'axios';
 import { getCached, setCached } from './cache.js';
 
@@ -35,7 +34,9 @@ export async function fetchMempoolStats() {
   let lastError;
   while (retries-- > 0) {
     try {
-      const statsRes = await axios.get(`${process.env.MEMPOOL_URL}/api/mempool`);
+      const statsRes = await axios.get(
+        `${process.env.MEMPOOL_URL}/api/mempool`
+      );
       const feesRes = await axios.get(
         `${process.env.MEMPOOL_URL}/api/v1/fees/recommended`
       );
@@ -122,8 +123,11 @@ export async function fetchMempoolStats() {
     } catch (err) {
       lastError = err;
       if (err.response && err.response.status === 429) {
-        const retryAfter = parseInt(err.response.headers['retry-after'] || '2', 10);
-        await new Promise(res => setTimeout(res, retryAfter * 1000));
+        const retryAfter = parseInt(
+          err.response.headers['retry-after'] || '2',
+          10
+        );
+        await new Promise((res) => setTimeout(res, retryAfter * 1000));
       } else {
         break;
       }

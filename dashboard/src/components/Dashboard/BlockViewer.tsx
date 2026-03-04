@@ -14,7 +14,6 @@ const BlockViewer: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [selectedBlock, setSelectedBlock] = useState<string | null>(null);
 
-
   useEffect(() => {
     setIsLoading(true);
     const websocket = new WebSocket(WEBSOCKET_URLS.MAIN_WEBSOCKET);
@@ -64,7 +63,6 @@ const BlockViewer: React.FC = () => {
       }
     };
   }, []);
-
 
   if (isLoading) {
     return (
