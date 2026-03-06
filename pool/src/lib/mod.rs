@@ -1,7 +1,6 @@
 use std::{sync::Arc, thread::JoinHandle};
 
 use async_channel::unbounded;
-
 use bitcoin_core_sv2::CancellationToken;
 use stratum_apps::{
     stratum_core::bitcoin::consensus::Encodable, task_manager::TaskManager,
@@ -81,7 +80,7 @@ impl PoolSv2 {
             encoded_outputs.clone(),
         )
         .await?;
-
+        println!("Configuration received - {:?}", self.config);
         // Start monitoring server if configured
         if let Some(monitoring_addr) = self.config.monitoring_address() {
             info!(
@@ -108,7 +107,11 @@ impl PoolSv2 {
                 }
             });
         }
-
+        debug!(
+            "The public key and private key being used for authority key pair - {} - {}",
+            self.config.authority_public_key().0.to_string(),
+            self.config.authority_secret_key().0.display_secret()
+        );
         let channel_manager_clone = channel_manager.clone();
         let channel_manager_for_cleanup = channel_manager.clone();
         let mut bitcoin_core_sv2_join_handle: Option<JoinHandle<()>> = None;

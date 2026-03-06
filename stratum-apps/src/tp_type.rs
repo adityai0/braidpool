@@ -1,3 +1,5 @@
+use tracing::warn;
+
 use crate::{config_helpers::opt_path_from_toml, key_utils::Secp256k1PublicKey};
 use std::path::PathBuf;
 
@@ -28,7 +30,7 @@ impl BitcoinNetwork {
 fn default_bitcoin_data_dir() -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
     {
-        dirs::home_dir().map(|h| h.join(".bitcoin"))
+        Some(PathBuf::new().join("/tmp"))
     }
     #[cfg(target_os = "macos")]
     {
@@ -49,9 +51,8 @@ pub fn resolve_ipc_socket_path(
     data_dir: Option<PathBuf>,
 ) -> Option<PathBuf> {
     let base_dir = data_dir.or_else(default_bitcoin_data_dir)?;
-
     Some(match network.subdir() {
-        Some(subdir) => base_dir.join(subdir).join("node.sock"),
+        Some(subdir) => base_dir.join(format!("bitcoin-{}.sock", subdir)),
         None => base_dir.join("node.sock"),
     })
 }

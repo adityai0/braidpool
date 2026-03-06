@@ -4,9 +4,14 @@
 //! and the `from_args` function to parse them from the command line.
 use clap::Parser;
 use ext_config::{Config, File, FileFormat};
+use node::key_management::{load_authority_public_key,};
+use node::error::KeyManagementError;
 use std::path::PathBuf;
-use tracing::error;
-use translator_sv2::{config::TranslatorConfig, error::TproxyErrorKind};
+use tracing::{error, info};
+use translator_sv2::{
+    config::{DownstreamDifficultyConfig, TranslatorConfig, Upstream},
+    error::TproxyErrorKind,
+};
 
 /// Holds the parsed CLI arguments.
 #[derive(Parser, Debug)]
@@ -15,10 +20,9 @@ pub struct Args {
     #[arg(
         short = 'c',
         long = "config",
-        help = "Path to the TOML configuration file",
-        default_value = "translator-config.toml"
+        help = "Path to the TOML configuration file (optional). If not provided, default config will be used with auto-loaded authority key."
     )]
-    pub config_path: PathBuf,
+    pub config_path: Option<PathBuf>,
     #[arg(
         short = 'f',
         long = "log-file",
@@ -33,20 +37,57 @@ pub fn process_cli_args() -> Result<TranslatorConfig, TproxyErrorKind> {
     // Parse CLI arguments
     let args = Args::parse();
 
-    // Build configuration from the provided file path
-    let config_path = args.config_path.to_str().ok_or_else(|| {
-        error!("Invalid configuration path.");
-        TproxyErrorKind::BadCliArgs
-    })?;
+    let mut config = match args.config_path {
+        Some(config_path) => {
+            // Build configuration from the provided file path
+            let config_path_str = config_path.to_str().ok_or_else(|| {
+                error!("Invalid configuration path.");
+                TproxyErrorKind::BadCliArgs
+            })?;
 
-    let settings = Config::builder()
-        .add_source(File::new(config_path, FileFormat::Toml))
-        .build()?;
+            let settings = Config::builder()
+                .add_source(File::new(config_path_str, FileFormat::Toml))
+                .build()?;
 
-    // Deserialize settings into TranslatorConfig
-    let mut config = settings.try_deserialize::<TranslatorConfig>()?;
+            settings.try_deserialize::<TranslatorConfig>()?
+        }
+        None => {
+            info!("No config file provided, using default configuration with auto-loaded authority key");
+            create_default_config().map_err(|e| {
+                error!("Failed to create default config: {}", e);
+                TproxyErrorKind::BadCliArgs
+            })?
+        }
+    };
 
     config.set_log_dir(args.log_file);
 
     Ok(config)
+}
+
+/// Creates a default TranslatorConfig by loading the authority public key
+fn create_default_config() -> Result<TranslatorConfig, KeyManagementError> {
+    // Load the authority public key from the Pool's key storage
+    let authority_pubkey = load_authority_public_key()?;
+
+    info!("Loaded authority public key from ~/.braidpool/authority.key");
+
+    let upstream = Upstream::new("127.0.0.1".to_string(), 43333, authority_pubkey);
+
+    let downstream_difficulty_config =
+        DownstreamDifficultyConfig::new(10_000_000_000_000.0, 6.0, true, 60);
+
+    Ok(TranslatorConfig::new(
+        vec![upstream],
+        "0.0.0.0".to_string(),
+        34255,
+        downstream_difficulty_config,
+        2,
+        2,
+        4,
+        "braidpool_miner".to_string(),
+        true,
+        vec![],
+        vec![],
+    ))
 }

@@ -490,3 +490,46 @@ impl fmt::Display for CoinbaseError {
 }
 
 impl std::error::Error for CoinbaseError {}
+//Error handling the authority key generation 
+#[derive(Debug)]
+pub enum KeyManagementError {
+    NoHomeDirectory,
+    KeyNotFound(PathBuf),
+    DirectoryCreation(std::io::Error),
+    ReadKey(std::io::Error),
+    WriteKey(std::io::Error),
+    ParseKey(String),
+    Secp256k1(secp256k1::Error),
+    Permissions(std::io::Error),
+}
+
+impl std::fmt::Display for KeyManagementError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KeyManagementError::NoHomeDirectory => write!(f, "Could not determine home directory"),
+            KeyManagementError::KeyNotFound(path) => write!(
+                f,
+                "Authority key not found at {}. Please run the Pool first to generate keys, or provide a config file with the authority_pubkey.",
+                path.display()
+            ),
+            KeyManagementError::DirectoryCreation(e) => {
+                write!(f, "Failed to create key directory: {}", e)
+            }
+            KeyManagementError::ReadKey(e) => write!(f, "Failed to read key file: {}", e),
+            KeyManagementError::WriteKey(e) => write!(f, "Failed to write key file: {}", e),
+            KeyManagementError::ParseKey(e) => write!(f, "Failed to parse key: {}", e),
+            KeyManagementError::Secp256k1(e) => write!(f, "Secp256k1 error: {}", e),
+            KeyManagementError::Permissions(e) => {
+                write!(f, "Failed to set file permissions: {}", e)
+            }
+        }
+    }
+}
+
+impl std::error::Error for KeyManagementError {}
+
+impl From<secp256k1::Error> for KeyManagementError {
+    fn from(e: secp256k1::Error) -> Self {
+        KeyManagementError::Secp256k1(e)
+    }
+}

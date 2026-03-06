@@ -35,7 +35,13 @@ sqlx = { workspace = true}
 strum = { workspace = true }
 if-addrs = { workspace = true }
 anyhow = { workspace = true }
+stratum-apps = { path = "../stratum-apps" }
+dirs = "6.0"
+bs58 = { version = "0.4.0", features = ["check"] }
 
 
 [build-dependencies]
 capnpc = "0.24.0"
+
+[dev-dependencies]
+tempfile = "3.10"

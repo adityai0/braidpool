@@ -9,10 +9,9 @@
 //!   [`ConnectionConfig`]
 //! - Validating and converting coinbase outputs
 use std::{
-    net::SocketAddr,
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     path::{Path, PathBuf},
 };
-
 use stratum_apps::{
     config_helpers::{opt_path_from_toml, CoinbaseRewardScript},
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
@@ -92,7 +91,10 @@ impl PoolConfig {
             server_id,
             supported_extensions,
             required_extensions,
-            monitoring_address: None,
+            monitoring_address: Some(SocketAddr::V4(SocketAddrV4::new(
+                Ipv4Addr::new(127, 0, 0, 1),
+                9090,
+            ))),
             monitoring_cache_refresh_secs: 15,
             braidpool_bind_addr: None,
             braidpool_max_peers: 8,
