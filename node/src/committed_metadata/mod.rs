@@ -72,10 +72,9 @@ pub struct CommittedMetadata {
     pub payout_address: String,
     pub start_timestamp: Time,
     pub comm_pub_key: PublicKey,
-    //minimum possible target > which will be the weak target
+    //Minimum possible target > which will be a valid weak_share added to DAG
     pub min_target: CompactTarget,
-    //the weaker target locally apart from mainnet target ranging between the mainnet target and
-    //minimum possible target
+    //The weak target controlled accordingly to produce fixed bead submission from downstream node
     pub weak_target: CompactTarget,
     pub miner_ip: String,
 }

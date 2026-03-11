@@ -9,14 +9,7 @@ use libp2p::{request_response::ResponseChannel, PeerId, Swarm};
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    bead::{BeadHashes, BeadRequest, BeadResponse, BeadSyncError, Beads},
-    behaviour::BraidPoolBehaviour,
-    braid::{AddBeadStatus, GenesisCheckStatus},
-    db::{db_handlers::prepare_bead_tuple_data, BraidpoolDBTypes, InsertTupleTypes},
-    ibd_manager::{IBDCommands, IBD_BATCH_SIZE, MAX_IBD_INCOMING_THRESHOLD},
-    swarm::SwarmContext,
-    utils::BeadHash,
-    SwarmCommand,
+    SwarmCommand, bead::{BeadHashes, BeadRequest, BeadResponse, BeadSyncError, Beads}, behaviour::BraidPoolBehaviour, braid::{AddBeadStatus, GenesisCheckStatus}, db::{BraidpoolDBTypes, InsertTupleTypes, db_handlers::prepare_bead_tuple_data}, ibd_manager::{IBD_BATCH_SIZE, IBDCommands, MAX_IBD_INCOMING_THRESHOLD}, swarm::SwarmContext, utils::{BeadHash, compute_block_hash}
 };
 
 /// Handles a GetBeads request - returns beads for the requested hashes.
@@ -53,7 +46,7 @@ pub async fn handle_get_tips(
             .tips
             .iter()
             .filter_map(|index| braid_lock.beads.get(*index))
-            .map(|bead| bead.block_header.block_hash())
+            .map(|bead| compute_block_hash(&bead.block_header, &ctx.network_name))
             .collect();
     }
     swarm.behaviour_mut().respond_with_tips(channel, tips);
@@ -72,7 +65,7 @@ pub async fn handle_get_genesis(
             .genesis_beads
             .iter()
             .filter_map(|index| braid_lock.beads.get(*index))
-            .map(|bead| bead.block_header.block_hash())
+            .map(|bead| compute_block_hash(&bead.block_header, &ctx.network_name))
             .collect();
     }
     swarm.behaviour_mut().respond_with_genesis(channel, genesis);
@@ -104,7 +97,7 @@ pub async fn handle_get_beads_after(
     if let Some(response_beads) = beads {
         let bead_hashes: Vec<BeadHash> = response_beads
             .into_iter()
-            .map(|bead| bead.block_header.block_hash())
+            .map(|bead| compute_block_hash(&bead.block_header, &ctx.network_name))
             .collect();
         swarm
             .behaviour_mut()
@@ -152,7 +145,7 @@ pub async fn handle_beads_response(
     for bead in beads.into_iter() {
         let mut braid_data = ctx.braid.write().await;
         let status = braid_data.extend(&bead);
-        let bead_hash = bead.block_header.block_hash();
+        let bead_hash = compute_block_hash(&bead.block_header, &ctx.network_name);
 
         match status {
             AddBeadStatus::InvalidBead => {
@@ -171,6 +164,7 @@ pub async fn handle_beads_response(
                     &braid_data.beads,
                     &braid_data.bead_index_mapping,
                     &bead,
+                    &ctx.network_name
                 ) {
                     Ok(tuples) => tuples,
                     Err(e) => {
@@ -309,7 +303,7 @@ pub async fn handle_tips_response(
     let bead_hash_set: HashSet<BeadHash> = braid_data
         .beads
         .iter()
-        .map(|b| b.block_header.block_hash())
+        .map(|b| compute_block_hash(&b.block_header, &ctx.network_name))
         .collect();
 
     let already_synced = tips.iter().all(|tip| bead_hash_set.contains(tip));
@@ -338,7 +332,7 @@ pub async fn handle_tips_response(
         .tips
         .iter()
         .filter_map(|idx| braid_data.beads.get(*idx))
-        .map(|bead| bead.block_header.block_hash())
+        .map(|bead| compute_block_hash(&bead.block_header, &ctx.network_name))
         .collect();
 
     drop(braid_data);

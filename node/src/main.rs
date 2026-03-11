@@ -1,10 +1,10 @@
-use bitcoin::Network;
 use clap::Parser;
 use futures::lock::Mutex;
 use libp2p::{floodsub, identity::Keypair};
 use node::{
     behaviour::BRAIDPOOL_TOPIC,
     braid, cli,
+    cpunet::Cpunet,
     db::db_handlers::{fetch_beads_in_batch, DBHandler},
     ibd_manager::{IBDManager, IBD_TRIGGER_AFTER},
     ipc_template_consumer,
@@ -18,6 +18,7 @@ use node::{
         config::DEFAULT_P2P_PORT,
         p2p_event_loop, SwarmContext,
     },
+    utils::compute_block_hash,
     SwarmCommand, SwarmHandler, TemplateId,
 };
 use std::{
@@ -39,6 +40,25 @@ use std::os::unix::fs::PermissionsExt;
 async fn main() -> Result<(), Box<dyn Error>> {
     // Initialize tracing
     setup_tracing()?;
+    // Parse CLI arguments
+    let args = cli::Cli::parse();
+    let network_name = args.network.clone().unwrap_or_else(|| "main".to_string());
+
+    // Validate network
+    let is_cpunet = Cpunet::is_cpunet_name(&network_name);
+    match network_name.as_str() {
+        "main" | "mainnet" | "testnet" | "testnet4" | "signet" | "regtest" | "cpunet" => {
+            info!(network = %network_name, is_cpunet = is_cpunet, "Network selected");
+        }
+        _ => {
+            error!(
+                network = %network_name,
+                valid_networks = "main, testnet, testnet4, signet, regtest, cpunet",
+                "Invalid network specified"
+            );
+            info!(fallback = "regtest", "Using fallback network");
+        }
+    }
     //IBD manager for ibd handling
     let (mut ibd_manager, ibd_command_tx) = IBDManager::new();
     let _ibd_handler = tokio::spawn(async move {
@@ -48,9 +68,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // IBD flag - true at start (will be in IBD by default)
     let ibd_spinlock = Arc::new(AtomicBool::new(true));
     //Local braid instance being shared across different tasks
-    let braid: Arc<RwLock<braid::Braid>> = Arc::new(RwLock::new(braid::Braid::new(Vec::from([]))));
-    //DB task handler for persistant of beads onto disk
-    let (mut _db_handler, db_tx) = DBHandler::new().await.map_err(|e| {
+    let braid: Arc<RwLock<braid::Braid>> = Arc::new(RwLock::new(braid::Braid::new(
+        Vec::from([]),
+        network_name.clone(),
+    ))); //DB task handler for persistant of beads onto disk
+    let (mut _db_handler, db_tx) = DBHandler::new(network_name.clone()).await.map_err(|e| {
         std::io::Error::new(
             std::io::ErrorKind::Other,
             format!("Database initialization failed: {:?}", e),
@@ -62,12 +84,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let db_connection_pool_ref = _db_handler.db_connection_pool.clone();
     let braid_ref = braid.clone();
     //Fetching beads from disk before initializing other tasks to pre-shutdown state
+    let network_ref = network_name.clone();
     let initial_bead_fetch_handle = tokio::spawn(async move {
         let mut guard = braid_ref.write().await;
         let fetched_beads = fetch_beads_in_batch(db_connection_pool_ref, 1000).await?;
         for bead in &fetched_beads {
             let status = guard.extend(bead);
-            debug!(hash = ?bead.block_header.block_hash(), status = ?status, "Bead inserted");
+            debug!(
+                hash = ?compute_block_hash(&bead.block_header,&network_ref),
+                status = ?status,
+                "Bead inserted"
+            );
         }
         info!(beads = fetched_beads.len(), "Beads loaded from DB");
         Ok::<(), node::error::DBErrors>(())
@@ -134,6 +161,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         stratum_config,
         connection_mapping.clone(),
         Some(block_submission_tx),
+        network_name.clone(),
     );
 
     // Run notifier
@@ -165,9 +193,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         mpsc::channel::<tokio::signal::unix::SignalKind>(32);
     let main_task_token = CancellationToken::new();
     let ipc_task_token = main_task_token.clone();
-
-    //Parsing args
-    let args = cli::Cli::parse();
 
     let datadir_str = args.datadir.to_str().ok_or_else(|| {
         std::io::Error::new(
@@ -257,30 +282,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     //Peer manager which holds per-peer information along with a score based on different criterias
     let peer_manager = PeerManager::new(8);
-    //Configured network
-    let network = if let Some(network_name) = &args.network {
-        info!(network = %network_name, "Network selected");
-        match network_name.as_str() {
-            "main" | "mainnet" => Network::Bitcoin,
-            "testnet" | "testnet4" => Network::Testnet(bitcoin::TestnetVersion::V4),
-            "signet" => Network::Signet,
-            "regtest" => Network::Regtest,
-            "cpunet" => Network::CPUNet,
-            _ => {
-                error!(network = %network_name, "Invalid network");
-                info!("Using fallback: regtest");
-                Network::Regtest
-            }
-        }
-    } else {
-        Network::Bitcoin
-    };
-
     //IPC node initializer including our capnp client
     let ipc_socket_path = args.ipc_socket.clone();
     let notification_tx_for_ipc = notification_tx.clone();
     let latest_template_for_ipc = latest_template.clone();
     let latest_template_merkle_branch_for_ipc = latest_template_merkle_branch.clone();
+    let network_name_for_ipc = network_name.clone();
 
     info!(socket = %ipc_socket_path, "IPC socket path");
 
@@ -313,13 +320,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         let ipc_socket = ipc_socket_path.clone();
                         let tx = ipc_template_tx.clone();
                         let cache = template_cache.clone();
+                        let network_name = network_name_for_ipc.clone();
                         async move {
                             match node::ipc::ipc_block_listener(
                                 ipc_socket,
                                 tx,
-                                network,
                                 cache,
                                 block_submission_rx,
+                                network_name,
                             )
                             .await
                             {
@@ -380,6 +388,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ibd_spinlock.clone(),
         peer_manager,
         swarm_command_sender,
+        network_name.clone(),
     );
     //Event loop for p2p related events
     let swarm_handle = tokio::spawn(async move {

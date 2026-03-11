@@ -1,8 +1,6 @@
 // Bitcoin Imports
 use crate::{
-    bead::Bead,
-    committed_metadata::{CommittedMetadata, TimeVec, TxIdVec},
-    uncommitted_metadata::UnCommittedMetadata,
+    bead::Bead, committed_metadata::{CommittedMetadata, TimeVec, TxIdVec}, cpunet::Cpunet, uncommitted_metadata::UnCommittedMetadata
 };
 use ::bitcoin::BlockHash;
 use bitcoin::{
@@ -35,6 +33,14 @@ pub(crate) fn hashset_to_vec_deterministic(hashset: &HashSet<BeadHash>) -> Vec<B
 
 pub(crate) fn vec_to_hashset(vec: Vec<BeadHash>) -> HashSet<BeadHash> {
     vec.iter().cloned().collect()
+}
+//Utility function to check and compute block_hash according to the network_type
+pub fn compute_block_hash(block_header: &BlockHeader, network_type: &String) -> BlockHash {
+    if network_type == "cpunet" {
+        Cpunet::block_hash(*block_header)
+    } else {
+        block_header.block_hash()
+    }
 }
 
 /// Get list of actual local IPv4 addresses for servers binding to 0.0.0.0

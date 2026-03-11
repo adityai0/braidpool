@@ -42,6 +42,7 @@ pub struct SwarmContext {
     pub peer_manager: PeerManager,
     /// Channel to send swarm commands other than p2p
     pub swarm_cmd_tx: Sender<SwarmCommand>,
+    pub network_name: String,
 }
 
 impl SwarmContext {
@@ -53,6 +54,7 @@ impl SwarmContext {
         ibd_spinlock: Arc<AtomicBool>,
         peer_manager: PeerManager,
         swarm_cmd_tx: Sender<SwarmCommand>,
+        network_name: String,
     ) -> Self {
         Self {
             braid,
@@ -61,6 +63,7 @@ impl SwarmContext {
             ibd_spinlock,
             peer_manager,
             swarm_cmd_tx,
+            network_name,
         }
     }
 
