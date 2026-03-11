@@ -109,7 +109,7 @@ async fn handle_message_during_ibd(
         (result.status, result.persisted)
     };
     // Guard is dropped here
-    let broadcast_ts = bead.uncommitted_metadata.broadcast_timestamp.to_u32();
+    let broadcast_ts = bead.uncommitted_metadata.broadcast_timestamp.to_consensus_u32();
 
     match &status {
         AddBeadStatus::ParentsNotYetReceived => {

@@ -9,9 +9,9 @@ pub use crate::committed_metadata::TimeVec;
 #[cfg(test)]
 use crate::uncommitted_metadata::UnCommittedMetadata;
 #[cfg(test)]
-pub use bitcoin::ecdsa::Signature;
+use bitcoin::block::Header as BlockHeader;
 #[cfg(test)]
-use bitcoin::BlockHeader;
+pub use bitcoin::ecdsa::Signature;
 #[cfg(test)]
 pub use bitcoin::{absolute::Time, p2p::address::AddrV2, PublicKey, Transaction};
 #[cfg(test)]
@@ -24,7 +24,7 @@ pub mod test_utility_functions {
     #[cfg(test)]
     use bitcoin::Txid;
     use bitcoin::{
-        pow::CompactTargetExt, BlockHash, BlockTime, BlockVersion, CompactTarget, EcdsaSighashType,
+        block::Version as BlockVersion, hashes::Hash, BlockHash, CompactTarget, EcdsaSighashType,
         TxMerkleNode,
     };
     use rand::{rngs::OsRng, thread_rng, RngCore};
@@ -392,7 +392,7 @@ pub mod test_utility_functions {
             prev_blockhash: BlockHash::from_byte_array(bytes),
             bits: CompactTarget::from_consensus(486604799),
             nonce: rand::random::<u32>(),
-            time: BlockTime::from_u32(0),
+            time: 0,
             merkle_root: TxMerkleNode::from_byte_array(bytes),
         };
 
