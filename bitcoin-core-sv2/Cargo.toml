@@ -12,15 +12,13 @@ keywords = ["stratum", "mining", "bitcoin", "bitcoin-core"]
 [dependencies]
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
-capnp = "0.21.4"
-capnp-rpc = "0.21.0"
+capnp = "0.25.2"
+capnp-rpc = "0.25.0"
 tokio = { version = "1.44.1", features = ["full"] }
 tokio-util = { version = "0.7.10", features = ["codec", "compat"] }
 async-channel = "1.5.1"
 
-# fetching from github enables synchronizing development workflows across sv2-apps and stratum repos
-# it MUST be changed before bitcoin-core-sv2 is published to crates.io
-# with the proper version of stratum-core being fetched from crates.io as well
-stratum-core = { git = "https://github.com/stratum-mining/stratum", branch = "main" }
-
-bitcoin-capnp-types = "0.1.0"
+# Using local stratum-core for cpunet modifications
+stratum-core = { path = "../stratum-core" }
+braidpool-common = {path = "../braidpool-common"}
+bitcoin-capnp-types = {git = "https://github.com/2140-dev/bitcoin-capnp-types.git", branch = "master"}

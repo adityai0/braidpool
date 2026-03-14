@@ -111,7 +111,13 @@ use std::{
 };
 use stratum_core::{
     binary_sv2::U256,
-    bitcoin::{Transaction, block::Header, consensus::deserialize},
+    bitcoin::{
+        ScriptBuf, Transaction, TxIn, TxOut, Witness,
+        absolute::LockTime,
+        block::Header,
+        consensus::{Decodable, deserialize},
+        transaction::Version,
+    },
     parsers_sv2::TemplateDistribution,
 };
 
@@ -176,6 +182,7 @@ pub struct BitcoinCoreSv2 {
     template_ipc_client_cancellation_token: CancellationToken,
     last_sent_template_instant: Option<Instant>,
     unix_socket_path: PathBuf,
+    network_type: String,
 }
 
 impl BitcoinCoreSv2 {
@@ -188,6 +195,7 @@ impl BitcoinCoreSv2 {
         incoming_messages: Receiver<TemplateDistribution<'static>>,
         outgoing_messages: Sender<TemplateDistribution<'static>>,
         global_cancellation_token: CancellationToken,
+        network_type: String,
     ) -> Result<Self, BitcoinCoreSv2Error>
     where
         P: AsRef<Path>,
@@ -263,6 +271,7 @@ impl BitcoinCoreSv2 {
             template_ipc_client_cancellation_token,
             last_sent_template_instant: None,
             unix_socket_path: bitcoin_core_unix_socket_path.to_path_buf(),
+            network_type,
         })
     }
 
@@ -437,6 +446,7 @@ impl BitcoinCoreSv2 {
         tracing::debug!("Spawning monitoring tasks...");
         self.monitor_ipc_templates();
         tracing::debug!("monitor_ipc_templates() spawned");
+        //Message handler being received from the channel manager after being handled as per received from the downstream node
         self.monitor_incoming_messages();
         tracing::debug!("monitor_incoming_messages() spawned");
 
@@ -518,20 +528,35 @@ impl BitcoinCoreSv2 {
             .get_context()?
             .set_thread(thread_ipc_client.clone());
 
-        let coinbase_tx_bytes = coinbase_tx_request
-            .send()
-            .promise
-            .await?
-            .get()?
-            .get_result()?
-            .to_vec();
-
-        // Deserialize the coinbase tx from Bitcoin Core's serialization format
-        tracing::debug!(
-            "Deserializing coinbase tx ({} bytes)",
-            coinbase_tx_bytes.len()
-        );
-        let coinbase_tx: Transaction = deserialize(&coinbase_tx_bytes)?;
+        let coinbase_tx_components_response = coinbase_tx_request.send().promise.await?;
+        let coinbase_tx_components = coinbase_tx_components_response.get()?.get_result()?;
+        let witness_bytes = coinbase_tx_components.get_witness()?;
+        let mut witness = Witness::new();
+        witness.push(witness_bytes);
+        let dummy_transaction_input: TxIn = TxIn {
+            previous_output: stratum_core::bitcoin::OutPoint::null(),
+            sequence: stratum_core::bitcoin::Sequence::from_consensus(
+                coinbase_tx_components.get_sequence(),
+            ),
+            script_sig: ScriptBuf::from_bytes(
+                coinbase_tx_components
+                    .get_script_sig_prefix()
+                    .unwrap()
+                    .to_vec(),
+            ),
+            witness: witness,
+        };
+        let mut dummy_outputs: Vec<TxOut> = Vec::new();
+        for outputs in coinbase_tx_components.get_required_outputs()?.iter() {
+            let output = TxOut::consensus_decode(&mut outputs?)?;
+            dummy_outputs.push(output);
+        }
+        let coinbase_tx = Transaction {
+            input: vec![dummy_transaction_input],
+            output: dummy_outputs,
+            version: Version::non_standard(coinbase_tx_components.get_version() as i32),
+            lock_time: LockTime::from_consensus(coinbase_tx_components.get_lock_time()),
+        };
         tracing::debug!("Coinbase tx deserialized: {:?}", coinbase_tx);
 
         let mut merkle_path_request = template_ipc_client.get_coinbase_merkle_path_request();
@@ -557,6 +582,7 @@ impl BitcoinCoreSv2 {
             coinbase_tx,
             merkle_path,
             template_ipc_client,
+            self.network_type.to_owned(),
         );
         tracing::debug!("TemplateData created successfully");
 
@@ -584,6 +610,11 @@ impl BitcoinCoreSv2 {
         );
 
         let mut template_ipc_client_request = self.mining_ipc_client.create_new_block_request();
+        template_ipc_client_request
+            .get()
+            .get_context()
+            .unwrap()
+            .set_thread(self.thread_ipc_client.clone());
         let mut template_ipc_client_request_options = template_ipc_client_request
             .get()
             .get_options()

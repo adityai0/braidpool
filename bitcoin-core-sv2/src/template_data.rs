@@ -4,9 +4,10 @@ use bitcoin_capnp_types::{
     mining_capnp::block_template::Client as BlockTemplateIpcClient,
     proxy_capnp::{thread::Client as ThreadIpcClient, thread_map::Client as ThreadMapIpcClient},
 };
+use braidpool_common::{Cpunet, compute_block_hash};
 use std::{fs::File, io::Write, path::Path};
 use stratum_core::bitcoin::{
-    Target, Transaction, TxOut,
+    self, Target, Transaction, TxOut,
     amount::{Amount, CheckedSum},
     block::{Block, Header, Version},
     consensus::{deserialize, serialize},
@@ -27,6 +28,7 @@ pub struct TemplateData {
     coinbase_tx: Transaction,
     merkle_path: Vec<Vec<u8>>,
     template_ipc_client: BlockTemplateIpcClient,
+    network_type: String,
 }
 
 // impl block for public methods
@@ -37,6 +39,7 @@ impl TemplateData {
         coinbase_tx: Transaction,
         merkle_path: Vec<Vec<u8>>,
         template_ipc_client: BlockTemplateIpcClient,
+        network_type: String,
     ) -> Self {
         Self {
             template_id,
@@ -44,6 +47,7 @@ impl TemplateData {
             coinbase_tx,
             merkle_path,
             template_ipc_client,
+            network_type,
         }
     }
 
@@ -173,8 +177,19 @@ impl TemplateData {
                     nonce: solution_header_nonce,
                     bits: self_clone.header.bits,
                 };
-
-                if let Err(e) = solution_header.validate_pow(solution_header.target()) {
+                // For cpunet, use custom block_hash calculation; otherwise use standard validate_pow
+                let is_cpunet = Cpunet::is_cpunet_name(self_clone.get_network_type());
+                let pow_result = if is_cpunet {
+                    let block_hash = Cpunet::block_hash(solution_header);
+                    if solution_header.target().is_met_by(block_hash) {
+                        Ok(block_hash)
+                    } else {
+                        Err(bitcoin::block::ValidationError::BadProofOfWork)
+                    }
+                } else {
+                    solution_header.validate_pow(solution_header.target())
+                };
+                if let Err(e) = pow_result {
                     tracing::error!("Solution header is not valid: {}", e);
                     return;
                 }
@@ -220,7 +235,8 @@ impl TemplateData {
             solution_block.header = solution_header;
 
             let solution_block_bytes = serialize(&solution_block);
-            let solution_block_hash = solution_block.block_hash().to_string();
+            let solution_block_hash =
+                compute_block_hash(&solution_block.header, &self_clone.network_type).to_string();
             let solution_block_path = path_dir.join(format!("{}.dat", solution_block_hash));
 
             let mut file =
@@ -321,6 +337,9 @@ impl TemplateData {
             .try_into()
             .map_err(|_| TemplateDataError::InvalidCoinbaseScriptSig)?;
         Ok(coinbase_script_sig)
+    }
+    fn get_network_type(&self) -> &str {
+        &self.network_type
     }
 
     fn get_coinbase_input_sequence(&self) -> u32 {

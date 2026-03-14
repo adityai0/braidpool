@@ -83,6 +83,7 @@ async fn main() {
                 msg_receiver_into_bitcoin_core_sv2,
                 msg_sender_from_bitcoin_core_sv2,
                 cancellation_token_clone.clone(),
+                "cpunet".to_string(),
             )
             .await
             {

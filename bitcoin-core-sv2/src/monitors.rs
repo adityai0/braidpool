@@ -137,8 +137,8 @@ impl BitcoinCoreSv2 {
                                 if new_prev_hash != current_prev_hash {
                                     info!("⛓️ Chain Tip changed! New prev_hash: {}", new_prev_hash);
                                     tracing::debug!("CHAIN TIP CHANGE DETECTED - old: {}, new: {}", current_prev_hash, new_prev_hash);
+                                    //Replacing the prev hash as the current chain tip has changed 
                                     self_clone.current_prev_hash.replace(Some(new_prev_hash));
-
                                     // save stale template ids, cleanup and save the new template data
                                     let stale_template_ids = {
                                         let mut template_data_guard = match self_clone.template_data.write() {
