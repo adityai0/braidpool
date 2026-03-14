@@ -4,6 +4,9 @@ authority_secret_key = "mkDLTBBRxdBv998612qipDYoTK3YUrqLe8uWw7gu3iXbSrn2n"
 cert_validity_sec = 3600
 listen_address = "0.0.0.0:43333"
 
+# Network type - used for network-specific hash computation
+network = "testnet4"
+
 # Coinbase outputs are specified as descriptors. A full list of descriptors is available at
 #     https://github.com/bitcoin/bips/blob/master/bip-0380.mediawiki#appendix-b-index-of-script-expressions
 # Although the `musig` descriptor is not yet supported and the legacy `combo` descriptor never

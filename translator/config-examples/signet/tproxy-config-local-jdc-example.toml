@@ -2,6 +2,9 @@
 downstream_address = "0.0.0.0"
 downstream_port = 34255
 
+# Network type - used for network-specific hash computation
+network = "signet"
+
 # Version support
 max_supported_version = 2
 min_supported_version = 2

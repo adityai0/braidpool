@@ -1,9 +1,11 @@
+# Translator config (cpunet with JDC)
 # Local Mining Device Downstream Connection
 downstream_address = "0.0.0.0"
-downstream_port = 34255
+downstream_port = 54255
 
 # Network type - used for network-specific hash computation
-network = "mainnet"
+# cpunet uses a modified block hash algorithm with "cpunet\0" suffix
+network = "cpunet"
 
 # Version support
 max_supported_version = 2
@@ -20,7 +22,7 @@ downstream_extranonce2_size = 4
 user_identity = "your_username_here"
 
 # Aggregate channels: if true, all miners share one upstream channel; if false, each miner gets its own channel
-aggregate_channels = true
+aggregate_channels = false
 
 # Enable this option to set a predefined log file path.
 # When enabled, logs will always be written to this file.
@@ -31,13 +33,13 @@ aggregate_channels = true
 # Extensions that the translator supports (will request if required by server)
 # Example: supported_extensions = [0x0002, 0x0003]
 supported_extensions = [
-    # 0x0002,  # Worker-Specific Hashrate Tracking
+    0x0002,  # Worker-Specific Hashrate Tracking
 ]
 
 # Extensions that the translator requires (server must support these)
 # If the upstream server doesn't support these, the translator will fail over to another upstream
 required_extensions = [
-    # 0x0002,  # Worker-Specific Hashrate Tracking
+    0x0002,  # Worker-Specific Hashrate Tracking
 ]
 
 # Monitoring HTTP server address for exposing channel data (optional)
@@ -46,17 +48,18 @@ monitoring_cache_refresh_secs = 15
 
 # Difficulty params
 [downstream_difficulty_config]
-# hashes/s of the weakest miner that will be connecting (e.g.: 10 Th/s = 10_000_000_000_000.0)
-min_individual_miner_hashrate=10_000_000_000_000.0
+# hashes/s of the weakest miner that will be connecting
+# cpunet uses CPU mining, so lower thresholds are appropriate
+min_individual_miner_hashrate = 1_000_000.0
 # target number of shares per minute the miner should be sending
 shares_per_minute = 6.0
-# enable variable difficulty adjustment (true by default, set to false when using with JDC)
-enable_vardiff = true
+# disable variable difficulty adjustment when using with JDC (JDC handles vardiff)
+enable_vardiff = false
 
 # Interval in seconds for sending keepalive jobs to downstream miners.
 job_keepalive_interval_secs = 60
 
 [[upstreams]]
 address = "127.0.0.1"
-port = 3333
+port = 34265
 authority_pubkey = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"
