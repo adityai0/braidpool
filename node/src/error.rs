@@ -4,7 +4,6 @@ use std::{fmt, path::PathBuf};
 use crate::stratum::{BlockTemplate, JobDetails};
 use crate::TemplateId;
 use bitcoin::address::ParseError as AddressParseError;
-use bitcoin::bech32;
 use tokio::sync::oneshot;
 
 #[derive(Debug)]
@@ -534,53 +533,7 @@ impl From<secp256k1::Error> for KeyManagementError {
         KeyManagementError::Secp256k1(e)
     }
 }
-/// Error type for parsing cpunet from string.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseCpunetError(pub String);
 
-impl fmt::Display for ParseCpunetError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "failed to parse '{}' as cpunet", self.0)
-    }
-}
+// Re-export cpunet error types from braidpool_common
+pub use braidpool_common::{CpunetAddressError, ParseCpunetError};
 
-impl std::error::Error for ParseCpunetError {}
-
-/// Error type for cpunet address operations.
-#[derive(Debug, Clone)]
-pub enum CpunetAddressError {
-    /// Bech32 decoding error
-    Bech32(bech32::segwit::DecodeError),
-    /// Wrong network HRP
-    WrongNetwork { expected: String, found: String },
-    /// Invalid witness version
-    InvalidWitnessVersion(u8),
-    /// Invalid witness program
-    InvalidProgram(String),
-}
-
-impl fmt::Display for CpunetAddressError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Bech32(e) => write!(f, "bech32 decode error: {}", e),
-            Self::WrongNetwork { expected, found } => {
-                write!(
-                    f,
-                    "wrong network: expected '{}', found '{}'",
-                    expected, found
-                )
-            }
-            Self::InvalidWitnessVersion(v) => write!(f, "invalid witness version: {}", v),
-            Self::InvalidProgram(e) => write!(f, "invalid witness program: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for CpunetAddressError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Bech32(e) => Some(e),
-            _ => None,
-        }
-    }
-}
