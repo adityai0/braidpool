@@ -49,6 +49,12 @@ pub struct PoolConfig {
     braidpool_keystore_path: Option<PathBuf>,
     #[serde(default)]
     braidpool_addnodes: Vec<String>,
+    #[serde(default = "default_network")]
+    network: String,
+}
+
+fn default_network() -> String {
+    "mainnet".to_string()
 }
 
 fn default_braidpool_max_peers() -> usize {
@@ -76,6 +82,7 @@ impl PoolConfig {
         server_id: u16,
         supported_extensions: Vec<u16>,
         required_extensions: Vec<u16>,
+        network: String,
     ) -> Self {
         Self {
             listen_address: pool_connection.listen_address,
@@ -96,10 +103,11 @@ impl PoolConfig {
                 9090,
             ))),
             monitoring_cache_refresh_secs: 15,
-            braidpool_bind_addr: None,
+            braidpool_bind_addr: Some(String::from("0.0.0.0:6680")),
             braidpool_max_peers: 8,
             braidpool_keystore_path: None,
             braidpool_addnodes: Vec::new(),
+            network,
         }
     }
 
@@ -214,6 +222,16 @@ impl PoolConfig {
     /// Returns the braidpool additional nodes to dial.
     pub fn braidpool_addnodes(&self) -> &[String] {
         &self.braidpool_addnodes
+    }
+
+    /// Returns the network name (e.g., mainnet, testnet4, signet, cpunet).
+    pub fn network(&self) -> &str {
+        &self.network
+    }
+
+    /// Sets the network name.
+    pub fn set_network(&mut self, network: String) {
+        self.network = network;
     }
 }
 

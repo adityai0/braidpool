@@ -15,6 +15,7 @@ pub struct BitcoinCoreSv2Config {
     pub incoming_tdp_receiver: Receiver<TemplateDistribution<'static>>,
     pub outgoing_tdp_sender: Sender<TemplateDistribution<'static>>,
     pub cancellation_token: CancellationToken,
+    pub network_type: String,
 }
 
 #[cfg_attr(not(test), hotpath::measure)]
@@ -78,6 +79,7 @@ pub async fn connect_to_bitcoin_core(
                 bitcoin_core_config.incoming_tdp_receiver,
                 bitcoin_core_config.outgoing_tdp_sender,
                 bitcoin_core_config.cancellation_token.clone(),
+                bitcoin_core_config.network_type,
             )
             .await
             {

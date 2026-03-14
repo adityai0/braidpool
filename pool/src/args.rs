@@ -25,6 +25,12 @@ pub struct Args {
         help = "Path to the log file. If not set, logs will only be written to stdout."
     )]
     pub log_file: Option<PathBuf>,
+    #[arg(
+        short = 'n',
+        long = "network",
+        help = "Which network to use. Valid options are mainnet, testnet4, signet, cpunet (preferred)"
+    )]
+    pub network: Option<String>,
 }
 
 #[cfg_attr(not(test), hotpath::measure)]
@@ -51,6 +57,11 @@ pub fn process_cli_args() -> PoolConfig {
 
     config.set_log_dir(args.log_file);
 
+    // Override network if provided via CLI
+    if let Some(network) = args.network {
+        config.set_network(network);
+    }
+
     config
 }
 
@@ -72,11 +83,11 @@ fn create_default_config() -> Result<PoolConfig, KeyManagementError> {
     let authority_config = AuthorityConfig::new(public_key, secret_key);
 
     let coinbase_reward_script =
-        CoinbaseRewardScript::from_descriptor("addr(tb1qa0sm0hxzj0x25rh8gw5xlzwlsfvvyz8u96w3p8)")
+        CoinbaseRewardScript::from_descriptor("addr(tc1qwjjhut55y70qv6k36et0kpe7vzh9kprjj9s5hk)")
             .expect("Invalid default coinbase reward script");
 
     let template_provider_type = TemplateProviderType::BitcoinCoreIpc {
-        network: stratum_apps::tp_type::BitcoinNetwork::Signet,
+        network: stratum_apps::tp_type::BitcoinNetwork::Cpunet,
         data_dir: None,
         fee_threshold: 100,
         min_interval: 5,
@@ -86,6 +97,7 @@ fn create_default_config() -> Result<PoolConfig, KeyManagementError> {
     let server_id = 1;
     let supported_extensions = vec![];
     let required_extensions = vec![];
+    let network = "cpunet".to_string(); // Default network
 
     Ok(PoolConfig::new(
         connection_config,
@@ -97,5 +109,6 @@ fn create_default_config() -> Result<PoolConfig, KeyManagementError> {
         server_id,
         supported_extensions,
         required_extensions,
+        network,
     ))
 }

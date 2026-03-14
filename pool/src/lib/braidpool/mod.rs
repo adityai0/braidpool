@@ -34,6 +34,7 @@ pub use node::db::BraidpoolDBTypes;
 pub use node::swarm::p2p_event_loop;
 pub use node::swarm::SwarmContext;
 pub use node::SwarmCommand;
+pub use node::utils::compute_block_hash;
 
 #[derive(Debug, Clone)]
 pub struct BraidpoolConfig {
@@ -41,6 +42,7 @@ pub struct BraidpoolConfig {
     pub max_peers: usize,
     pub keystore_path: Option<std::path::PathBuf>,
     pub addnodes: Vec<String>,
+    pub network_name: String,
 }
 
 impl Default for BraidpoolConfig {
@@ -50,6 +52,7 @@ impl Default for BraidpoolConfig {
             max_peers: 8,
             keystore_path: None,
             addnodes: Vec::new(),
+            network_name: "mainnet".to_string(),
         }
     }
 }
@@ -59,15 +62,18 @@ pub struct BraidpoolP2P {
     braid: Arc<RwLock<Braid>>,
     ibd_spinlock: Arc<AtomicBool>,
     cancellation_token: CancellationToken,
+    network_name: String,
 }
 
 impl BraidpoolP2P {
     pub fn new(config: BraidpoolConfig, cancellation_token: CancellationToken) -> Self {
+        let network_name = config.network_name.clone();
         Self {
             config,
-            braid: Arc::new(RwLock::new(Braid::new(Vec::new()))),
+            braid: Arc::new(RwLock::new(Braid::new(Vec::new(), network_name.clone()))),
             ibd_spinlock: Arc::new(AtomicBool::new(true)),
             cancellation_token,
+            network_name,
         }
     }
     #[inline]
@@ -94,7 +100,7 @@ impl BraidpoolP2P {
         let _ibd_handler = tokio::spawn(async move {
             ibd_manager.run_ibd_handler().await;
         });
-        let (mut db_handler, db_tx) = DBHandler::new()
+        let (mut db_handler, db_tx) = DBHandler::new(self.network_name.clone())
             .await
             .map_err(|e| BraidpoolError::Database(format!("{:?}", e)))?;
 
@@ -173,6 +179,7 @@ impl BraidpoolP2P {
             self.ibd_spinlock.clone(),
             peer_manager,
             swarm_command_sender.clone(),
+            self.network_name
         );
 
         let braid_ref = self.braid.clone();

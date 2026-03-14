@@ -78,6 +78,7 @@ impl PoolSv2 {
             channel_manager_to_downstream_sender.clone(),
             downstream_to_channel_manager_receiver,
             encoded_outputs.clone(),
+            self.config.network().to_owned(),
         )
         .await?;
         println!("Configuration received - {:?}", self.config);
@@ -136,6 +137,7 @@ impl PoolSv2 {
                     .braidpool_keystore_path()
                     .map(|p| p.to_path_buf()),
                 addnodes: self.config.braidpool_addnodes().to_vec(),
+                network_name: self.config.network().to_string(),
             };
 
             let braidpool_p2p =
@@ -209,6 +211,7 @@ impl PoolSv2 {
                     incoming_tdp_receiver,
                     outgoing_tdp_sender,
                     cancellation_token: CancellationToken::new(),
+                    network_type: self.config.network().to_owned(),
                 };
 
                 bitcoin_core_sv2_join_handle = Some(

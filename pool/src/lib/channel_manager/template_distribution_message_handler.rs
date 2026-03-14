@@ -33,13 +33,13 @@ impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
         _tlv_fields: Option<&[Tlv]>,
     ) -> Result<(), Self::Error> {
         info!("Received: {}", msg);
-
+        //Till this point there has been no changes done to the template received and the coinbase too 
         let messages = self.channel_manager_data.super_safe_lock(|channel_manager_data| {
             if msg.future_template {
                 channel_manager_data.last_future_template = Some(msg.clone().into_static());
             }
-
             let mut messages: Vec<RouteMessageTo> = Vec::new();
+            //Fetching the coinbase outputes being set via the config during initialization of pool 
             let mut coinbase_output = deserialize_outputs(channel_manager_data.coinbase_outputs.clone()).expect("deserialization failed");
             coinbase_output[0].value = Amount::from_sat(msg.coinbase_tx_value_remaining);
 
@@ -55,7 +55,7 @@ impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
                         tracing::error!("Error while adding template to group channel");
                         PoolError::shutdown(e)
                     })?;
-
+                    //Converting the NewTemplate message to ExtendJob/StandardJob to be sent to downstream tproxy
                     let group_channel_job = match msg.future_template {
                         true => {
                             let future_job_id = data.group_channel.get_future_job_id_from_template_id(msg.template_id).ok_or(

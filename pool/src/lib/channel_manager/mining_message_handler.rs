@@ -21,7 +21,7 @@ use stratum_apps::stratum_core::{
     parsers_sv2::{Mining, TemplateDistribution, Tlv, TlvField},
     template_distribution_sv2::SubmitSolution,
 };
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::{
     channel_manager::{ChannelManager, RouteMessageTo, CLIENT_SEARCH_SPACE_BYTES},
@@ -155,7 +155,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                 let channel_id = downstream_data.channel_id_factory.fetch_add(1, Ordering::SeqCst);
                 let job_store = DefaultJobStore::new();
 
-                let mut standard_channel = match StandardChannel::new_for_pool(channel_id, user_identity.to_string(), extranonce_prefix.to_vec(), requested_max_target, nominal_hash_rate, self.share_batch_size, self.shares_per_minute, job_store, self.pool_tag_string.clone()) {
+                let mut standard_channel = match StandardChannel::new_for_pool(channel_id, user_identity.to_string(), extranonce_prefix.to_vec(), requested_max_target, nominal_hash_rate, self.share_batch_size, self.shares_per_minute, job_store, self.pool_tag_string.clone(),self.network_type.to_owned()) {
                     Ok(channel) => channel,
                     Err(e) => match e {
                         StandardChannelError::InvalidNominalHashrate => {
@@ -264,12 +264,11 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
         let downstream_id =
             client_id.expect("client_id must be present for downstream_id extraction");
         info!("Received OpenExtendedMiningChannel: {}", msg);
-
         let nominal_hash_rate = msg.nominal_hash_rate;
         let requested_max_target =
             Target::from_le_bytes(msg.max_target.inner_as_ref().try_into().unwrap());
         let requested_min_rollable_extranonce_size = msg.min_extranonce_size;
-
+        debug!("Assertion true the first connection when established with downstream via aggregate mode both the target are kept same for extended channel between the tproxy and the poll as well as for the downstream and the tproxy");
         let messages = self
             .channel_manager_data
             .super_safe_lock(|channel_manager_data| {
@@ -323,6 +322,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                             self.shares_per_minute,
                             job_store,
                             self.pool_tag_string.clone(),
+                            self.network_type.to_owned()
                         ) {
                             Ok(channel) => channel,
                             Err(e) => match e {
