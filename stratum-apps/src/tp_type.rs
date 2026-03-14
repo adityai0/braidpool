@@ -1,5 +1,3 @@
-use tracing::warn;
-
 use crate::{config_helpers::opt_path_from_toml, key_utils::Secp256k1PublicKey};
 use std::path::PathBuf;
 
@@ -11,6 +9,7 @@ pub enum BitcoinNetwork {
     Testnet4,
     Signet,
     Regtest,
+    Cpunet,
 }
 
 impl BitcoinNetwork {
@@ -22,6 +21,7 @@ impl BitcoinNetwork {
             BitcoinNetwork::Testnet4 => Some("testnet4"),
             BitcoinNetwork::Signet => Some("signet"),
             BitcoinNetwork::Regtest => Some("regtest"),
+            BitcoinNetwork::Cpunet => Some("cpunet"),
         }
     }
 }

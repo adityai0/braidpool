@@ -1,5 +1,6 @@
 use core::fmt;
 
+use braidpool_common::cpunet;
 use miniscript::bitcoin::{address, hex};
 
 /// Error enum
@@ -15,6 +16,8 @@ pub enum Error {
     UnknownOutputScriptType,
     /// Error from the `miniscript` crate.
     Miniscript(miniscript::Error),
+    /// Parsing error for cpunet address
+    ParseCpunetError(String),
 }
 
 impl fmt::Display for Error {
@@ -26,6 +29,7 @@ impl fmt::Display for Error {
             UnknownOutputScriptType => write!(f, "Unknown script type in config"),
             InvalidOutputScript => write!(f, "Invalid output_script_value for your script type. It must be a valid public key/script"),
             Miniscript(ref e) => write!(f, "Miniscript: {e}"),
+            ParseCpunetError(ref error)=>write!(f,"Cpunet parse error - {error}")
         }
     }
 }
@@ -45,5 +49,19 @@ impl From<hex::HexToBytesError> for Error {
 impl From<miniscript::Error> for Error {
     fn from(e: miniscript::Error) -> Self {
         Error::Miniscript(e)
+    }
+}
+impl From<cpunet::CpunetAddressError> for Error {
+    fn from(value: cpunet::CpunetAddressError) -> Self {
+        match value {
+            cpunet::CpunetAddressError::Bech32(e) => Self::ParseCpunetError(e.0.to_string()),
+            cpunet::CpunetAddressError::InvalidProgram(e) => Self::ParseCpunetError(e),
+            cpunet::CpunetAddressError::InvalidWitnessVersion(e) => {
+                Self::ParseCpunetError(format!("Invalid witness verison received - {e}"))
+            }
+            cpunet::CpunetAddressError::WrongNetwork { expected, found } => Self::ParseCpunetError(
+                format!("Invalid network recieved expected - {expected} found - {found} "),
+            ),
+        }
     }
 }

@@ -1,8 +1,9 @@
 mod errors;
 mod serde_types;
 
+use braidpool_common::{Cpunet, CpunetAddressError};
 use miniscript::{
-    bitcoin::{address::NetworkUnchecked, Address, Network, ScriptBuf},
+    bitcoin::{address::NetworkUnchecked, bech32, Address, Network, ScriptBuf},
     DefiniteDescriptorKey, Descriptor,
 };
 
@@ -19,6 +20,15 @@ pub struct CoinbaseRewardScript {
 }
 
 impl CoinbaseRewardScript {
+    pub fn from_cpunet_address(pool_payout_address: &str) -> Result<Self, Error> {
+        // Use cpunet module for cpunet addresses (tc1... prefix)
+        let payout_script = Cpunet::decode_bech32_address(pool_payout_address)?;
+
+        Ok(Self {
+            script_pubkey: payout_script,
+            ok_for_mainnet: false,
+        })
+    }
     /// Creates a new [`CoinbaseRewardScript`] from a descriptor string.
     pub fn from_descriptor(s: &str) -> Result<Self, Error> {
         // Taproot descriptors cannot be parsed with `expression::Tree::from_str` and
@@ -38,6 +48,14 @@ impl CoinbaseRewardScript {
         let root = tree.root();
         match root.name() {
             "addr" => {
+                //In case it is cpunet then use the cpunet specific derivation
+                if let Some(payout_addr) = root.first_child() {
+                    let (hrp, _version, _data) = bech32::segwit::decode(payout_addr.name())
+                        .map_err(CpunetAddressError::Bech32)?;
+                    if Cpunet::is_cpunet_hrp(hrp.as_str()) {
+                        return Ok(Self::from_cpunet_address(payout_addr.name())?);
+                    }
+                }
                 let addr: Address<NetworkUnchecked> = root
                     .verify_terminal_parent("addr", "a valid Bitcoin address")
                     .map_err(miniscript::Error::Parse)?;
@@ -351,5 +369,20 @@ mod tests {
             CoinbaseRewardScript::from_descriptor("pkh(xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi)").unwrap_err().to_string(),
             "Miniscript: public keys must be 64, 66 or 130 characters in size",
         );
+    }
+
+    #[test]
+    fn fixed_vector_cpunet_addr() {
+        // Cpunet uses "tc" HRP for bech32 addresses (similar to "bc" for mainnet, "tb" for testnet)
+        // These addresses should parse correctly and generate valid P2WPKH scriptPubKeys.
+
+        // Valid cpunet P2WPKH address
+        let cpunet_addr = CoinbaseRewardScript::from_descriptor(
+            "addr(tc1qwjjhut55y70qv6k36et0kpe7vzh9kprjj9s5hk)",
+        )
+        .unwrap();
+
+        // Cpunet addresses are NOT valid for mainnet (uses different HRP)
+        assert!(!cpunet_addr.ok_for_mainnet());
     }
 }
