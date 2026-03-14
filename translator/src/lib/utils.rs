@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use node::utils::compute_block_hash;
 use stratum_apps::{
     key_utils::Secp256k1PublicKey,
     stratum_core::{
@@ -40,8 +41,8 @@ pub const AGGREGATED_CHANNEL_ID: ChannelId = u32::MAX;
 /// * `target` - The target difficulty for this share
 /// * `extranonce1` - The first part of the extranonce (from server)
 /// * `version_rolling_mask` - Optional mask for version rolling
-/// * `sv1_server_data` - Reference to shared SV1 server data for accessing valid jobs
-/// * `channel_id` - Channel ID for job lookup
+/// * `job` - The notify job containing the block template data
+/// * `network_name` - The network name for proper block hash computation (e.g., "cpunet")
 ///
 /// # Returns
 /// * `Ok(true)` if the share is valid and meets the target
@@ -53,6 +54,7 @@ pub fn validate_sv1_share(
     extranonce1: Vec<u8>,
     version_rolling_mask: Option<HexU32Be>,
     job: Notify<'static>,
+    network_name: &str,
 ) -> Result<bool, TproxyErrorKind> {
     let mut full_extranonce = vec![];
     full_extranonce.extend_from_slice(extranonce1.as_slice());
@@ -95,7 +97,8 @@ pub fn validate_sv1_share(
     };
 
     // convert the header hash to a target type for easy comparison
-    let hash = header.block_hash();
+    // Use network-specific hash computation for cpunet support
+    let hash = compute_block_hash(&header, &network_name.to_string());
     let raw_hash: [u8; 32] = *hash.to_raw_hash().as_ref();
     let hash_as_target = Target::from_le_bytes(raw_hash);
 

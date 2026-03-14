@@ -57,6 +57,13 @@ pub struct TranslatorConfig {
     monitoring_address: Option<SocketAddr>,
     #[serde(default = "default_monitoring_cache_refresh_secs")]
     monitoring_cache_refresh_secs: u64,
+    /// The network to use (e.g., mainnet, testnet4, signet, cpunet).
+    #[serde(default = "default_network")]
+    network: String,
+}
+
+fn default_network() -> String {
+    "mainnet".to_string()
 }
 
 fn default_monitoring_cache_refresh_secs() -> u64 {
@@ -100,6 +107,7 @@ impl TranslatorConfig {
         aggregate_channels: bool,
         supported_extensions: Vec<u16>,
         required_extensions: Vec<u16>,
+        network: String,
     ) -> Self {
         Self {
             upstreams,
@@ -116,6 +124,7 @@ impl TranslatorConfig {
             log_file: None,
             monitoring_address: None,
             monitoring_cache_refresh_secs: 15,
+            network,
         }
     }
 
@@ -136,6 +145,16 @@ impl TranslatorConfig {
     }
     pub fn log_dir(&self) -> Option<&Path> {
         self.log_file.as_deref()
+    }
+
+    /// Returns the network name (e.g., mainnet, testnet4, signet, cpunet).
+    pub fn network(&self) -> &str {
+        &self.network
+    }
+
+    /// Sets the network name.
+    pub fn set_network(&mut self, network: String) {
+        self.network = network;
     }
 }
 
@@ -222,6 +241,7 @@ mod tests {
             true,
             vec![],
             vec![],
+            default_network()
         );
 
         assert_eq!(config.upstreams.len(), 1);
@@ -254,6 +274,7 @@ mod tests {
             false,
             vec![],
             vec![],
+            default_network()
         );
 
         assert!(config.log_dir().is_none());
@@ -288,6 +309,7 @@ mod tests {
             true,
             vec![],
             vec![],
+            default_network()
         );
 
         assert_eq!(config.upstreams.len(), 2);
@@ -315,6 +337,7 @@ mod tests {
             false,
             vec![],
             vec![],
+            default_network()
         );
 
         assert!(!config.downstream_difficulty_config.enable_vardiff);

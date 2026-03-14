@@ -98,7 +98,6 @@ impl IsServer<'static> for Sv1Server {
         request: &client_to_server::Submit<'static>,
     ) -> bool {
         let downstream_id = client_id.expect("Downstream id should exist");
-
         let downstream = self
             .downstreams
             .get(&downstream_id)
@@ -131,6 +130,9 @@ impl IsServer<'static> for Sv1Server {
             return false;
         };
 
+        // Get network from config for share validation
+        let network = self.config.network().to_string();
+
         downstream.downstream_data.super_safe_lock(|data| {
             let channel_id = match data.channel_id {
                 Some(id) => id,
@@ -154,6 +156,7 @@ impl IsServer<'static> for Sv1Server {
                 data.extranonce1.clone().into(),
                 data.version_rolling_mask.clone(),
                 job,
+                &network,
             )
             .unwrap_or(false);
 

@@ -374,6 +374,7 @@ impl Downstream {
     /// to the SV1 server for upstream processing.
     pub async fn handle_downstream_message(&self) -> TproxyResult<(), error::Downstream> {
         let downstream_id = self.downstream_id;
+        //Receiving raw message from the miner and passing to the sv1 server for handling to take place 
         let message = match self
             .downstream_channel_state
             .downstream_sv1_receiver
@@ -386,7 +387,7 @@ impl Downstream {
                 return Err(TproxyError::disconnect(e, downstream_id));
             }
         };
-
+        //Sending to server for handling of the messages being received from the client miner 
         self.downstream_channel_state
             .sv1_server_sender
             .send((downstream_id, message))
@@ -415,6 +416,8 @@ impl Downstream {
         debug!("Down: SV1 handshake completed for downstream");
 
         // Send cached messages in correct order: set_difficulty first, then notify
+        //The set_difficulty message will be on the basis of initial hash_rate defined un TproxyConfig and 
+        //template will be the bootstrapped future template and SetPrevHash message being sent by the Upstream Node to the tproxy 
         if let Some(set_difficulty_msg) = cached_set_difficulty {
             debug!("Down: Sending cached mining.set_difficulty after handshake completion");
             self.downstream_channel_state

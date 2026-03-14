@@ -29,6 +29,12 @@ pub struct Args {
         help = "Path to the log file. If not set, logs will only be written to stdout."
     )]
     pub log_file: Option<PathBuf>,
+    #[arg(
+        short = 'n',
+        long = "network",
+        help = "Which network to use. Valid options are mainnet, testnet4, signet, cpunet (preferred)"
+    )]
+    pub network: Option<String>,
 }
 
 /// Process CLI args, if any.
@@ -62,6 +68,11 @@ pub fn process_cli_args() -> Result<TranslatorConfig, TproxyErrorKind> {
 
     config.set_log_dir(args.log_file);
 
+    // Override network if provided via CLI
+    if let Some(network) = args.network {
+        config.set_network(network);
+    }
+
     Ok(config)
 }
 
@@ -75,7 +86,7 @@ fn create_default_config() -> Result<TranslatorConfig, KeyManagementError> {
     let upstream = Upstream::new("127.0.0.1".to_string(), 43333, authority_pubkey);
 
     let downstream_difficulty_config =
-        DownstreamDifficultyConfig::new(10_000_000_000_000.0, 6.0, true, 60);
+        DownstreamDifficultyConfig::new(10_000_000_000_000.0, 6.0, false, 60);
 
     Ok(TranslatorConfig::new(
         vec![upstream],
@@ -89,5 +100,6 @@ fn create_default_config() -> Result<TranslatorConfig, KeyManagementError> {
         true,
         vec![],
         vec![],
+        "cpunet".to_string(), // Default network
     ))
 }

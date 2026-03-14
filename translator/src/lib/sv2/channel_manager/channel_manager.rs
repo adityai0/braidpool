@@ -75,6 +75,8 @@ pub struct ChannelManager {
     pub negotiated_extensions: Arc<Mutex<Vec<u16>>>,
     /// Extranonce factories containing per channel extranonces
     pub extranonce_factories: Arc<DashMap<ChannelId, ExtendedExtranonce>>,
+    /// Network name for block hash computation (e.g., "cpunet", "mainnet")
+    pub network_name: String,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -91,6 +93,7 @@ impl ChannelManager {
     ///   by server)
     /// * `required_extensions` - Extensions that the translator requires (must be supported by
     ///   server)
+    /// * `network_name` - Network name for block hash computation (e.g., "cpunet", "mainnet")
     ///
     /// # Returns
     /// A new ChannelManager instance ready to handle message routing
@@ -103,6 +106,7 @@ impl ChannelManager {
         status_sender: Sender<Status>,
         supported_extensions: Vec<u16>,
         required_extensions: Vec<u16>,
+        network_name: String,
     ) -> Self {
         let channel_state = ChannelState::new(
             upstream_sender,
@@ -122,6 +126,7 @@ impl ChannelManager {
             share_sequence_counters: Arc::new(DashMap::new()),
             negotiated_extensions: Arc::new(Mutex::new(Vec::new())),
             extranonce_factories: Arc::new(DashMap::new()),
+            network_name,
         }
     }
 
@@ -296,6 +301,7 @@ impl ChannelManager {
                         // extranonce prefix and we send the
                         // OpenExtendedMiningChannelSuccess message directly to the sv1
                         // server
+                        //Fetching the upstream target to be set initially for the downstream being connected currently 
                         let target = self
                             .extended_channels
                             .get(&AGGREGATED_CHANNEL_ID)
@@ -323,6 +329,7 @@ impl ChannelManager {
                                     .filter(|x| *x.key() != AGGREGATED_CHANNEL_ID)
                                     .fold(0, |acc, x| std::cmp::max(acc, *x.key()));
                                 let next_channel_id = channel_id + 1;
+                                //The channel existing between the downstream and the tproxy 
                                 let new_downstream_extended_channel = ExtendedChannel::new(
                                     next_channel_id,
                                     user_identity.clone(),
@@ -335,6 +342,7 @@ impl ChannelManager {
                                     hashrate,
                                     true,
                                     new_extranonce_size as u16,
+                                    self.network_name.clone(),
                                 );
                                 self.extended_channels
                                     .insert(next_channel_id, new_downstream_extended_channel);
@@ -465,7 +473,6 @@ impl ChannelManager {
                     "Sending OpenExtendedMiningChannel message to upstream: {:?}",
                     open_channel_msg
                 );
-
                 let message = Mining::OpenExtendedMiningChannel(open_channel_msg);
                 let sv2_frame: Sv2Frame = AnyMessage::Mining(message)
                     .try_into()
@@ -751,6 +758,7 @@ mod tests {
             status_sender,
             vec![],
             vec![],
+            "mainnet".to_string(),
         )
     }
 

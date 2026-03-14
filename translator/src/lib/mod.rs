@@ -146,6 +146,7 @@ impl TranslatorSv2 {
             status_sender.clone(),
             self.config.supported_extensions.clone(),
             self.config.required_extensions.clone(),
+            self.config.network().to_string(),
         ));
 
         info!("Launching ChannelManager tasks...");
@@ -287,6 +288,7 @@ impl TranslatorSv2 {
                                     status_sender.clone(),
                                     self.config.supported_extensions.clone(),
                                     self.config.required_extensions.clone(),
+                                    self.config.network().to_string(),
                                 ));
 
                                 info!("Launching ChannelManager tasks...");

@@ -175,11 +175,12 @@ impl Sv1Server {
             self.config.downstream_difficulty_config.shares_per_minute as f64,
         )
         .unwrap();
-
+        //Vardiff loop that will keep on checking the correpsonding submission rates and hashrates
+        //For the requirement of adjutments in the form of immediate requests or future requests
         let vardiff_future = self.clone().spawn_vardiff_loop();
-
+        //Fixed interval for sending the templates to the downstream miner for keep alive connection
         let keepalive_future = self.clone().spawn_job_keepalive_loop();
-
+        //Listener for downstream connections
         let listener = TcpListener::bind(self.listener_addr).await.map_err(|e| {
             error!("Failed to bind to {}: {}", self.listener_addr, e);
             TproxyError::shutdown(e)
@@ -311,6 +312,7 @@ impl Sv1Server {
     /// * `Ok(())` - Message processed successfully
     /// * `Err(TproxyError)` - Error processing the message
     pub async fn handle_downstream_message(&self) -> TproxyResult<(), error::Sv1Server> {
+        //Channel owned and shared for receiving the message
         let (downstream_id, downstream_message) = self
             .sv1_server_channel_state
             .downstream_to_sv1_server_receiver
@@ -321,14 +323,17 @@ impl Sv1Server {
         let downstream = self.downstreams.get(&downstream_id);
 
         if let Some(downstream) = downstream {
+            //Fetching particular channel id associated with this downstream
             let channel_id = downstream
                 .downstream_data
                 .super_safe_lock(|data| data.channel_id);
             if channel_id.is_none() {
+                //If first message and then it will send the opening extended mining channel message to channel_manager
                 let is_first_message = downstream
                     .downstream_data
                     .super_safe_lock(|d| d.queued_sv1_handshake_messages.is_empty());
                 if is_first_message {
+                    //Request being constructed to send to the channel manager
                     self.handle_open_channel_request(downstream_id).await?;
                     debug!(
                         "Down: Sent OpenChannel request for downstream {}",
@@ -342,7 +347,8 @@ impl Sv1Server {
                 });
                 return Ok(());
             }
-
+            //Handling message received and converting those into suitable Sv2 messages i.e. the mining_protocol messages format and
+            //sending to channel mananger
             let response = self
                 .clone()
                 .handle_message(Some(downstream_id), downstream_message.clone());
@@ -353,6 +359,7 @@ impl Sv1Server {
                         "Down: Sending Sv1 message to downstream: {:?}",
                         response_msg
                     );
+                    //Writing to TcpStream
                     downstream
                         .downstream_channel_state
                         .downstream_sv1_sender
@@ -535,7 +542,10 @@ impl Sv1Server {
             .map_err(TproxyError::shutdown)?;
 
         match message {
+            //This message is with respect to the downstream and the tproxy connection establishment
+            //and setting the initial target
             Mining::OpenExtendedMiningChannelSuccess(m) => {
+                // This is the upstream target being propagated via the channel provided from the upstream node to the aggregate channel m.target
                 debug!(
                     "Received OpenExtendedMiningChannelSuccess for channel id: {}",
                     m.channel_id
@@ -1202,6 +1212,7 @@ mod tests {
             true,   // aggregate_channels
             vec![], // supported_extensions
             vec![], // required_extensions
+            "cpunet".to_string(),
         )
     }
 
