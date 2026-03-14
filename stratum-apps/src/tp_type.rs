@@ -91,20 +91,20 @@ mod tests {
     fn network_with_data_dir_regtest() {
         let result =
             resolve_ipc_socket_path(&BitcoinNetwork::Regtest, Some(PathBuf::from("/data")));
-        assert_eq!(result, Some(PathBuf::from("/data/regtest/node.sock")));
+        assert_eq!(result, Some(PathBuf::from("/data/bitcoin-regtest.sock")));
     }
 
     #[test]
     fn network_with_data_dir_signet() {
         let result = resolve_ipc_socket_path(&BitcoinNetwork::Signet, Some(PathBuf::from("/data")));
-        assert_eq!(result, Some(PathBuf::from("/data/signet/node.sock")));
+        assert_eq!(result, Some(PathBuf::from("/data/bitcoin-signet.sock")));
     }
 
     #[test]
     fn network_with_data_dir_testnet4() {
         let result =
             resolve_ipc_socket_path(&BitcoinNetwork::Testnet4, Some(PathBuf::from("/data")));
-        assert_eq!(result, Some(PathBuf::from("/data/testnet4/node.sock")));
+        assert_eq!(result, Some(PathBuf::from("/data/bitcoin-testnet4.sock")));
     }
 
     #[test]

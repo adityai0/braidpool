@@ -79,11 +79,11 @@ impl Sv1Server {
                 error!("Channel id is none for downstream_id: {}", downstream_id);
                 continue;
             };
-            //Hash rate updated if required accroding to the downstream miner current target 
+            //Hash rate updated if required accroding to the downstream miner current target
             let new_hashrate_opt = vardiff.super_safe_lock(|state| {
                 //Checking whether the hashrate and rate-submissions are compatible if not then we will
                 //Update the hashrate and derive the target from the newhashrate and then update the upstream target via `UpdateChannel`
-                //and storing the pending requests or the immediate requests to be handled and forwarding the set_difficulty message immediately 
+                //and storing the pending requests or the immediate requests to be handled and forwarding the set_difficulty message immediately
                 //or after receiving the SetTarget message from upstream.
                 state.try_vardiff(hashrate, &target, self.shares_per_minute)
             });
@@ -298,7 +298,6 @@ impl Sv1Server {
     /// Non-aggregated mode: Each SetTarget updates one specific downstream and processes its
     /// pending update
     pub async fn handle_set_target_message(&self, set_target: SetTarget<'_>) {
-        
         let new_upstream_target =
             Target::from_le_bytes(set_target.maximum_target.inner_as_ref().try_into().unwrap());
         debug!(

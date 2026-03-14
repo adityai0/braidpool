@@ -301,7 +301,7 @@ impl ChannelManager {
                         // extranonce prefix and we send the
                         // OpenExtendedMiningChannelSuccess message directly to the sv1
                         // server
-                        //Fetching the upstream target to be set initially for the downstream being connected currently 
+                        //Fetching the upstream target to be set initially for the downstream being connected currently
                         let target = self
                             .extended_channels
                             .get(&AGGREGATED_CHANNEL_ID)
@@ -329,7 +329,7 @@ impl ChannelManager {
                                     .filter(|x| *x.key() != AGGREGATED_CHANNEL_ID)
                                     .fold(0, |acc, x| std::cmp::max(acc, *x.key()));
                                 let next_channel_id = channel_id + 1;
-                                //The channel existing between the downstream and the tproxy 
+                                //The channel existing between the downstream and the tproxy
                                 let new_downstream_extended_channel = ExtendedChannel::new(
                                     next_channel_id,
                                     user_identity.clone(),

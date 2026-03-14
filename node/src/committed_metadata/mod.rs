@@ -3,7 +3,7 @@ use bitcoin::absolute::Time;
 use bitcoin::consensus::encode::Decodable;
 use bitcoin::consensus::encode::Encodable;
 use bitcoin::consensus::encode::Error;
-use bitcoin::io::{self,Read, Write};
+use bitcoin::io::{self, Read, Write};
 use bitcoin::CompactTarget;
 use bitcoin::PublicKey;
 use bitcoin::Txid;

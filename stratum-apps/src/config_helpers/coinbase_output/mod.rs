@@ -1,7 +1,7 @@
 mod errors;
 mod serde_types;
 
-use braidpool_common::{Cpunet, CpunetAddressError};
+use braidpool_common::Cpunet;
 use miniscript::{
     bitcoin::{address::NetworkUnchecked, bech32, Address, Network, ScriptBuf},
     DefiniteDescriptorKey, Descriptor,
@@ -50,10 +50,10 @@ impl CoinbaseRewardScript {
             "addr" => {
                 //In case it is cpunet then use the cpunet specific derivation
                 if let Some(payout_addr) = root.first_child() {
-                    let (hrp, _version, _data) = bech32::segwit::decode(payout_addr.name())
-                        .map_err(CpunetAddressError::Bech32)?;
-                    if Cpunet::is_cpunet_hrp(hrp.as_str()) {
-                        return Ok(Self::from_cpunet_address(payout_addr.name())?);
+                    if let Ok((hrp, _version, _data)) = bech32::segwit::decode(payout_addr.name()) {
+                        if Cpunet::is_cpunet_hrp(hrp.as_str()) {
+                            return Ok(Self::from_cpunet_address(payout_addr.name())?);
+                        }
                     }
                 }
                 let addr: Address<NetworkUnchecked> = root

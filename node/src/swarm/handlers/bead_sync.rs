@@ -9,7 +9,14 @@ use libp2p::{request_response::ResponseChannel, PeerId, Swarm};
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    SwarmCommand, bead::{BeadHashes, BeadRequest, BeadResponse, BeadSyncError, Beads}, behaviour::BraidPoolBehaviour, braid::{AddBeadStatus, GenesisCheckStatus}, db::{BraidpoolDBTypes, InsertTupleTypes, db_handlers::prepare_bead_tuple_data}, ibd_manager::{IBD_BATCH_SIZE, IBDCommands, MAX_IBD_INCOMING_THRESHOLD}, swarm::SwarmContext, utils::{BeadHash, compute_block_hash}
+    bead::{BeadHashes, BeadRequest, BeadResponse, BeadSyncError, Beads},
+    behaviour::BraidPoolBehaviour,
+    braid::{AddBeadStatus, GenesisCheckStatus},
+    db::{db_handlers::prepare_bead_tuple_data, BraidpoolDBTypes, InsertTupleTypes},
+    ibd_manager::{IBDCommands, IBD_BATCH_SIZE, MAX_IBD_INCOMING_THRESHOLD},
+    swarm::SwarmContext,
+    utils::{compute_block_hash, BeadHash},
+    SwarmCommand,
 };
 
 /// Handles a GetBeads request - returns beads for the requested hashes.
@@ -164,7 +171,7 @@ pub async fn handle_beads_response(
                     &braid_data.beads,
                     &braid_data.bead_index_mapping,
                     &bead,
-                    &ctx.network_name
+                    &ctx.network_name,
                 ) {
                     Ok(tuples) => tuples,
                     Err(e) => {

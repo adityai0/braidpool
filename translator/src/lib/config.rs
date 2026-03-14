@@ -241,7 +241,7 @@ mod tests {
             true,
             vec![],
             vec![],
-            default_network()
+            default_network(),
         );
 
         assert_eq!(config.upstreams.len(), 1);
@@ -274,7 +274,7 @@ mod tests {
             false,
             vec![],
             vec![],
-            default_network()
+            default_network(),
         );
 
         assert!(config.log_dir().is_none());
@@ -309,7 +309,7 @@ mod tests {
             true,
             vec![],
             vec![],
-            default_network()
+            default_network(),
         );
 
         assert_eq!(config.upstreams.len(), 2);
@@ -337,7 +337,7 @@ mod tests {
             false,
             vec![],
             vec![],
-            default_network()
+            default_network(),
         );
 
         assert!(!config.downstream_difficulty_config.enable_vardiff);

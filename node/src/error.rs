@@ -490,7 +490,7 @@ impl fmt::Display for CoinbaseError {
 }
 
 impl std::error::Error for CoinbaseError {}
-//Error handling the authority key generation 
+//Error handling the authority key generation
 #[derive(Debug)]
 pub enum KeyManagementError {
     NoHomeDirectory,
@@ -536,4 +536,3 @@ impl From<secp256k1::Error> for KeyManagementError {
 
 // Re-export cpunet error types from braidpool_common
 pub use braidpool_common::{CpunetAddressError, ParseCpunetError};
-

@@ -31,7 +31,7 @@ pub async fn ipc_block_listener(
     block_template_tx: Sender<Arc<client::BlockTemplate>>,
     template_cache: Arc<tokio::sync::Mutex<HashMap<TemplateId, Arc<client::BlockTemplate>>>>,
     mut block_submission_rx: tokio::sync::mpsc::UnboundedReceiver<
-    crate::stratum::BlockSubmissionRequest,
+        crate::stratum::BlockSubmissionRequest,
     >,
     network_name: String,
 ) -> Result<(), Box<dyn std::error::Error>> {

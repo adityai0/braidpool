@@ -4,8 +4,8 @@
 //! and the `from_args` function to parse them from the command line.
 use clap::Parser;
 use ext_config::{Config, File, FileFormat};
-use node::key_management::{load_authority_public_key,};
 use node::error::KeyManagementError;
+use node::key_management::load_authority_public_key;
 use std::path::PathBuf;
 use tracing::{error, info};
 use translator_sv2::{

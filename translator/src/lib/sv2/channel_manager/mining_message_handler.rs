@@ -112,10 +112,10 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
             let extranonce_prefix = m.extranonce_prefix.clone().into_static().to_vec();
             let target = Target::from_le_bytes(m.target.clone().inner_as_ref().try_into().unwrap());
             let version_rolling = true; // we assume this is always true on extended channels
-            //This is the channel which is created between the tproxy and upstream 
-            //Only once this message is received during the first connection arrival from downstream 
-            //After this the delegation itself happens only at the channel manager level of OpeningExtendedMiningChannel received from the downstream via
-            //Sv1 server . 
+                                        //This is the channel which is created between the tproxy and upstream
+                                        //Only once this message is received during the first connection arrival from downstream
+                                        //After this the delegation itself happens only at the channel manager level of OpeningExtendedMiningChannel received from the downstream via
+                                        //Sv1 server .
             let extended_channel = ExtendedChannel::new(
                 m.channel_id,
                 user_identity.clone(),
@@ -169,10 +169,10 @@ impl HandleMiningMessagesFromServerAsync for ChannelManager {
                     .next_prefix_extended(new_extranonce_size as usize)
                     .expect("next_prefix_extended should return a value for valid input")
                     .into_b032();
-                //This is the extended channel actually existing between the downstream node and the tproxy 
-                //the only allocation now will happen at this level only and not at the above level after this success message is received from 
-                //upstream 
-                    let new_downstream_extended_channel = ExtendedChannel::new(
+                //This is the extended channel actually existing between the downstream node and the tproxy
+                //the only allocation now will happen at this level only and not at the above level after this success message is received from
+                //upstream
+                let new_downstream_extended_channel = ExtendedChannel::new(
                     m.channel_id,
                     user_identity.clone(),
                     new_extranonce_prefix.clone().into_static().to_vec(),

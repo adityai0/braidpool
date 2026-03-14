@@ -5,8 +5,9 @@ use tracing::{debug, error};
 use crate::{
     bead::Bead,
     braid::{AddBeadStatus, Braid},
-    db::{BraidpoolDBTypes, InsertTupleTypes, db_handlers::prepare_bead_tuple_data},
-    swarm::SwarmContext, utils::compute_block_hash,
+    db::{db_handlers::prepare_bead_tuple_data, BraidpoolDBTypes, InsertTupleTypes},
+    swarm::SwarmContext,
+    utils::compute_block_hash,
 };
 
 /// Result of processing an incoming bead.
@@ -66,7 +67,7 @@ pub async fn process_incoming_bead(
                 &braid_guard.beads,
                 &braid_guard.bead_index_mapping,
                 bead,
-                &ctx.network_name
+                &ctx.network_name,
             ) {
                 Ok(tuples) => tuples,
                 Err(e) => {

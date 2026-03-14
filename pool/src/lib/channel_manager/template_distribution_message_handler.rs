@@ -33,7 +33,7 @@ impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
         _tlv_fields: Option<&[Tlv]>,
     ) -> Result<(), Self::Error> {
         info!("Received: {}", msg);
-        //Till this point there has been no changes done to the template received and the coinbase too 
+        //Till this point there has been no changes done to the template received and the coinbase too
         let messages = self.channel_manager_data.super_safe_lock(|channel_manager_data| {
             if msg.future_template {
                 channel_manager_data.last_future_template = Some(msg.clone().into_static());

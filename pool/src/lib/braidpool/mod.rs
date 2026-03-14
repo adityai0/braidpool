@@ -33,8 +33,8 @@ pub use node::braid::Braid;
 pub use node::db::BraidpoolDBTypes;
 pub use node::swarm::p2p_event_loop;
 pub use node::swarm::SwarmContext;
-pub use node::SwarmCommand;
 pub use node::utils::compute_block_hash;
+pub use node::SwarmCommand;
 
 #[derive(Debug, Clone)]
 pub struct BraidpoolConfig {
@@ -179,7 +179,7 @@ impl BraidpoolP2P {
             self.ibd_spinlock.clone(),
             peer_manager,
             swarm_command_sender.clone(),
-            self.network_name
+            self.network_name,
         );
 
         let braid_ref = self.braid.clone();
