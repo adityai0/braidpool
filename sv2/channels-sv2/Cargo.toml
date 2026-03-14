@@ -21,7 +21,7 @@ tracing = { workspace = true }
 bitcoin = { workspace = true }
 primitive-types = { workspace = true }
 hashbrown = { workspace = true, optional = true }
-
+braidpool-common = {path = "../../braidpool-common"}
 
 [features]
 default = []

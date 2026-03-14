@@ -26,6 +26,7 @@ use bitcoin::{
     transaction::Version,
     CompactTarget, OutPoint, Sequence, Target, Transaction, TxIn, TxOut, Witness,
 };
+use braidpool_common::compute_block_hash;
 use mining_sv2::{
     NewExtendedMiningJob, SetCustomMiningJob, SetCustomMiningJobSuccess,
     SetNewPrevHash as SetNewPrevHashMp, SubmitSharesExtended,
@@ -77,6 +78,8 @@ pub struct ExtendedChannel<'a> {
     stale_jobs: HashMap<u32, ExtendedJob<'a>>,
     share_accounting: ShareAccounting,
     chain_tip: Option<ChainTip>,
+    //Network type on the basis of which hash shall be computed
+    network_type: String,
 }
 
 impl<'a> ExtendedChannel<'a> {
@@ -89,6 +92,7 @@ impl<'a> ExtendedChannel<'a> {
         nominal_hashrate: f32,
         version_rolling: bool,
         rollable_extranonce_size: u16,
+        network_type: String,
     ) -> Self {
         Self {
             channel_id,
@@ -104,6 +108,7 @@ impl<'a> ExtendedChannel<'a> {
             stale_jobs: HashMap::new(),
             share_accounting: ShareAccounting::new(),
             chain_tip: None,
+            network_type,
         }
     }
 
@@ -545,7 +550,7 @@ impl<'a> ExtendedChannel<'a> {
         };
 
         // convert the header hash to a target type for easy comparison
-        let share_hash = header.block_hash();
+        let share_hash = compute_block_hash(&header, &self.network_type);
         let raw_share_hash: [u8; 32] = *share_hash.to_raw_hash().as_ref();
         let share_hash_target = Target::from_le_bytes(raw_share_hash);
         let share_hash_as_diff = share_hash_target.difficulty_float();
@@ -635,6 +640,7 @@ mod tests {
             nominal_hashrate,
             version_rolling,
             rollable_extranonce_size,
+            "mainnet".to_string(),
         );
 
         let future_job = NewExtendedMiningJob {
@@ -721,6 +727,7 @@ mod tests {
             nominal_hashrate,
             version_rolling,
             rollable_extranonce_size,
+            "mainnet".to_string(),
         );
 
         let ntime: u32 = 1746839905;
@@ -802,6 +809,7 @@ mod tests {
             nominal_hashrate,
             version_rolling,
             rollable_extranonce_size,
+            "mainnet".to_string(),
         );
 
         let future_job = NewExtendedMiningJob {
@@ -903,6 +911,7 @@ mod tests {
             nominal_hashrate,
             version_rolling,
             rollable_extranonce_size,
+            "mainnet".to_string(),
         );
 
         let future_job = NewExtendedMiningJob {
@@ -998,6 +1007,7 @@ mod tests {
             nominal_hashrate,
             version_rolling,
             rollable_extranonce_size,
+            "mainnet".to_string(),
         );
 
         let future_job = NewExtendedMiningJob {

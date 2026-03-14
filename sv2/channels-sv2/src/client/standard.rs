@@ -23,6 +23,7 @@ use bitcoin::{
     hashes::sha256d::Hash,
     CompactTarget, Target,
 };
+use braidpool_common::compute_block_hash;
 use mining_sv2::{
     NewExtendedMiningJob, NewMiningJob, SetNewPrevHash as SetNewPrevHashMp, SubmitSharesStandard,
 };
@@ -58,6 +59,7 @@ pub struct StandardChannel<'a> {
     stale_jobs: HashMap<u32, StandardJob<'a>>,
     share_accounting: ShareAccounting,
     chain_tip: Option<ChainTip>,
+    network_type: String,
 }
 
 impl<'a> StandardChannel<'a> {
@@ -68,6 +70,7 @@ impl<'a> StandardChannel<'a> {
         extranonce_prefix: Vec<u8>,
         target: Target,
         nominal_hashrate: f32,
+        network_type: String,
     ) -> Self {
         Self {
             channel_id,
@@ -81,6 +84,7 @@ impl<'a> StandardChannel<'a> {
             stale_jobs: HashMap::new(),
             share_accounting: ShareAccounting::new(),
             chain_tip: None,
+            network_type,
         }
     }
 
@@ -326,7 +330,7 @@ impl<'a> StandardChannel<'a> {
         };
 
         // convert the header hash to a target type for easy comparison
-        let share_hash = header.block_hash();
+        let share_hash = compute_block_hash(&header, &self.network_type);
         let raw_share_hash: [u8; 32] = *share_hash.to_raw_hash().as_ref();
         let share_hash_target = Target::from_le_bytes(raw_share_hash);
         let share_hash_as_diff = share_hash_target.difficulty_float();
@@ -409,6 +413,7 @@ mod tests {
             extranonce_prefix,
             target,
             nominal_hashrate,
+            "mainnet".to_string(),
         );
 
         let future_job = NewMiningJob {
@@ -472,6 +477,7 @@ mod tests {
             extranonce_prefix,
             target,
             nominal_hashrate,
+            "mainnet".to_string(),
         );
 
         let ntime: u32 = 1746839905;
@@ -526,6 +532,7 @@ mod tests {
             extranonce_prefix,
             target,
             nominal_hashrate,
+            "mainnet".to_string(),
         );
 
         let future_job = NewMiningJob {
@@ -608,6 +615,7 @@ mod tests {
             extranonce_prefix,
             target,
             nominal_hashrate,
+            "mainnet".to_string(),
         );
 
         let future_job = NewMiningJob {
@@ -684,6 +692,7 @@ mod tests {
             extranonce_prefix,
             target,
             nominal_hashrate,
+            "mainnet".to_string(),
         );
 
         let future_job = NewMiningJob {

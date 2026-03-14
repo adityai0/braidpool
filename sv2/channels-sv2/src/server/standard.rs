@@ -56,6 +56,7 @@ use bitcoin::{
     transaction::{OutPoint, Transaction, TxIn, TxOut, Version as TxVersion},
     CompactTarget, Sequence, Target,
 };
+use braidpool_common::compute_block_hash;
 use mining_sv2::SubmitSharesStandard;
 use std::{collections::HashMap, convert::TryInto, marker::PhantomData};
 use template_distribution_sv2::{NewTemplate, SetNewPrevHash};
@@ -94,6 +95,7 @@ where
     job_factory: JobFactory,
     chain_tip: Option<ChainTip>,
     phantom: PhantomData<&'a ()>,
+    network_type: String,
 }
 
 impl<'a, J> StandardChannel<'a, J>
@@ -121,6 +123,7 @@ where
         expected_share_per_minute: f32,
         job_store: J,
         pool_tag_string: String,
+        network_type: String,
     ) -> Result<Self, StandardChannelError> {
         Self::new(
             channel_id,
@@ -133,6 +136,7 @@ where
             job_store,
             Some(pool_tag_string),
             None,
+            network_type,
         )
     }
 
@@ -158,6 +162,7 @@ where
         job_store: J,
         pool_tag_string: Option<String>,
         miner_tag_string: String,
+        network_type: String,
     ) -> Result<Self, StandardChannelError> {
         Self::new(
             channel_id,
@@ -170,6 +175,7 @@ where
             job_store,
             pool_tag_string,
             Some(miner_tag_string),
+            network_type,
         )
     }
 
@@ -186,6 +192,7 @@ where
         job_store: J,
         pool_tag_string: Option<String>,
         miner_tag_string: Option<String>,
+        network_type: String,
     ) -> Result<Self, StandardChannelError> {
         let calculated_target =
             match hash_rate_to_target(nominal_hashrate.into(), expected_share_per_minute.into()) {
@@ -231,6 +238,7 @@ where
             chain_tip: None,
             job_store,
             phantom: PhantomData,
+            network_type,
         })
     }
 
@@ -617,7 +625,7 @@ where
         };
 
         // convert the header hash to a target type for easy comparison
-        let share_hash = header.block_hash();
+        let share_hash = compute_block_hash(&header, &self.network_type);
         let share_raw_hash: [u8; 32] = *share_hash.to_raw_hash().as_ref();
         let share_hash_target = Target::from_le_bytes(share_raw_hash);
         let share_hash_as_diff = share_hash_target.difficulty_float();
@@ -763,6 +771,7 @@ mod tests {
             job_store,
             None,
             None,
+            "mainnet".to_string(),
         )
         .unwrap();
 
@@ -890,6 +899,7 @@ mod tests {
             job_store,
             None,
             None,
+            "mainnet".to_string(),
         )
         .unwrap();
 
@@ -994,6 +1004,7 @@ mod tests {
             job_store,
             None,
             None,
+            "mainnet".to_string(),
         )
         .unwrap();
 
@@ -1118,6 +1129,7 @@ mod tests {
             job_store,
             None,
             None,
+            "mainnet".to_string(),
         )
         .unwrap();
 
@@ -1227,6 +1239,7 @@ mod tests {
             job_store,
             None,
             None,
+            "mainnet".to_string(),
         )
         .unwrap();
 
@@ -1330,6 +1343,7 @@ mod tests {
             job_store,
             None,
             None,
+            "mainnet".to_string(),
         )
         .unwrap();
 
@@ -1417,6 +1431,7 @@ mod tests {
             job_store,
             None,
             None,
+            "mainnet".to_string(),
         )
         .unwrap();
 
