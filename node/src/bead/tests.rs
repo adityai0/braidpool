@@ -11,18 +11,16 @@ use super::UnCommittedMetadata;
 use crate::committed_metadata::TimeVec;
 use crate::utils::compute_block_hash;
 use crate::utils::create_test_bead;
-use crate::utils::test_utils::test_utility_functions::*;
+use crate::utils::test_utils::test_utility_functions::{generate_test_signature, *};
 use bitcoin::absolute::Time;
 use bitcoin::consensus::encode::deserialize;
 use bitcoin::consensus::encode::Decodable;
 use bitcoin::consensus::encode::Encodable;
 use bitcoin::consensus::encode::Error as DeserializeError;
 use bitcoin::consensus::serialize;
-use bitcoin::ecdsa::Signature;
 use bitcoin::hashes::Hash;
 use bitcoin::BlockHash;
 use bitcoin::CompactTarget;
-use bitcoin::EcdsaSighashType;
 use bitcoin::TxMerkleNode;
 use bitcoin::Txid;
 use bitcoin::{block::Header as BlockHeader, block::Version as BlockVersion};
@@ -31,13 +29,16 @@ use libp2p::request_response::Codec;
 use std::collections::HashSet;
 use std::io::Cursor;
 use std::str::FromStr;
+use stratum_apps::secp256k1::Keypair;
+use stratum_apps::secp256k1::Secp256k1;
+use stratum_apps::secp256k1::XOnlyPublicKey;
 #[test]
 
 fn test_serialized_committed_metadata() {
     let _address = String::from("127.0.0.1:8000");
-    let public_key = "020202020202020202020202020202020202020202020202020202020202020202"
-        .parse::<bitcoin::PublicKey>()
-        .unwrap();
+    let secp = Secp256k1::new();
+    let keypair = Keypair::new(&secp, &mut rand::thread_rng());
+    let xonly_pubkey = XOnlyPublicKey::from_keypair(&keypair);
     let socket = String::from("127.0.0.1");
     let time_val = Time::from_consensus(1653195600).unwrap();
     let parent_hash_set: HashSet<BlockHash> = HashSet::new();
@@ -45,7 +46,7 @@ fn test_serialized_committed_metadata() {
     let weak_target = CompactTarget::from_unprefixed_hex("1d00ffff").unwrap();
     let min_target = CompactTarget::from_unprefixed_hex("1d00ffff").unwrap();
     let test_committed_metadata = TestCommittedMetadataBuilder::new()
-        .comm_pub_key(public_key)
+        .comm_pub_key(xonly_pubkey.0)
         .miner_ip(socket)
         .start_timestamp(time_val)
         .parents(parent_hash_set)
@@ -72,16 +73,12 @@ fn test_serialized_committed_metadata() {
 #[test]
 
 fn test_serialized_uncommitted_metadata() {
-    let hex = "3046022100839c1fbc5304de944f697c9f4b1d01d1faeba32d751c0f7acb21ac8a0f436a72022100e89bd46bb3a5a62adc679f659b7ce876d83ee297c7a5587b2011c4fcc72eab45";
-    let sig = Signature {
-        signature: secp256k1::ecdsa::Signature::from_str(hex).unwrap(),
-        sighash_type: EcdsaSighashType::All,
-    };
+    let sig = generate_test_signature();
     let time_val = Time::from_consensus(1653195600).unwrap();
-    let extra_nonce = 42;
+    let extra_nonce = Vec::new();
     let test_uncommitted_metadata = TestUnCommittedMetadataBuilder::new()
         .broadcast_timestamp(time_val)
-        .extra_nonce(extra_nonce, extra_nonce)
+        .extra_nonce(extra_nonce.clone(), extra_nonce)
         .signature(sig)
         .build();
     let serialized_val = serialize(&test_uncommitted_metadata);
@@ -103,9 +100,9 @@ fn test_serialized_uncommitted_metadata() {
 
 fn test_serialized_bead() {
     let _address = String::from("127.0.0.1:8000");
-    let public_key = "020202020202020202020202020202020202020202020202020202020202020202"
-        .parse::<bitcoin::PublicKey>()
-        .unwrap();
+    let secp = Secp256k1::new();
+    let keypair = Keypair::new(&secp, &mut rand::thread_rng());
+    let xonly_pubkey = XOnlyPublicKey::from_keypair(&keypair);
     let socket = String::from("127.0.0.1");
     let time_hash_set = TimeVec(Vec::new());
     let parent_hash_set: HashSet<BlockHash> = HashSet::new();
@@ -116,7 +113,7 @@ fn test_serialized_bead() {
     let min_target = CompactTarget::from_consensus(1);
     let time_val = Time::from_consensus(1653195600).unwrap();
     let test_committed_metadata = TestCommittedMetadataBuilder::new()
-        .comm_pub_key(public_key)
+        .comm_pub_key(xonly_pubkey.0)
         .miner_ip(socket)
         .start_timestamp(time_val)
         .parents(parent_hash_set)
@@ -126,15 +123,11 @@ fn test_serialized_bead() {
         .weak_target(weak_target)
         .transactions(vec![test_txid])
         .build();
-    let extra_nonce = 42;
-    let hex = "3046022100839c1fbc5304de944f697c9f4b1d01d1faeba32d751c0f7acb21ac8a0f436a72022100e89bd46bb3a5a62adc679f659b7ce876d83ee297c7a5587b2011c4fcc72eab45";
-    let sig = Signature {
-        signature: secp256k1::ecdsa::Signature::from_str(hex).unwrap(),
-        sighash_type: EcdsaSighashType::All,
-    };
+    let extra_nonce = Vec::new();
+    let sig = generate_test_signature();
     let test_uncommitted_metadata = TestUnCommittedMetadataBuilder::new()
         .broadcast_timestamp(time_val)
-        .extra_nonce(extra_nonce, extra_nonce)
+        .extra_nonce(extra_nonce.clone(), extra_nonce)
         .signature(sig)
         .build();
     let test_bytes: [u8; 32] = [0u8; 32];
@@ -176,9 +169,9 @@ fn test_bead_request_serialization() {
 #[test]
 fn test_bead_response_serialization() {
     let _address = String::from("127.0.0.1:8000");
-    let public_key = "020202020202020202020202020202020202020202020202020202020202020202"
-        .parse::<bitcoin::PublicKey>()
-        .unwrap();
+    let secp = Secp256k1::new();
+    let keypair = Keypair::new(&secp, &mut rand::thread_rng());
+    let xonly_pubkey = XOnlyPublicKey::from_keypair(&keypair);
     let socket = String::from("127.0.0.1");
     let time_hash_set = TimeVec(Vec::new());
     let parent_hash_set: HashSet<BlockHash> = HashSet::new();
@@ -186,7 +179,7 @@ fn test_bead_response_serialization() {
     let min_target = CompactTarget::from_unprefixed_hex("1d00ffff").unwrap();
     let time_val = Time::from_consensus(1653195600).unwrap();
     let test_committed_metadata = TestCommittedMetadataBuilder::new()
-        .comm_pub_key(public_key)
+        .comm_pub_key(xonly_pubkey.0)
         .miner_ip(socket)
         .start_timestamp(time_val)
         .parents(parent_hash_set)
@@ -196,15 +189,11 @@ fn test_bead_response_serialization() {
         .weak_target(weak_target)
         .transactions(vec![])
         .build();
-    let extra_nonce = 42;
-    let hex = "3046022100839c1fbc5304de944f697c9f4b1d01d1faeba32d751c0f7acb21ac8a0f436a72022100e89bd46bb3a5a62adc679f659b7ce876d83ee297c7a5587b2011c4fcc72eab45";
-    let sig = Signature {
-        signature: secp256k1::ecdsa::Signature::from_str(hex).unwrap(),
-        sighash_type: EcdsaSighashType::All,
-    };
+    let extra_nonce = Vec::new();
+    let sig = generate_test_signature();
     let test_uncommitted_metadata = TestUnCommittedMetadataBuilder::new()
         .broadcast_timestamp(time_val)
-        .extra_nonce(extra_nonce, extra_nonce)
+        .extra_nonce(extra_nonce.clone(), extra_nonce)
         .signature(sig)
         .build();
     let test_bytes: [u8; 32] = [0u8; 32];

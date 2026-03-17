@@ -3,28 +3,30 @@ use super::*;
 use crate::bead::{Bead, BeadResponse};
 use crate::utils::compute_block_hash;
 use crate::utils::test_utils::test_utility_functions::{
-    Signature, TestCommittedMetadataBuilder, TestUnCommittedMetadataBuilder, Time, TimeVec,
+    generate_test_signature, TestCommittedMetadataBuilder, TestUnCommittedMetadataBuilder, Time,
+    TimeVec,
 };
 use bitcoin::consensus::encode::deserialize;
 use bitcoin::consensus::serialize;
 use bitcoin::hashes::Hash;
 use bitcoin::CompactTarget;
 use bitcoin::{block::Header as BlockHeader, block::Version as BlockVersion};
-use bitcoin::{BlockHash, EcdsaSighashType, TxMerkleNode};
+use bitcoin::{BlockHash, TxMerkleNode};
 use futures::StreamExt;
 use libp2p::floodsub::Topic;
 use libp2p::swarm::SwarmEvent;
 use libp2p::{Multiaddr, Swarm, SwarmBuilder};
 use std::collections::HashSet;
-use std::str::FromStr;
+use stratum_apps::secp256k1::{Keypair as KeyPair, Secp256k1, XOnlyPublicKey};
 use tokio::time::timeout;
 
 // Helper function to create a test bead
 fn create_test_bead() -> Bead {
     let _address = String::from("127.0.0.1:8888");
-    let public_key = "020202020202020202020202020202020202020202020202020202020202020202"
-        .parse::<bitcoin::PublicKey>()
-        .unwrap();
+    let secp = Secp256k1::new();
+    let (secret_key, _) = secp.generate_keypair(&mut rand::thread_rng());
+    let keypair = KeyPair::from_secret_key(&secp, &secret_key);
+    let xonly_pubkey = XOnlyPublicKey::from_keypair(&keypair);
     let socket = String::from("127.0.0.1");
     let time_hash_set = TimeVec(Vec::new());
     let parent_hash_set: HashSet<BlockHash> = HashSet::new();
@@ -32,7 +34,7 @@ fn create_test_bead() -> Bead {
     let min_target = CompactTarget::from_consensus(486604799);
     let time_val = Time::from_consensus(1653195600).unwrap();
     let test_committed_metadata = TestCommittedMetadataBuilder::new()
-        .comm_pub_key(public_key)
+        .comm_pub_key(xonly_pubkey.0)
         .miner_ip(socket)
         .start_timestamp(time_val)
         .parents(parent_hash_set)
@@ -42,14 +44,10 @@ fn create_test_bead() -> Bead {
         .weak_target(weak_target)
         .transactions(vec![])
         .build();
-    let extra_nonce_1 = 42;
-    let extra_nonce_2 = 42;
+    let extra_nonce_1 = Vec::new();
+    let extra_nonce_2 = Vec::new();
 
-    let hex = "3046022100839c1fbc5304de944f697c9f4b1d01d1faeba32d751c0f7acb21ac8a0f436a72022100e89bd46bb3a5a62adc679f659b7ce876d83ee297c7a5587b2011c4fcc72eab45";
-    let sig = Signature {
-        signature: secp256k1::ecdsa::Signature::from_str(hex).unwrap(),
-        sighash_type: EcdsaSighashType::All,
-    };
+    let sig = generate_test_signature();
     let test_uncommitted_metadata = TestUnCommittedMetadataBuilder::new()
         .broadcast_timestamp(time_val)
         .extra_nonce(extra_nonce_1, extra_nonce_2)
@@ -382,7 +380,7 @@ async fn test_floodsub_message_propagation() {
                         "Bead succesfully received from a peer with peer id {:?} from topic {:?}",
                         msg.source, topic
                     );
-                    let res = tx.send(msg.data.to_ascii_lowercase()).await;
+                    let res = tx.send(msg.data.into()).await;
                     match res {
                         Ok(_) => {
                             println!("Bead succesfully sent to the main thread reciever");

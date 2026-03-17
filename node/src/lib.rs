@@ -1,18 +1,22 @@
 //These implementations must be defined under lib.rs as they are required for intergration tests
 use crate::db::db_handlers::prepare_bead_tuple_data;
 use bitcoin::{
-    consensus::encode::deserialize, ecdsa::Signature, BlockHash, CompactTarget, EcdsaSighashType,
-    Txid,
+    absolute::Time,
+    consensus::encode::{deserialize, Decodable, Encodable, Error as ConsensusError},
+    io::{Read, Write},
+    BlockHash, CompactTarget, Txid,
 };
+use futures::lock::Mutex;
 use num::ToPrimitive;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
-    str::FromStr,
     sync::Arc,
     time::UNIX_EPOCH,
 };
-
-use futures::lock::Mutex;
+use stratum_apps::key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
+use stratum_apps::secp256k1::{All, Keypair, Message, Secp256k1};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, trace, warn};
@@ -261,15 +265,61 @@ pub enum SwarmCommand {
     //Initiate IBD after waiting for connection_mapping to be populated via peer discovery
     InitiateIBD,
 }
+pub fn compute_sha256_hash(bytes: &[u8]) -> [u8; 32] {
+    let mut sha_256_engine = Sha256::new();
+    sha_256_engine.update(bytes);
+    let tag_bytes = sha_256_engine.finalize();
+    tag_bytes.try_into().unwrap()
+}
+#[derive(Debug, Serialize, Deserialize, Clone)]
+// Message to be signed for signature generation via secret_key
+pub struct SignatureCommitment {
+    pub extra_nonce_1: Vec<u8>,
+    pub extra_nonce_2: Vec<u8>,
+    pub broadcast_timestamp: Time,
+}
+
+impl Encodable for SignatureCommitment {
+    fn consensus_encode<W: Write + ?Sized>(&self, w: &mut W) -> Result<usize, bitcoin::io::Error> {
+        let mut len = 0;
+        len += self.extra_nonce_1.consensus_encode(w)?;
+        len += self.extra_nonce_2.consensus_encode(w)?;
+        len += self
+            .broadcast_timestamp
+            .to_consensus_u32()
+            .consensus_encode(w)?;
+        Ok(len)
+    }
+}
+
+impl Decodable for SignatureCommitment {
+    fn consensus_decode<R: Read + ?Sized>(r: &mut R) -> Result<Self, ConsensusError> {
+        let extra_nonce_1 = Vec::consensus_decode(r)?;
+        let extra_nonce_2 = Vec::consensus_decode(r)?;
+        let broadcast_timestamp = Time::from_consensus(u32::consensus_decode(r)?)
+            .map_err(|_| ConsensusError::ParseFailed("invalid timestamp"))?;
+
+        Ok(SignatureCommitment {
+            extra_nonce_1,
+            extra_nonce_2,
+            broadcast_timestamp,
+        })
+    }
+}
+
 pub struct SwarmHandler {
     pub command_sender: Sender<SwarmCommand>,
     braid_arc: Arc<tokio::sync::RwLock<Braid>>,
     db_command_sender: tokio::sync::mpsc::Sender<BraidpoolDBTypes>,
+    secret_key_auth: Secp256k1SecretKey,
+    public_key_auth: Secp256k1PublicKey,
 }
 impl SwarmHandler {
     pub fn new(
         braid_arc: Arc<tokio::sync::RwLock<Braid>>,
         db_command_sender: tokio::sync::mpsc::Sender<BraidpoolDBTypes>,
+        secret_key_auth: Secp256k1SecretKey,
+        public_key_auth: Secp256k1PublicKey,
     ) -> (Self, Receiver<SwarmCommand>) {
         let (swarm_stratum_bridge_tx, swarm_stratum_bridge_rx) =
             mpsc::channel::<SwarmCommand>(1024);
@@ -278,6 +328,8 @@ impl SwarmHandler {
                 command_sender: swarm_stratum_bridge_tx,
                 braid_arc: Arc::clone(&braid_arc),
                 db_command_sender,
+                public_key_auth: public_key_auth,
+                secret_key_auth: secret_key_auth,
             },
             swarm_stratum_bridge_rx,
         )
@@ -285,12 +337,12 @@ impl SwarmHandler {
     pub async fn propagate_valid_bead(
         &mut self,
         candidate_block: bitcoin::Block,
-        extranonce_2_raw_value: u32,
+        extranonce_2_raw_value: Vec<u8>,
         downstream_client_ip: &str,
         job_sent_timestamp: u32,
         downstream_payout_addr: &str,
         //TODO: Will be used as seperate entity after altering `uncommitted_metadata`
-        extranonce_1_raw_value: u32,
+        extranonce_1_raw_value: Vec<u8>,
     ) -> Result<(), StratumErrors> {
         let candidate_block_header = candidate_block.header;
         let candidate_block_transactions = candidate_block.txdata;
@@ -300,10 +352,6 @@ impl SwarmHandler {
             .collect();
         let transaction_ids: Vec<Txid> = Vec::from(ids);
         debug!("Broadcasting bead via floodsub");
-        //TODO:Currently temprorary placeholder will be replaced in upcoming PRs
-        let public_key = "020202020202020202020202020202020202020202020202020202020202020202"
-            .parse::<bitcoin::PublicKey>()
-            .unwrap();
         let mut time_hash_set = TimeVec(Vec::new());
         let mut parent_hash_set: HashSet<BlockHash> = HashSet::new();
         let mut braid_data = self.braid_arc.write().await;
@@ -327,7 +375,7 @@ impl SwarmHandler {
             bitcoin::blockdata::locktime::absolute::Time::from_consensus(job_sent_timestamp)
                 .unwrap();
         let candidate_block_bead_committed_metadata = CommittedMetadata {
-            comm_pub_key: public_key,
+            comm_pub_key: self.public_key_auth.0,
             transaction_ids: TxIdVec(transaction_ids),
             parents: parent_hash_set,
             parent_bead_timestamps: time_hash_set,
@@ -336,12 +384,6 @@ impl SwarmHandler {
             min_target: min_target,
             weak_target: weak_target,
             miner_ip: downstream_client_ip.to_string(),
-        };
-        //TODO:This will be either be generated via the `Pubkey` from config parameter from `~/.braidpool`
-        let hex = "3046022100839c1fbc5304de944f697c9f4b1d01d1faeba32d751c0f7acb21ac8a0f436a72022100e89bd46bb3a5a62adc679f659b7ce876d83ee297c7a5587b2011c4fcc72eab45";
-        let sig = Signature {
-            signature: secp256k1::ecdsa::Signature::from_str(hex).unwrap(),
-            sighash_type: EcdsaSighashType::All,
         };
         //Current UNIX timestamp during broadcast of bead
         let current_system_time = std::time::SystemTime::now();
@@ -356,11 +398,24 @@ impl SwarmHandler {
 
         let unix_timestamp = duration_since_epoch.as_secs().to_u32().unwrap();
 
+        let msg_commitment = SignatureCommitment {
+            broadcast_timestamp: bitcoin::absolute::Time::from_consensus(unix_timestamp).unwrap(),
+            extra_nonce_1: extranonce_1_raw_value.clone(),
+            extra_nonce_2: extranonce_2_raw_value.clone(),
+        };
+        let msg_bytes = bitcoin::consensus::serialize(&msg_commitment);
+        // Signature formation for adding inside `UnCommittedMetadata`
+        let engine = Secp256k1::<All>::gen_new();
+        let msg = Message::from_digest(compute_sha256_hash(&msg_bytes));
+        let sign = engine.sign_schnorr(
+            &msg,
+            &Keypair::from_secret_key(&engine, &self.secret_key_auth.0),
+        );
         let candidate_block_bead_uncommitted_metadata = UnCommittedMetadata {
             broadcast_timestamp: bitcoin::absolute::Time::from_consensus(unix_timestamp).unwrap(),
             extra_nonce_1: extranonce_1_raw_value,
             extra_nonce_2: extranonce_2_raw_value,
-            signature: sig,
+            signature: sign,
         };
         let weak_share = Bead {
             committed_metadata: candidate_block_bead_committed_metadata,

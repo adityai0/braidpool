@@ -4,6 +4,7 @@ use std::{fmt, path::PathBuf};
 use crate::stratum::{BlockTemplate, JobDetails};
 use crate::TemplateId;
 use bitcoin::address::ParseError as AddressParseError;
+use stratum_apps::secp256k1;
 use tokio::sync::oneshot;
 
 #[derive(Debug)]
@@ -215,11 +216,18 @@ pub enum StratumErrors {
     ErrorFetchingCurrentUNIXTimestamp {
         error: String,
     },
+    AuthKeyNotProvided,
 }
 pub enum StratumResponseErrors {}
 impl fmt::Display for StratumErrors {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            StratumErrors::AuthKeyNotProvided => {
+                write!(
+                    f,
+                    "Auth key required for noise handshake not provided or initialized"
+                )
+            }
             StratumErrors::ErrorFetchingCurrentUNIXTimestamp { error } => {
                 write!(
                     f,

@@ -796,25 +796,7 @@ impl DownstreamClient {
             }
         }
         //Passing both the extranonces for committment in uncommitted metadata
-        let extranonce_2_raw_value = match u32::from_str_radix(extranonce2, 16) {
-            Ok(v) => v,
-            Err(e) => {
-                error!(connection_id = %connection_id_hex, error = %e, extranonce2 = %extranonce2, "Failed to parse extranonce2");
-                return Err(StratumErrors::InvalidMethodParams {
-                    method: "mining.submit".to_string(),
-                });
-            }
-        };
-        let extranonce_1_hex_str = hex::encode(self.extranonce1.clone());
-        let extranonce_1_raw_value = match u32::from_str_radix(&extranonce_1_hex_str, 16) {
-            Ok(v) => v,
-            Err(e) => {
-                error!(connection_id = %connection_id_hex, error = %e, extranonce1 = %extranonce_1_hex_str, "Failed to parse extranonce1");
-                return Err(StratumErrors::InvalidMethodParams {
-                    method: "mining.submit".to_string(),
-                });
-            }
-        };
+        let extranonce_2_raw_value = hex::decode(extranonce2).unwrap_or_default();
         let _swarm_command_sent = match swarm_handler
             .lock()
             .await
@@ -824,7 +806,7 @@ impl DownstreamClient {
                 &self.downstream_ip,
                 submitted_job.job_sent_time,
                 worker_name,
-                extranonce_1_raw_value,
+                self.extranonce1.clone(),
             )
             .await
         {
@@ -2135,6 +2117,10 @@ mod test {
         Sequence, TxIn, TxOut,
     };
     use futures::lock::Mutex;
+    use stratum_apps::{
+        key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
+        secp256k1::{Keypair, Secp256k1},
+    };
     use tokio::{
         io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
         net::TcpStream,
@@ -2154,8 +2140,14 @@ mod test {
         let mining_job_map = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let notify_tx = mpsc::channel::<NotifyCmd>(32).0;
         let (_test_db_handler, test_db_tx) = DBHandler::new("cpunet".to_string()).await.unwrap();
-        let (swarm_handler, mut swarm_command_receiver) =
-            SwarmHandler::new(Arc::clone(&test_braid), test_db_tx);
+        let secp = Secp256k1::new();
+        let (secret_key, pubkey) = secp.generate_keypair(&mut rand::thread_rng());
+        let (swarm_handler, mut swarm_command_receiver) = SwarmHandler::new(
+            Arc::clone(&test_braid),
+            test_db_tx,
+            Secp256k1SecretKey(secret_key),
+            Secp256k1PublicKey(pubkey.x_only_public_key().0),
+        );
         let swarm_handler_arc = Arc::new(Mutex::new(swarm_handler));
         let config = StratumServerConfig {
             hostname: "127.0.0.1".to_string(),
@@ -2225,8 +2217,15 @@ mod test {
         )));
         let mining_job_map = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let (_test_db_handler, test_db_tx) = DBHandler::new("cpunet".to_string()).await.unwrap();
-        let (swarm_handler, mut swarm_command_receiver) =
-            SwarmHandler::new(Arc::clone(&test_braid), test_db_tx);
+        let secp = Secp256k1::new();
+        let (secret_key, pubkey) = secp.generate_keypair(&mut rand::thread_rng());
+        let (swarm_handler, mut swarm_command_receiver) = SwarmHandler::new(
+            Arc::clone(&test_braid),
+            test_db_tx,
+            Secp256k1SecretKey(secret_key),
+            Secp256k1PublicKey(pubkey.x_only_public_key().0),
+        );
+
         let swarm_handler_arc = Arc::new(Mutex::new(swarm_handler));
         let notify_tx = mpsc::channel::<NotifyCmd>(32).0;
 
@@ -2283,8 +2282,14 @@ mod test {
         let mining_job_map = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let notify_tx = mpsc::channel::<NotifyCmd>(32).0;
         let (_test_db_handler, test_db_tx) = DBHandler::new("cpunet".to_string()).await.unwrap();
-        let (swarm_handler, mut swarm_command_receiver) =
-            SwarmHandler::new(Arc::clone(&test_braid), test_db_tx);
+        let secp = Secp256k1::new();
+        let (secret_key, pubkey) = secp.generate_keypair(&mut rand::thread_rng());
+        let (swarm_handler, mut swarm_command_receiver) = SwarmHandler::new(
+            Arc::clone(&test_braid),
+            test_db_tx,
+            Secp256k1SecretKey(secret_key),
+            Secp256k1PublicKey(pubkey.x_only_public_key().0),
+        );
         let swarm_handler_arc = Arc::new(Mutex::new(swarm_handler));
         let config = StratumServerConfig {
             hostname: "127.0.0.1".to_string(),
@@ -2336,8 +2341,14 @@ mod test {
         let (_test_db_handler, test_db_tx) = DBHandler::new("cpunet".to_string()).await.unwrap();
         let mining_job_map = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let notify_tx = mpsc::channel::<NotifyCmd>(32).0;
-        let (swarm_handler, mut swarm_command_receiver) =
-            SwarmHandler::new(Arc::clone(&test_braid), test_db_tx);
+        let secp = Secp256k1::new();
+        let (secret_key, pubkey) = secp.generate_keypair(&mut rand::thread_rng());
+        let (swarm_handler, mut swarm_command_receiver) = SwarmHandler::new(
+            Arc::clone(&test_braid),
+            test_db_tx,
+            Secp256k1SecretKey(secret_key),
+            Secp256k1PublicKey(pubkey.x_only_public_key().0),
+        );
         let swarm_handler_arc = Arc::new(Mutex::new(swarm_handler));
         let config = StratumServerConfig {
             hostname: "127.0.0.1".to_string(),
@@ -2382,8 +2393,14 @@ mod test {
         let mining_job_map: Arc<Mutex<HashMap<String, Arc<Mutex<MiningJobMap>>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let (notify_tx, _notify_rx) = mpsc::channel::<NotifyCmd>(32);
-        let (swarm_handler, mut swarm_command_receiver) =
-            SwarmHandler::new(Arc::clone(&test_braid), test_db_tx);
+        let secp = Secp256k1::new();
+        let (secret_key, pubkey) = secp.generate_keypair(&mut rand::thread_rng());
+        let (swarm_handler, mut swarm_command_receiver) = SwarmHandler::new(
+            Arc::clone(&test_braid),
+            test_db_tx,
+            Secp256k1SecretKey(secret_key),
+            Secp256k1PublicKey(pubkey.x_only_public_key().0),
+        );
         let swarm_handler_arc = Arc::new(Mutex::new(swarm_handler));
         let config = StratumServerConfig {
             hostname: "127.0.0.1".to_string(),
@@ -2455,8 +2472,14 @@ mod test {
             "cpunet".to_string(),
         )));
         let (_test_db_handler, test_db_tx) = DBHandler::new("cpunet".to_string()).await.unwrap();
-        let (swarm_handler, mut swarm_command_receiver) =
-            SwarmHandler::new(Arc::clone(&test_braid), test_db_tx);
+        let secp = Secp256k1::new();
+        let (secret_key, pubkey) = secp.generate_keypair(&mut rand::thread_rng());
+        let (swarm_handler, mut swarm_command_receiver) = SwarmHandler::new(
+            Arc::clone(&test_braid),
+            test_db_tx,
+            Secp256k1SecretKey(secret_key),
+            Secp256k1PublicKey(pubkey.x_only_public_key().0),
+        );
         let swarm_handler_arc = Arc::new(Mutex::new(swarm_handler));
         let test_merkle_bytes: [u8; 32] = [0u8; 32];
         let mut test_witness = Witness::new();

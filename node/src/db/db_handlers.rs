@@ -7,8 +7,8 @@ use crate::{
     utils::{compute_block_hash, BeadHash},
 };
 use bitcoin::{
-    absolute::Time, block::Version as BlockVersion, ecdsa::Signature, hashes::Hash, BlockHash,
-    CompactTarget, PublicKey, TxMerkleNode, Txid,
+    absolute::Time, block::Version as BlockVersion, hashes::Hash, BlockHash, CompactTarget,
+    TxMerkleNode, Txid,
 };
 use futures::lock::Mutex;
 use num::ToPrimitive;
@@ -16,6 +16,7 @@ use serde_json::json;
 use sqlx::{Pool, Row, Sqlite};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use stratum_apps::secp256k1::{schnorr::Signature, XOnlyPublicKey};
 use tokio::sync::mpsc::{Receiver, Sender};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, trace, warn};
@@ -87,18 +88,16 @@ impl DBHandler {
         bead_id: &usize,
     ) -> Result<(), DBErrors> {
         trace!("Sequential insertion query received");
-        let hex_converted_extranonce_1 =
-            hex::encode(bead.uncommitted_metadata.extra_nonce_1.to_be_bytes());
-        let hex_converted_extranonce_2 =
-            hex::encode(bead.uncommitted_metadata.extra_nonce_2.to_be_bytes());
+        let hex_converted_extranonce_1 = hex::encode(bead.uncommitted_metadata.extra_nonce_1);
+        let hex_converted_extranonce_2 = hex::encode(bead.uncommitted_metadata.extra_nonce_2);
         let block_header_bytes = compute_block_hash(&bead.block_header, &self.network_name)
             .to_byte_array()
             .to_vec();
         let prev_block_hash_bytes = bead.block_header.prev_blockhash.to_byte_array().to_vec();
         let merkle_root_bytes = bead.block_header.merkle_root.to_byte_array().to_vec();
         let payout_addr_bytes = bead.committed_metadata.payout_address.as_bytes().to_vec();
-        let public_key_bytes = bead.committed_metadata.comm_pub_key.to_bytes();
-        let signature_bytes = bead.uncommitted_metadata.signature.to_vec();
+        let public_key_bytes = bead.committed_metadata.comm_pub_key.serialize();
+        let signature_bytes = bead.uncommitted_metadata.signature.serialize();
         let mut conn = match self.db_connection_pool.lock().await.begin().await {
             Ok(conn) => conn,
             Err(err) => {
@@ -120,7 +119,7 @@ impl DBHandler {
             .bind(bead.block_header.nonce)
             .bind(payout_addr_bytes)
             .bind(bead.committed_metadata.start_timestamp.to_consensus_u32())
-            .bind(public_key_bytes)
+            .bind(public_key_bytes.as_slice())
             .bind(bead.committed_metadata.min_target.to_consensus())
             .bind(bead.committed_metadata.weak_target.to_consensus())
             .bind(bead.committed_metadata.miner_ip)
@@ -131,7 +130,7 @@ impl DBHandler {
                     .broadcast_timestamp
                     .to_consensus_u32(),
             )
-            .bind(signature_bytes)
+            .bind(signature_bytes.as_slice())
             .bind(txs_json)
             .bind(relative_json)
             .bind(parent_timestamp_json)
@@ -355,13 +354,13 @@ pub async fn fetch_beads_in_batch(
                     }
                 })?;
 
-            bead.committed_metadata.comm_pub_key =
-                PublicKey::from_slice(&row.get::<Vec<u8>, _>("comm_pub_key")).map_err(|_| {
-                    DBErrors::TupleAttributeParsingError {
-                        error: "Invalid comm_pub_key".into(),
-                        attribute: "comm_pub_key".into(),
-                    }
-                })?;
+            bead.committed_metadata.comm_pub_key = XOnlyPublicKey::from_slice(
+                &row.get::<Vec<u8>, _>("comm_pub_key"),
+            )
+            .map_err(|_| DBErrors::TupleAttributeParsingError {
+                error: "Invalid comm_pub_key".into(),
+                attribute: "comm_pub_key".into(),
+            })?;
 
             bead.committed_metadata.min_target =
                 CompactTarget::from_consensus(row.get::<u32, _>("min_target"));
@@ -375,9 +374,9 @@ pub async fn fetch_beads_in_batch(
                 Time::from_consensus(row.get::<u32, _>("broadcast_timestamp")).unwrap();
 
             bead.uncommitted_metadata.extra_nonce_1 =
-                u32::from_str_radix(&row.get::<String, _>("extranonce1"), 16).unwrap();
+                hex::decode(&row.get::<String, _>("extranonce1")).unwrap();
             bead.uncommitted_metadata.extra_nonce_2 =
-                u32::from_str_radix(&row.get::<String, _>("extranonce2"), 16).unwrap();
+                hex::decode(&row.get::<String, _>("extranonce2")).unwrap();
 
             bead.uncommitted_metadata.signature =
                 Signature::from_slice(&row.get::<Vec<u8>, _>("signature")).unwrap();
@@ -492,14 +491,13 @@ pub async fn fetch_bead_by_bead_hash(
                 .to_string();
             let start_timestamp =
                 Time::from_consensus(row.get::<u32, _>("start_timestamp")).unwrap();
-            let pub_key = PublicKey::from_slice(&row.get::<Vec<u8>, _>("comm_pub_key")).unwrap();
+            let pub_key =
+                XOnlyPublicKey::from_slice(&row.get::<Vec<u8>, _>("comm_pub_key")).unwrap();
             let min_target = CompactTarget::from_consensus(row.get::<u32, _>("min_target"));
             let weak_target = CompactTarget::from_consensus(row.get::<u32, _>("weak_target"));
             let miner_ip = row.get::<String, _>("miner_ip");
-            let extranonce_1 =
-                u32::from_str_radix(&row.get::<String, _>("extranonce1"), 16).unwrap();
-            let extranonce_2 =
-                u32::from_str_radix(&row.get::<String, _>("extranonce2"), 16).unwrap();
+            let extranonce_1 = hex::decode(&row.get::<String, _>("extranonce1")).unwrap();
+            let extranonce_2 = hex::decode(&row.get::<String, _>("extranonce2")).unwrap();
             let broadcast_timestamp =
                 Time::from_consensus(row.get::<u32, _>("broadcast_timestamp")).unwrap();
             let signature = Signature::from_slice(&row.get::<Vec<u8>, _>("signature")).unwrap();
@@ -762,17 +760,17 @@ pub mod test {
             let test_parent_timestamp_json =
                 serde_json::to_string(&parent_timestamps_values).unwrap();
             let hex_converted_extranonce_1 =
-                hex::encode(bead.uncommitted_metadata.extra_nonce_1.to_be_bytes());
+                hex::encode(bead.uncommitted_metadata.extra_nonce_1.clone());
             let hex_converted_extranonce_2 =
-                hex::encode(bead.uncommitted_metadata.extra_nonce_2.to_be_bytes());
+                hex::encode(bead.uncommitted_metadata.extra_nonce_2.clone());
             let block_header_bytes = compute_block_hash(&bead.block_header, &"cpunet".to_string())
                 .to_byte_array()
                 .to_vec();
             let prev_block_hash_bytes = bead.block_header.prev_blockhash.to_byte_array().to_vec();
             let merkle_root_bytes = bead.block_header.merkle_root.to_byte_array().to_vec();
             let payout_addr_bytes = bead.committed_metadata.payout_address.as_bytes().to_vec();
-            let public_key_bytes = bead.committed_metadata.comm_pub_key.to_bytes();
-            let signature_bytes = bead.uncommitted_metadata.signature.to_vec();
+            let public_key_bytes = bead.committed_metadata.comm_pub_key.serialize();
+            let signature_bytes = bead.uncommitted_metadata.signature.serialize();
             let mut test_insertion_tx = test_pool.begin().await.unwrap();
             if let Err(e) = sqlx::query(&INSERT_QUERY)
                 .bind(*bead_id as i64)
@@ -785,7 +783,7 @@ pub mod test {
                 .bind(bead.block_header.nonce)
                 .bind(payout_addr_bytes)
                 .bind(bead.committed_metadata.start_timestamp.to_consensus_u32())
-                .bind(public_key_bytes)
+                .bind(public_key_bytes.as_slice())
                 .bind(bead.committed_metadata.min_target.to_consensus())
                 .bind(bead.committed_metadata.weak_target.to_consensus())
                 .bind(bead.committed_metadata.miner_ip.clone())
@@ -796,7 +794,7 @@ pub mod test {
                         .broadcast_timestamp
                         .to_consensus_u32(),
                 )
-                .bind(signature_bytes)
+                .bind(signature_bytes.as_slice())
                 .bind(test_tx_json)
                 .bind(test_relative_json)
                 .bind(test_parent_timestamp_json)

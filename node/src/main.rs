@@ -8,6 +8,7 @@ use node::{
     db::db_handlers::{fetch_beads_in_batch, DBHandler},
     ibd_manager::{IBDManager, IBD_TRIGGER_AFTER},
     ipc_template_consumer,
+    key_management::load_or_generate_authority_keypair,
     peer_manager::PeerManager,
     rpc_server::{parse_arguments, run_rpc_server},
     setup_tracing,
@@ -127,9 +128,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut latest_template_merkle_branch_ref = latest_template_merkle_branch.clone();
 
     let (notification_tx, notification_rx) = mpsc::channel::<NotifyCmd>(1024);
+
+    // Load or generate authority keypair from ~/.braidpool/authority.key
+    let (auth_public_key, auth_secret_key) = load_or_generate_authority_keypair().map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("Failed to load authority keypair: {:?}", e),
+        )
+    })?;
+    info!("Authority keypair loaded");
+
     //Swarm handler for additional event other than p2p events related to swarm
-    let (swarm_handler, swarm_command_receiver) =
-        SwarmHandler::new(Arc::clone(&braid), db_tx.clone());
+    let (swarm_handler, swarm_command_receiver) = SwarmHandler::new(
+        Arc::clone(&braid),
+        db_tx.clone(),
+        auth_secret_key,
+        auth_public_key,
+    );
     let swarm_command_sender = swarm_handler.command_sender.clone();
     let swarm_handler_arc = Arc::new(Mutex::new(swarm_handler));
 

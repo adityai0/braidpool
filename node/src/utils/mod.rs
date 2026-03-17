@@ -8,9 +8,8 @@ use ::bitcoin::BlockHash;
 use bitcoin::{
     absolute::Time,
     block::{Header as BlockHeader, Version as BlockVersion},
-    ecdsa::Signature,
     hashes::Hash,
-    CompactTarget, EcdsaSighashType, TxMerkleNode,
+    CompactTarget, TxMerkleNode,
 };
 // Standard Imports
 #[allow(unused_imports)]
@@ -31,8 +30,8 @@ pub type Bytes = Vec<Byte>;
 pub(crate) type Relatives = HashSet<BeadHash>;
 
 // Error Definitions
-use std::{collections::HashSet, net::IpAddr, str::FromStr};
-
+use std::{collections::HashSet, net::IpAddr};
+use stratum_apps::secp256k1::{Keypair, Message, Secp256k1, XOnlyPublicKey};
 pub(crate) fn hashset_to_vec_deterministic(hashset: &HashSet<BeadHash>) -> Vec<BeadHash> {
     let mut vec: Vec<BeadHash> = hashset.iter().cloned().collect();
     vec.sort();
@@ -88,9 +87,9 @@ pub fn server_endpoints(bind_host: &str, port: u16, protocol: &str) -> Vec<Strin
 
 // Helper function to create test beads
 pub fn create_test_bead(nonce: u32, prev_hash: Option<BlockHash>) -> Bead {
-    let public_key = "020202020202020202020202020202020202020202020202020202020202020202"
-        .parse::<bitcoin::PublicKey>()
-        .unwrap();
+    let secp = Secp256k1::new();
+    let keypair = Keypair::new(&secp, &mut rand::thread_rng());
+    let xonly_pubkey = XOnlyPublicKey::from_keypair(&keypair);
     let time_hash_set = TimeVec(Vec::new());
     let mut parent_hash_set: HashSet<BlockHash> = HashSet::new();
     if let Some(hash) = prev_hash {
@@ -100,7 +99,7 @@ pub fn create_test_bead(nonce: u32, prev_hash: Option<BlockHash>) -> Bead {
     let min_target = CompactTarget::from_consensus(486604799);
     let time_val = Time::from_consensus(1653195600).unwrap();
     let test_committed_metadata: CommittedMetadata = CommittedMetadata {
-        comm_pub_key: public_key,
+        comm_pub_key: xonly_pubkey.0,
         min_target: min_target,
         miner_ip: "".to_string(),
         transaction_ids: TxIdVec(vec![]),
@@ -110,14 +109,16 @@ pub fn create_test_bead(nonce: u32, prev_hash: Option<BlockHash>) -> Bead {
         start_timestamp: time_val,
         weak_target: weak_target,
     };
-    let extra_nonce_1 = 42;
-    let extra_nonce_2 = rand::random::<u32>();
+    let extra_nonce_1 = Vec::new();
+    let extra_nonce_2 = Vec::new();
 
-    let hex = "3046022100839c1fbc5304de944f697c9f4b1d01d1faeba32d751c0f7acb21ac8a0f436a72022100e89bd46bb3a5a62adc679f659b7ce876d83ee297c7a5587b2011c4fcc72eab45";
-    let sig = Signature {
-        signature: secp256k1::ecdsa::Signature::from_str(hex).unwrap(),
-        sighash_type: EcdsaSighashType::All,
-    };
+    // Generate a valid Schnorr signature using a random keypair
+    let secp = Secp256k1::new();
+    let mut rng = rand::rngs::OsRng;
+    let (secret_key, _) = secp.generate_keypair(&mut rng);
+    let msg = Message::from_digest([0u8; 32]);
+    let sig = secp.sign_schnorr(&msg, &Keypair::from_secret_key(&secp, &secret_key));
+
     let test_uncommitted_metadata = UnCommittedMetadata {
         broadcast_timestamp: time_val,
         extra_nonce_1: extra_nonce_1,

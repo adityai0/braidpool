@@ -11,25 +11,21 @@ use crate::uncommitted_metadata::UnCommittedMetadata;
 #[cfg(test)]
 use bitcoin::block::Header as BlockHeader;
 #[cfg(test)]
-pub use bitcoin::ecdsa::Signature;
-#[cfg(test)]
-pub use bitcoin::{absolute::Time, p2p::address::AddrV2, PublicKey, Transaction};
+pub use bitcoin::{absolute::Time, p2p::address::AddrV2, Transaction};
 #[cfg(test)]
 pub mod test_utility_functions {
-    use std::{
-        collections::{HashMap, HashSet},
-        str::FromStr,
-    };
+    use std::collections::{HashMap, HashSet};
 
     #[cfg(test)]
     use bitcoin::Txid;
     use bitcoin::{
-        block::Version as BlockVersion, hashes::Hash, BlockHash, CompactTarget, EcdsaSighashType,
-        TxMerkleNode,
+        block::Version as BlockVersion, hashes::Hash, BlockHash, CompactTarget, TxMerkleNode,
     };
     use rand::{rngs::OsRng, thread_rng, RngCore};
-    use secp256k1::{Message, Secp256k1, SecretKey};
     use serde::{Deserialize, Serialize};
+    #[cfg(test)]
+    use stratum_apps::secp256k1::XOnlyPublicKey;
+    use stratum_apps::secp256k1::{schnorr::Signature, Keypair, Message, Secp256k1, SecretKey};
 
     #[cfg(test)]
     use crate::{braid::Braid, utils::compute_block_hash};
@@ -133,8 +129,8 @@ pub mod test_utility_functions {
     }
 
     pub struct TestUnCommittedMetadataBuilder {
-        extra_nonce_1: u32,
-        extra_nonce_2: u32,
+        extra_nonce_1: Vec<u8>,
+        extra_nonce_2: Vec<u8>,
         broadcast_timestamp: Option<Time>,
         signature: Option<Signature>,
     }
@@ -143,14 +139,14 @@ pub mod test_utility_functions {
     impl TestUnCommittedMetadataBuilder {
         pub fn new() -> Self {
             Self {
-                extra_nonce_1: 0,
-                extra_nonce_2: 0,
+                extra_nonce_1: Vec::new(),
+                extra_nonce_2: Vec::new(),
                 broadcast_timestamp: None,
                 signature: None,
             }
         }
 
-        pub fn extra_nonce(mut self, nonce_1: u32, nonce_2: u32) -> Self {
+        pub fn extra_nonce(mut self, nonce_1: Vec<u8>, nonce_2: Vec<u8>) -> Self {
             self.extra_nonce_1 = nonce_1;
             self.extra_nonce_2 = nonce_2;
             self
@@ -184,7 +180,7 @@ pub mod test_utility_functions {
         parent_bead_timestamps: Option<TimeVec>,
         payout_address: Option<String>,
         start_timestamp: Option<Time>,
-        comm_pub_key: Option<PublicKey>,
+        comm_pub_key: Option<XOnlyPublicKey>,
         min_target: Option<CompactTarget>,
         weak_target: Option<CompactTarget>,
         miner_ip: Option<String>,
@@ -231,7 +227,7 @@ pub mod test_utility_functions {
             self
         }
 
-        pub fn comm_pub_key(mut self, key: PublicKey) -> Self {
+        pub fn comm_pub_key(mut self, key: XOnlyPublicKey) -> Self {
             self.comm_pub_key = Some(key);
             self
         }
@@ -313,18 +309,29 @@ pub mod test_utility_functions {
         }
     }
     fn generate_random_public_key_string() -> String {
-        let secp = Secp256k1::new();
+        let mut secp = Secp256k1::new();
         let mut rng = thread_rng();
         let secret_key = SecretKey::new(&mut rng);
-        let public_key = PublicKey::new(secret_key.public_key(&secp));
-        public_key.to_string()
+        let public_key = secret_key.public_key(&mut secp);
+        public_key.x_only_public_key().0.to_string()
+    }
+
+    /// Generates a valid Schnorr signature by creating a random keypair and signing
+    /// a 32-byte zero array message. Useful for tests that need a valid signature
+    /// without caring about the actual signed content.
+    pub fn generate_test_signature() -> Signature {
+        let secp = Secp256k1::new();
+        let mut rng = OsRng::default();
+        let (secret_key, _) = secp.generate_keypair(&mut rng);
+        let msg = Message::from_digest([0u8; 32]);
+        secp.sign_schnorr(&msg, &Keypair::from_secret_key(&secp, &secret_key))
     }
 
     pub fn emit_bead() -> Bead {
         // This function creates a random bead for testing purposes.
 
         let random_public_key = generate_random_public_key_string()
-            .parse::<bitcoin::PublicKey>()
+            .parse::<XOnlyPublicKey>()
             .unwrap();
         // Generate a reasonable timestamp (between 2020-01-01 and now)
         let now = std::time::SystemTime::now()
@@ -354,8 +361,8 @@ pub mod test_utility_functions {
             .transactions(vec![])
             .build();
 
-        let extra_nonce_1 = rand::random::<u32>();
-        let extra_nonce_2 = rand::random::<u32>();
+        let extra_nonce_1 = Vec::new();
+        let extra_nonce_2 = Vec::new();
 
         let secp = Secp256k1::new();
 
@@ -367,23 +374,13 @@ pub mod test_utility_functions {
         let mut msg_bytes = [0u8; 32];
         rng.fill_bytes(&mut msg_bytes);
         let msg = Message::from_digest(msg_bytes);
-
         // Sign the message
-        let signature = secp.sign_ecdsa(&msg, &secret_key);
-
-        // DER encode the signature and get hex
-        let der_sig = signature.serialize_der();
-        let hex = hex::encode(der_sig);
-
-        let sig = Signature {
-            signature: secp256k1::ecdsa::Signature::from_str(&hex).unwrap(),
-            sighash_type: EcdsaSighashType::All,
-        };
+        let signature = secp.sign_schnorr(&msg, &Keypair::from_secret_key(&secp, &secret_key));
 
         let uncommitted_metadata = TestUnCommittedMetadataBuilder::new()
             .broadcast_timestamp(time_val)
             .extra_nonce(extra_nonce_1, extra_nonce_2)
-            .signature(sig)
+            .signature(signature)
             .build();
         let bytes: [u8; 32] = [0u8; 32];
 

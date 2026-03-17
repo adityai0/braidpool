@@ -5,12 +5,13 @@ use bitcoin::consensus::encode::Encodable;
 use bitcoin::consensus::encode::Error;
 use bitcoin::io::{self, Read, Write};
 use bitcoin::CompactTarget;
-use bitcoin::PublicKey;
 use bitcoin::Txid;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashSet;
-use std::str::FromStr;
+use stratum_apps::secp256k1::Keypair;
+use stratum_apps::secp256k1::Secp256k1;
+use stratum_apps::secp256k1::XOnlyPublicKey;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct TimeVec(pub Vec<Time>);
@@ -70,7 +71,7 @@ pub struct CommittedMetadata {
     pub parent_bead_timestamps: TimeVec,
     pub payout_address: String,
     pub start_timestamp: Time,
-    pub comm_pub_key: PublicKey,
+    pub comm_pub_key: XOnlyPublicKey,
     //Minimum possible target > which will be a valid weak_share added to DAG
     pub min_target: CompactTarget,
     //The weak target controlled accordingly to produce fixed bead submission from downstream node
@@ -79,16 +80,17 @@ pub struct CommittedMetadata {
 }
 impl Default for CommittedMetadata {
     fn default() -> Self {
+        let secp = Secp256k1::new();
+        let (secret_key, _) = secp.generate_keypair(&mut rand::thread_rng());
+        let keypair = Keypair::from_secret_key(&secp, &secret_key);
+        let xonly_pubkey = XOnlyPublicKey::from_keypair(&keypair);
         Self {
             transaction_ids: TxIdVec(Vec::new()),
             parents: HashSet::new(),
             parent_bead_timestamps: TimeVec(Vec::new()),
             payout_address: "bc1".to_string(),
             start_timestamp: Time::MIN,
-            comm_pub_key: PublicKey::from_str(
-                "020202020202020202020202020202020202020202020202020202020202020202",
-            )
-            .unwrap(),
+            comm_pub_key: xonly_pubkey.0,
             min_target: CompactTarget::from_consensus(486604799),
             weak_target: CompactTarget::from_consensus(486604799),
             miner_ip: "127.0.0.1".to_string(),
@@ -106,7 +108,7 @@ impl Encodable for CommittedMetadata {
             .start_timestamp
             .to_consensus_u32()
             .consensus_encode(w)?;
-        let pubkey_bytes = self.comm_pub_key.to_bytes();
+        let pubkey_bytes = self.comm_pub_key.serialize();
         len += pubkey_bytes.consensus_encode(w)?;
         len += self.min_target.consensus_encode(w)?;
         len += self.weak_target.consensus_encode(w)?;
@@ -122,9 +124,11 @@ impl Decodable for CommittedMetadata {
         let parent_bead_timestamps = TimeVec::consensus_decode(r)?;
         let payout_address = String::consensus_decode(r)?;
         let start_timestamp = Time::from_consensus(u32::consensus_decode(r).unwrap()).unwrap();
-        let comm_pub_key = PublicKey::from_slice(&Vec::<u8>::consensus_decode(r).unwrap()).unwrap();
-        let min_target = CompactTarget::consensus_decode(r).unwrap();
-        let weak_target = CompactTarget::consensus_decode(r).unwrap();
+        let pubkey_bytes = <[u8; 32]>::consensus_decode(r)?;
+        let comm_pub_key = XOnlyPublicKey::from_slice(&pubkey_bytes)
+            .map_err(|_| Error::ParseFailed("invalid XOnlyPublicKey"))?;
+        let min_target = CompactTarget::consensus_decode(r)?;
+        let weak_target = CompactTarget::consensus_decode(r)?;
         let miner_ip = String::consensus_decode(r)?;
         Ok(CommittedMetadata {
             transaction_ids,

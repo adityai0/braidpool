@@ -7,6 +7,7 @@ use bitcoin::BlockHash;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::OnceLock;
@@ -96,8 +97,8 @@ fn parse_time(value: u32) -> Time {
     Time::from_consensus(value).unwrap()
 }
 
-fn parse_public_key(value: &str) -> PublicKey {
-    PublicKey::from_str(value).unwrap()
+fn parse_public_key(value: &str) -> XOnlyPublicKey {
+    XOnlyPublicKey::from_str(value).unwrap()
 }
 
 fn parse_target(value: u32) -> CompactTarget {
@@ -172,17 +173,12 @@ fn test_txidvec_roundtrip_multiple() {
 fn test_committed_metadata_default() {
     let data = test_data();
     let metadata = CommittedMetadata::default();
-
     assert_eq!(metadata.transaction_ids, TxIdVec(Vec::new()));
     assert!(metadata.parents.is_empty());
     assert_eq!(metadata.parent_bead_timestamps, TimeVec(Vec::new()));
     assert_eq!(
         metadata.payout_address,
         data.payout_addresses.default.as_str()
-    );
-    assert_eq!(
-        metadata.comm_pub_key,
-        parse_public_key(&data.public_keys.default_committed)
     );
     assert_eq!(metadata.min_target, parse_target(data.targets.default_bits));
     assert_eq!(
@@ -338,7 +334,6 @@ fn test_committed_metadata_consensus_field_order_decode() {
         .weak_target(parse_target(data.targets.default_bits))
         .miner_ip(data.miner_ips.lan.clone())
         .build();
-
     let bytes = serialize(&metadata);
     let mut reader = &bytes[..];
 
@@ -348,8 +343,11 @@ fn test_committed_metadata_consensus_field_order_decode() {
     let decoded_payout = String::consensus_decode(&mut reader).unwrap();
     let decoded_start_timestamp =
         Time::from_consensus(u32::consensus_decode(&mut reader).unwrap()).unwrap();
-    let decoded_pubkey =
-        PublicKey::from_slice(&Vec::<u8>::consensus_decode(&mut reader).unwrap()).unwrap();
+    let mut bytes = [0u8; 32];
+    let _res = reader
+        .read_exact(&mut bytes)
+        .expect("An error occurred while reading byte-stream");
+    let decoded_pubkey = XOnlyPublicKey::from_slice(&bytes).unwrap();
     let decoded_min_target = CompactTarget::consensus_decode(&mut reader).unwrap();
     let decoded_weak_target = CompactTarget::consensus_decode(&mut reader).unwrap();
     let decoded_miner_ip = String::consensus_decode(&mut reader).unwrap();

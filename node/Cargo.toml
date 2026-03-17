@@ -21,13 +21,9 @@ serde_json = { workspace = true }
 clap = { workspace = true }
 bitcoin = { workspace = true }
 bitcoin_hashes = { workspace = true }
-bitcoincore-rpc = { workspace = true }
-bitcoincore-rpc-json = { workspace = true }
-bitcoincore-zmq = { workspace = true }
 shellexpand = { workspace = true }
 num = { workspace = true }
 rand = { workspace = true }
-secp256k1 = {version="0.29.1"}
 libp2p = { workspace = true }
 toml = { workspace = true }
 jsonrpsee = { workspace = true }
@@ -40,6 +36,7 @@ bitcoin-internals = "0.5.0"
 stratum-apps = { path = "../stratum-apps" }
 dirs = "6.0"
 bs58 = { version = "0.4.0", features = ["check"] }
+sha2 = {version="0.10.9",features=["oid"]}
 
 
 [build-dependencies]
