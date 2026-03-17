@@ -1,5 +1,5 @@
 use alloc::{fmt, vec::Vec};
-use binary_sv2::{self, Deserialize, Serialize, Str0255, B032};
+use binary_sv2::{self, Deserialize, Serialize, Str0255, Sv2Option, B032};
 use core::convert::TryInto;
 
 /// Message used by downstream to send result of its hashing work to an upstream.
@@ -70,14 +70,17 @@ pub struct SubmitSharesExtended<'decoder> {
     /// The size of the provided extranonce must be equal to the negotiated extranonce size from
     /// channel opening flow.
     pub extranonce: B032<'decoder>,
+    /// Template propagation time to downstream for time based statistics at braidpool end
+    // committed inside the `UnCommittedMetadata` field
+    pub time: Sv2Option<'decoder, u32>,
 }
 
 impl fmt::Display for SubmitSharesExtended<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "SubmitSharesExtended(channel_id={}, sequence_number={}, job_id={}, nonce=0x{:08x}, ntime={}, version=0x{:08x}, extranonce={})",
-            self.channel_id, self.sequence_number, self.job_id, self.nonce, self.ntime, self.version, self.extranonce
+            "SubmitSharesExtended(channel_id={}, sequence_number={}, job_id={}, nonce=0x{:08x}, ntime={}, version=0x{:08x}, extranonce={}) - template notify time={}",
+            self.channel_id, self.sequence_number, self.job_id, self.nonce, self.ntime, self.version, self.extranonce,self.time.clone().into_inner().unwrap()
         )
     }
 }

@@ -685,11 +685,11 @@ where
             coinbase
                 .consensus_encode(&mut serialized_coinbase)
                 .map_err(|_| ShareValidationError::InvalidCoinbase)?;
-
             return Ok(ShareValidationResult::BlockFound(
                 share_hash.to_raw_hash(),
                 Some(job.get_template().template_id),
                 serialized_coinbase,
+                None,
             ));
         }
 
@@ -710,8 +710,7 @@ where
 
             // update the best diff
             self.share_accounting.update_best_diff(share_hash_as_diff);
-
-            Ok(ShareValidationResult::Valid(share_hash.to_raw_hash()))
+            Ok(ShareValidationResult::Valid(share_hash.to_raw_hash(), None))
         } else {
             Err(ShareValidationError::DoesNotMeetTarget)
         }
@@ -732,7 +731,7 @@ mod tests {
             standard::StandardChannel,
         },
     };
-    use binary_sv2::Sv2Option;
+    use binary_sv2::{Seq064K, Sv2Option, B016M};
     use bitcoin::{transaction::TxOut, Amount, ScriptBuf, Target};
     use mining_sv2::{NewMiningJob, SubmitSharesStandard};
     use std::convert::TryInto;
@@ -774,6 +773,7 @@ mod tests {
             "mainnet".to_string(),
         )
         .unwrap();
+        let dummy_data: Vec<B016M<'static>> = Vec::new();
 
         let template = NewTemplate {
             template_id: 1,
@@ -793,6 +793,7 @@ mod tests {
             .unwrap(),
             coinbase_tx_locktime: 158,
             merkle_path: vec![].try_into().unwrap(),
+            txs: Seq064K::new(dummy_data).unwrap(),
         };
 
         // match the original script format used to generate the coinbase_reward_outputs for the
@@ -910,6 +911,7 @@ mod tests {
         ]
         .into();
         let nbits = 503543726;
+        let dummy_data: Vec<B016M<'static>> = Vec::new();
 
         let chain_tip = ChainTip::new(prev_hash, nbits, ntime);
         let template = NewTemplate {
@@ -930,6 +932,7 @@ mod tests {
             .unwrap(),
             coinbase_tx_locktime: 158,
             merkle_path: vec![].try_into().unwrap(),
+            txs: Seq064K::new(dummy_data).unwrap(),
         };
 
         // match the original script format used to generate the coinbase_reward_outputs for the
@@ -1007,6 +1010,7 @@ mod tests {
             "mainnet".to_string(),
         )
         .unwrap();
+        let dummy_data: Vec<B016M<'static>> = Vec::new();
 
         // channel target: 04325c53ef368eb04325c53ef368eb04325c53ef368eb04325c53ef368eb0431
         let template = NewTemplate {
@@ -1027,6 +1031,7 @@ mod tests {
             .unwrap(),
             coinbase_tx_locktime: 158,
             merkle_path: vec![].try_into().unwrap(),
+            txs: Seq064K::new(dummy_data).unwrap(),
         };
 
         // match the original script format used to generate the coinbase_reward_outputs for the
@@ -1078,7 +1083,7 @@ mod tests {
 
         assert!(matches!(
             res,
-            Ok(ShareValidationResult::BlockFound(_, _, _))
+            Ok(ShareValidationResult::BlockFound(_, _, _, _))
         ));
         assert_eq!(
             standard_channel.get_share_accounting().get_blocks_found(),
@@ -1132,6 +1137,7 @@ mod tests {
             "mainnet".to_string(),
         )
         .unwrap();
+        let dummy_data: Vec<B016M<'static>> = Vec::new();
 
         // channel target: 000aebbc990fff5144366f000aebbc990fff5144366f000aebbc990fff514435
         let template = NewTemplate {
@@ -1152,6 +1158,7 @@ mod tests {
             .unwrap(),
             coinbase_tx_locktime: 158,
             merkle_path: vec![].try_into().unwrap(),
+            txs: Seq064K::new(dummy_data).unwrap(),
         };
 
         // match the original script format used to generate the coinbase_reward_outputs for the
@@ -1242,6 +1249,7 @@ mod tests {
             "mainnet".to_string(),
         )
         .unwrap();
+        let dummy_data: Vec<B016M<'static>> = Vec::new();
 
         // channel target is:
         // 0001179d9861a761ffdadd11c307c4fc04eea3a418f7d687584e4434af158205
@@ -1264,6 +1272,7 @@ mod tests {
             .unwrap(),
             coinbase_tx_locktime: 158,
             merkle_path: vec![].try_into().unwrap(),
+            txs: Seq064K::new(dummy_data).unwrap(),
         };
 
         // match the original script format used to generate the coinbase_reward_outputs for the
@@ -1312,7 +1321,7 @@ mod tests {
         };
         let res = standard_channel.validate_share(valid_share);
 
-        assert!(matches!(res, Ok(ShareValidationResult::Valid(_))));
+        assert!(matches!(res, Ok(ShareValidationResult::Valid(_, _))));
     }
 
     #[test]

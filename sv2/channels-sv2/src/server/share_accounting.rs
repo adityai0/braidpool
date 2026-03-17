@@ -21,6 +21,8 @@
 use bitcoin::hashes::sha256d::Hash;
 use std::collections::HashSet;
 
+use crate::server::extended::BeadContext;
+
 /// The outcome of share validation, from the perspective of a Mining Server.
 ///
 /// The [`ShareValidationResult::Valid`] variant carries the hash of the accepted share.
@@ -32,13 +34,13 @@ use std::collections::HashSet;
 #[derive(Debug)]
 pub enum ShareValidationResult {
     /// The share is valid and accepted.
-    Valid(Hash),
+    Valid(Hash, Option<BeadContext>),
     /// The share solves a block.
     /// Contains:
     /// - `share_hash`: The hash of the share that solved the block.
     /// - `template_id`: The template ID associated with the job, or `None` for custom jobs.
     /// - `coinbase`: The serialized coinbase transaction for the block.
-    BlockFound(Hash, Option<u64>, Vec<u8>),
+    BlockFound(Hash, Option<u64>, Vec<u8>, Option<BeadContext>),
 }
 
 /// The error variants that can occur during share validation.

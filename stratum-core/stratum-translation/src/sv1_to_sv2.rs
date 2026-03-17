@@ -1,4 +1,5 @@
 use crate::error::{Result, StratumTranslationError};
+use binary_sv2::Sv2Option;
 use bitcoin::Target;
 use mining_sv2::{OpenExtendedMiningChannel, SubmitSharesExtended};
 use v1::{client_to_server, utils::HexU32Be};
@@ -76,6 +77,7 @@ pub fn build_sv2_submit_shares_extended_from_sv1_submit(
         extranonce: extranonce
             .try_into()
             .map_err(|_| StratumTranslationError::InvalidExtranonceLength)?,
+        time: Sv2Option::new(None),
     };
     Ok(submit_share_extended)
 }

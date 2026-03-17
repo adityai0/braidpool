@@ -189,6 +189,8 @@ pub enum PoolErrorKind {
     Configuration(String),
     /// Job not found
     JobNotFound,
+    ///Braidpool P2P error
+    BraidpoolError(String),
 }
 
 impl std::fmt::Display for PoolErrorKind {
@@ -278,6 +280,9 @@ impl std::fmt::Display for PoolErrorKind {
             CouldNotInitiateSystem => write!(f, "Could not initiate subsystem"),
             Configuration(e) => write!(f, "Configuration error: {e}"),
             JobNotFound => write!(f, "Job not found"),
+            BraidpoolError(e)=>{
+                write!(f,"An error occurred at the braidpool p2p side - {e}")
+            }
         }
     }
 }
@@ -394,7 +399,16 @@ impl From<ShareValidationError> for PoolErrorKind {
         PoolErrorKind::ChannelSv2(ChannelSv2Error::ShareValidationError(value))
     }
 }
-
+impl From<BraidpoolError> for PoolErrorKind {
+    fn from(value: BraidpoolError) -> Self {
+        match value {
+            BraidpoolError::Config(e) => Self::BraidpoolError(e),
+            BraidpoolError::Database(e) => Self::BraidpoolError(e),
+            BraidpoolError::Keystore(e) => Self::BraidpoolError(e),
+            BraidpoolError::Swarm(e) => Self::BraidpoolError(e),
+        }
+    }
+}
 impl<Owner> HandlerErrorType for PoolError<Owner> {
     fn parse_error(error: ParserError) -> Self {
         Self {
@@ -418,3 +432,23 @@ impl<Owner> std::fmt::Display for PoolError<Owner> {
         write!(f, "[{:?}/{:?}]", self.kind, self.action)
     }
 }
+#[derive(Debug)]
+pub enum BraidpoolError {
+    Config(String),
+    Database(String),
+    Keystore(String),
+    Swarm(String),
+}
+
+impl std::fmt::Display for BraidpoolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BraidpoolError::Config(msg) => write!(f, "Config error: {}", msg),
+            BraidpoolError::Database(msg) => write!(f, "Database error: {}", msg),
+            BraidpoolError::Keystore(msg) => write!(f, "Keystore error: {}", msg),
+            BraidpoolError::Swarm(msg) => write!(f, "Swarm error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for BraidpoolError {}

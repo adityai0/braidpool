@@ -52,9 +52,10 @@ use crate::{
 };
 use bitcoin::{
     blockdata::block::{Header, Version},
+    consensus::deserialize,
     hashes::sha256d::Hash,
     transaction::TxOut,
-    CompactTarget, Target,
+    CompactTarget, Target, Transaction,
 };
 use braidpool_common::compute_block_hash;
 use mining_sv2::{SetCustomMiningJob, SubmitSharesExtended};
@@ -100,7 +101,15 @@ where
     phantom: PhantomData<&'a ()>,
     network_type: String,
 }
-
+#[derive(Debug, Clone)]
+//Holding all the resources required for the construction of the Bead object
+pub struct BeadContext {
+    pub candidate_block: bitcoin::Block,
+    pub extranonce_2_raw_value: Vec<u8>,
+    pub job_sent_timestamp: u32,
+    // TODO: Will be used as separate entity after altering `uncommitted_metadata`
+    pub extranonce_1_raw_value: Vec<u8>,
+}
 impl<'a, J> ExtendedChannel<'a, J>
 where
     J: JobStore<ExtendedJob<'a>>,
@@ -637,7 +646,6 @@ where
         share: SubmitSharesExtended,
     ) -> Result<ShareValidationResult, ShareValidationError> {
         let job_id = share.job_id;
-
         // check if job_id is active job
         let is_active_job = self
             .job_store
@@ -672,7 +680,6 @@ where
                 .get_stale_job(job_id)
                 .expect("stale job must exist")
         };
-
         let job_target = self
             .job_id_to_target
             .get(&job_id)
@@ -710,7 +717,6 @@ where
 
         let prev_hash = chain_tip.prev_hash();
         let nbits = CompactTarget::from_consensus(chain_tip.nbits());
-
         // validate when version rolling is not allowed
         if !job.version_rolling_allowed() {
             // If version rolling is not allowed, ensure bits 13-28 are 0
@@ -749,7 +755,6 @@ where
             bytes_to_hex(&job_target_bytes),
             format!("{:x}", network_target)
         );
-
         // check if a block was found
         if network_target.is_met_by(share_hash) {
             if self
@@ -770,14 +775,34 @@ where
             coinbase.extend(job.get_coinbase_tx_prefix_with_bip141());
             coinbase.extend(full_extranonce.clone());
             coinbase.extend(job.get_coinbase_tx_suffix_with_bip141());
-
             match job.get_origin() {
                 JobOrigin::NewTemplate(template) => {
                     let template_id = template.template_id;
+                    let txs = template.txs.clone();
+                    let mut bead_txs = Vec::new();
+                    for tx in txs.to_vec() {
+                        let tx: Transaction = deserialize(&tx).expect(
+                            "An error occurred while deserailziing transaction from raw bytes.",
+                        );
+                        bead_txs.push(tx);
+                    }
+                    // Construct and log the complete block using rust-bitcoin's Block struct
+                    let complete_block = bitcoin::Block {
+                        header,
+                        txdata: bead_txs,
+                    };
+                    // Bead context required for the formation of bead_propgation_result
+                    let bead_context: BeadContext = BeadContext {
+                        candidate_block: complete_block,
+                        extranonce_1_raw_value: extranonce_prefix.clone(),
+                        extranonce_2_raw_value: share.extranonce.to_vec(),
+                        job_sent_timestamp: share.time.into_inner().unwrap_or_default(),
+                    };
                     return Ok(ShareValidationResult::BlockFound(
                         share_hash.to_raw_hash(),
                         Some(template_id),
                         coinbase,
+                        Some(bead_context),
                     ));
                 }
                 JobOrigin::SetCustomMiningJob(_set_custom_mining_job) => {
@@ -785,6 +810,7 @@ where
                         share_hash.to_raw_hash(),
                         None,
                         coinbase,
+                        None,
                     ));
                 }
             }
@@ -807,8 +833,39 @@ where
 
             // update the best diff
             self.share_accounting.update_best_diff(share_hash_as_diff);
+            match job.get_origin() {
+                JobOrigin::NewTemplate(template) => {
+                    let txs = template.txs.clone();
+                    let mut bead_txs = Vec::new();
+                    for tx in txs.to_vec() {
+                        let tx: Transaction = deserialize(&tx).expect(
+                            "An error occurred while deserailziing transaction from raw bytes.",
+                        );
+                        bead_txs.push(tx);
+                    }
+                    // Construct and log the complete block using rust-bitcoin's Block struct
+                    let complete_block = bitcoin::Block {
+                        header,
+                        txdata: bead_txs,
+                    };
+                    // Bead context required for the formation of bead_propgation_result
+                    let bead_context: BeadContext = BeadContext {
+                        candidate_block: complete_block,
+                        extranonce_1_raw_value: extranonce_prefix.clone(),
+                        extranonce_2_raw_value: share.extranonce.to_vec(),
+                        job_sent_timestamp: share.time.into_inner().unwrap_or_default(),
+                    };
+                    return Ok(ShareValidationResult::Valid(
+                        share_hash.to_raw_hash(),
+                        Some(bead_context),
+                    ));
+                }
+                _ => {
+                    tracing::warn!("Share valid but does not satisfies the NetworkTarget and it CustomTemplate type");
+                }
+            };
 
-            Ok(ShareValidationResult::Valid(share_hash.to_raw_hash()))
+            Ok(ShareValidationResult::Valid(share_hash.to_raw_hash(), None))
         } else {
             Err(ShareValidationError::DoesNotMeetTarget)
         }
@@ -829,7 +886,7 @@ mod tests {
             share_accounting::{ShareValidationError, ShareValidationResult},
         },
     };
-    use binary_sv2::{Sv2Option, U256};
+    use binary_sv2::{Seq064K, Sv2Option, B016M, U256};
     use bitcoin::{transaction::TxOut, Amount, ScriptBuf, Target};
     use mining_sv2::{NewExtendedMiningJob, SetCustomMiningJob, SubmitSharesExtended};
     use std::convert::TryInto;
@@ -873,6 +930,7 @@ mod tests {
             "mainnet".to_string(),
         )
         .unwrap();
+        let dummy_data: Vec<B016M<'static>> = Vec::new();
 
         let template = NewTemplate {
             template_id: 1,
@@ -892,6 +950,7 @@ mod tests {
             .unwrap(),
             coinbase_tx_locktime: 0,
             merkle_path: vec![].try_into().unwrap(),
+            txs: Seq064K::new(dummy_data).unwrap(),
         };
 
         // match the original script format used to generate the coinbase_reward_outputs for the
@@ -1031,6 +1090,7 @@ mod tests {
 
         let chain_tip = ChainTip::new(prev_hash, n_bits, ntime);
         channel.set_chain_tip(chain_tip);
+        let dummy_data: Vec<B016M<'static>> = Vec::new();
 
         let template = NewTemplate {
             template_id: 1,
@@ -1050,6 +1110,7 @@ mod tests {
             .unwrap(),
             coinbase_tx_locktime: 0,
             merkle_path: vec![].try_into().unwrap(),
+            txs: Seq064K::new(dummy_data).unwrap(),
         };
 
         // match the original script format used to generate the coinbase_reward_outputs for the
@@ -1124,6 +1185,7 @@ mod tests {
         let rollable_extranonce_size = 4u16;
         let share_batch_size = 100;
         let job_store = DefaultJobStore::new();
+        let dummy_data: Vec<B016M<'static>> = Vec::new();
 
         let mut channel = ExtendedChannel::new(
             channel_id,
@@ -1160,6 +1222,7 @@ mod tests {
             .unwrap(),
             coinbase_tx_locktime: 0,
             merkle_path: vec![].try_into().unwrap(),
+            txs: Seq064K::new(dummy_data).unwrap(),
         };
 
         let pubkey_hash = [
@@ -1222,6 +1285,7 @@ mod tests {
         .unwrap();
 
         // channel target: 04325c53ef368eb04325c53ef368eb04325c53ef368eb04325c53ef368eb0431
+        let dummy_data: Vec<B016M<'static>> = Vec::new();
 
         let template_id = 1;
         let template = NewTemplate {
@@ -1242,6 +1306,7 @@ mod tests {
             .unwrap(),
             coinbase_tx_locktime: 0,
             merkle_path: vec![].try_into().unwrap(),
+            txs: Seq064K::new(dummy_data).unwrap(),
         };
 
         // match the original script format used to generate the coinbase_reward_outputs for the
@@ -1286,13 +1351,14 @@ mod tests {
             ntime: 1745596971,
             version: 536870912,
             extranonce: vec![1, 0, 0, 0, 0, 0, 0, 0].try_into().unwrap(),
+            time: Sv2Option::new(None),
         };
 
         let res = channel.validate_share(share_valid_block.clone());
 
         assert!(matches!(
             res,
-            Ok(ShareValidationResult::BlockFound(_, _, _))
+            Ok(ShareValidationResult::BlockFound(_, _, _, _))
         ));
         assert_eq!(channel.get_share_accounting().get_blocks_found(), 1);
 
@@ -1344,6 +1410,7 @@ mod tests {
         .unwrap();
 
         // channel target: 000aebbc990fff5144366f000aebbc990fff5144366f000aebbc990fff514435
+        let dummy_data: Vec<B016M<'static>> = Vec::new();
 
         let template_id = 1;
         let template = NewTemplate {
@@ -1364,6 +1431,7 @@ mod tests {
             .unwrap(),
             coinbase_tx_locktime: 0,
             merkle_path: vec![].try_into().unwrap(),
+            txs: Seq064K::new(dummy_data).unwrap(),
         };
 
         // match the original script format used to generate the coinbase_reward_outputs for the
@@ -1408,6 +1476,7 @@ mod tests {
             ntime: 1745596971,
             version: 536870912,
             extranonce: vec![1, 0, 0, 0, 0, 0, 0, 0].try_into().unwrap(),
+            time: Sv2Option::new(None),
         };
 
         let res = channel.validate_share(share_low_diff);
@@ -1458,6 +1527,7 @@ mod tests {
 
         // channel target is:
         // 0001179d9861a761ffdadd11c307c4fc04eea3a418f7d687584e4434af158205
+        let dummy_data: Vec<B016M<'static>> = Vec::new();
 
         let template_id = 1;
         let template = NewTemplate {
@@ -1478,6 +1548,7 @@ mod tests {
             .unwrap(),
             coinbase_tx_locktime: 0,
             merkle_path: vec![].try_into().unwrap(),
+            txs: Seq064K::new(dummy_data).unwrap(),
         };
 
         // match the original script format used to generate the coinbase_reward_outputs for the
@@ -1524,10 +1595,11 @@ mod tests {
             ntime: 1745611105,
             version: 536870912,
             extranonce: vec![1, 0, 0, 0, 0, 0, 0, 0].try_into().unwrap(),
+            time: Sv2Option::new(None),
         };
 
         let res = channel.validate_share(valid_share);
-        assert!(matches!(res, Ok(ShareValidationResult::Valid(_))));
+        assert!(matches!(res, Ok(ShareValidationResult::Valid(_, _))));
 
         // try to cheat by re-submitting the same share
         // with a different sequence number
@@ -1539,6 +1611,7 @@ mod tests {
             ntime: 1745611105,
             version: 536870912,
             extranonce: vec![1, 0, 0, 0, 0, 0, 0, 0].try_into().unwrap(),
+            time: Sv2Option::new(None),
         };
 
         let res = channel.validate_share(repeated_share);
@@ -1712,6 +1785,7 @@ mod tests {
         let rollable_extranonce_size = 4u16;
         let share_batch_size = 100;
         let job_store = DefaultJobStore::new();
+        let dummy_data: Vec<B016M<'static>> = Vec::new();
 
         let mut channel = ExtendedChannel::new(
             channel_id,
@@ -1748,6 +1822,7 @@ mod tests {
             .unwrap(),
             coinbase_tx_locktime: 0,
             merkle_path: vec![].try_into().unwrap(),
+            txs: Seq064K::new(dummy_data).unwrap(),
         };
 
         let pubkey_hash = [
@@ -1836,6 +1911,7 @@ mod tests {
             "mainnet".to_string(),
         )
         .unwrap();
+        let dummy_data: Vec<B016M<'static>> = Vec::new();
 
         let template = NewTemplate {
             template_id: 1,
@@ -1855,6 +1931,7 @@ mod tests {
             .unwrap(),
             coinbase_tx_locktime: 0,
             merkle_path: vec![].try_into().unwrap(),
+            txs: Seq064K::new(dummy_data).unwrap(),
         };
 
         let pubkey_hash = [

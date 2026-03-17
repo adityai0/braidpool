@@ -1,7 +1,6 @@
 use alloc::{fmt, vec::Vec};
-use binary_sv2::{self, Deserialize, Seq0255, Serialize, B0255, B064K, U256};
+use binary_sv2::{self, Deserialize, Seq0255, Seq064K, Serialize, B016M, B0255, B064K, U256};
 use core::convert::TryInto;
-
 /// Message used by an upstream(Template Provider) to provide a new template for downstream to mine
 /// on.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -47,6 +46,8 @@ pub struct NewTemplate<'decoder> {
     pub coinbase_tx_locktime: u32,
     /// Merkle path hashes ordered from deepest.
     pub merkle_path: Seq0255<'decoder, U256<'decoder>>,
+    /// Txids present for the given `NewTemplate`
+    pub txs: Seq064K<'decoder, B016M<'decoder>>,
 }
 
 impl fmt::Display for NewTemplate<'_> {

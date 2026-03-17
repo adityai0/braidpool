@@ -323,7 +323,7 @@ mod tests {
             jobs::job_store::{DefaultJobStore, JobStore},
         },
     };
-    use binary_sv2::Sv2Option;
+    use binary_sv2::{Seq064K, Sv2Option, B016M};
     use bitcoin::{transaction::TxOut, Amount, ScriptBuf};
     use mining_sv2::NewExtendedMiningJob;
     use std::{collections::HashSet, convert::TryInto};
@@ -347,7 +347,7 @@ mod tests {
             None,
         )
         .unwrap();
-
+        let dummy_data: Vec<B016M<'static>> = Vec::new();
         let template = NewTemplate {
             template_id: 1,
             future_template: true,
@@ -366,6 +366,7 @@ mod tests {
             .unwrap(),
             coinbase_tx_locktime: 0,
             merkle_path: vec![].try_into().unwrap(),
+            txs: Seq064K::new(dummy_data).unwrap(),
         };
 
         // match the original script format used to generate the coinbase_reward_outputs for the
@@ -477,6 +478,7 @@ mod tests {
             None,
         )
         .unwrap();
+        let dummy_data: Vec<B016M<'static>> = Vec::new();
 
         let ntime = 1746839905;
         let prev_hash = [
@@ -505,6 +507,7 @@ mod tests {
             .unwrap(),
             coinbase_tx_locktime: 0,
             merkle_path: vec![].try_into().unwrap(),
+            txs: Seq064K::new(dummy_data).unwrap(),
         };
 
         // match the original script format used to generate the coinbase_reward_outputs for the
@@ -575,6 +578,7 @@ mod tests {
             None,
         )
         .unwrap();
+        let dummy_data: Vec<B016M<'static>> = Vec::new();
 
         let template = NewTemplate {
             template_id: 1,
@@ -594,6 +598,7 @@ mod tests {
             .unwrap(),
             coinbase_tx_locktime: 0,
             merkle_path: vec![].try_into().unwrap(),
+            txs: Seq064K::new(dummy_data).unwrap(),
         };
 
         let pubkey_hash = [

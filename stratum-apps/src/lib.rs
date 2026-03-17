@@ -24,10 +24,11 @@
 //! - [`config_helpers`] - Configuration management and parsing utilities
 //! - [`rpc`] - RPC utilities with custom serializable types (`Hash`, `BlockHash`, `Amount`)
 
+//! - Rexporting to remove dependency conflicts
+pub use secp256k1;
 /// Re-export all the modules from `stratum_core`
 #[cfg(feature = "core")]
 pub use stratum_core;
-
 /// High-level networking utilities for SV2 connections
 ///
 /// Provides connection management, encrypted streams, and protocol handling.

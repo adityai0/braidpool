@@ -4,6 +4,8 @@
 //! **Extended Channel** within a mining client.
 
 extern crate alloc;
+use std::time::UNIX_EPOCH;
+
 use super::HashMap;
 use crate::{
     bip141::try_strip_bip141,
@@ -40,7 +42,7 @@ use tracing::debug;
 /// - A [`NewExtendedMiningJob`] message
 /// - The `extranonce_prefix` in use when the job was created
 /// - The target of the job
-pub type ExtendedJob<'a> = (NewExtendedMiningJob<'a>, Vec<u8>, Target);
+pub type ExtendedJob<'a> = (NewExtendedMiningJob<'a>, Vec<u8>, Target, Option<u32>);
 
 /// Mining Client abstraction for the state management of an Sv2 Extended Channel.
 ///
@@ -258,16 +260,33 @@ impl<'a> ExtendedChannel<'a> {
             }
             None => new_extended_mining_job,
         };
-
+        // A new job received from upstream can either become active job or a future job
+        // In case it becomes active then that timestamp must be saved as this is the timestamp at which it is provided to downstream node
+        // Similarly in case of future_job we will receive a `SetPrevHash` response from upstream and will move it to active job and clear rest of the jobs
         match new_extended_mining_job.min_ntime.clone().into_inner() {
             Some(_min_ntime) => {
                 if let Some(active_job) = self.active_job.clone() {
                     self.past_jobs.insert(active_job.0.job_id, active_job);
                 }
+                //While submitting shares either that share will be active or available as a past share
+                //So storing timestamp only for past jobs or for active jobs to be shared with upstream
+                let current_system_time = std::time::SystemTime::now();
+                let duration_since_epoch = match current_system_time.duration_since(UNIX_EPOCH) {
+                    Ok(duration) => duration,
+                    Err(error) => {
+                        tracing::error!(
+                            "An error occurred while fetching timestamp - {}",
+                            error.to_string()
+                        );
+                        panic!()
+                    }
+                };
+                let unix_timestamp = duration_since_epoch.as_secs() as u32;
                 self.active_job = Some((
                     new_extended_mining_job,
                     self.extranonce_prefix.clone(),
                     self.target,
+                    Some(unix_timestamp),
                 ));
             }
             None => {
@@ -277,6 +296,7 @@ impl<'a> ExtendedChannel<'a> {
                         new_extended_mining_job,
                         self.extranonce_prefix.clone(),
                         self.target,
+                        None,
                     ),
                 );
             }
@@ -386,10 +406,25 @@ impl<'a> ExtendedChannel<'a> {
         if let Some(active_job) = self.active_job.clone() {
             self.past_jobs.insert(active_job.0.job_id, active_job);
         }
+        let current_system_time = std::time::SystemTime::now();
+        let duration_since_epoch = match current_system_time.duration_since(UNIX_EPOCH) {
+            Ok(duration) => duration,
+            Err(error) => {
+                tracing::error!(
+                    "An error occurred while fetching timestamp - {}",
+                    error.to_string()
+                );
+                panic!()
+            }
+        };
+
+        let unix_timestamp = duration_since_epoch.as_secs() as u32;
+
         self.active_job = Some((
             new_extended_mining_job,
             self.extranonce_prefix.clone(),
             self.target,
+            Some(unix_timestamp),
         ));
 
         Ok(())
@@ -437,6 +472,21 @@ impl<'a> ExtendedChannel<'a> {
         match self.future_jobs.remove(&set_new_prev_hash.job_id) {
             Some(mut activated_job) => {
                 activated_job.0.min_ntime = Sv2Option::new(Some(set_new_prev_hash.min_ntime));
+                let current_system_time = std::time::SystemTime::now();
+                let duration_since_epoch = match current_system_time.duration_since(UNIX_EPOCH) {
+                    Ok(duration) => duration,
+                    Err(error) => {
+                        tracing::error!(
+                            "An error occurred while fetching timestamp - {}",
+                            error.to_string()
+                        );
+                        panic!()
+                    }
+                };
+
+                let unix_timestamp = duration_since_epoch.as_secs() as u32;
+
+                activated_job.3 = Some(unix_timestamp);
                 self.active_job = Some(activated_job);
             }
             None => {
@@ -472,7 +522,6 @@ impl<'a> ExtendedChannel<'a> {
         share: SubmitSharesExtended,
     ) -> Result<ShareValidationResult, ShareValidationError> {
         let job_id = share.job_id;
-
         // check if job_id is active job
         let is_active_job = self
             .active_job
@@ -496,7 +545,6 @@ impl<'a> ExtendedChannel<'a> {
         } else {
             return Err(ShareValidationError::InvalidJobId);
         };
-
         let extranonce_size = share.extranonce.inner_as_ref().len();
         if extranonce_size != self.rollable_extranonce_size as usize {
             return Err(ShareValidationError::BadExtranonceSize);
@@ -568,7 +616,7 @@ impl<'a> ExtendedChannel<'a> {
             bytes_to_hex(&job_target_bytes),
             format!("{:x}", network_target)
         );
-
+        let block_propagation_time = job.3;
         // check if a block was found
         if network_target.is_met_by(share_hash) {
             if self
@@ -580,7 +628,10 @@ impl<'a> ExtendedChannel<'a> {
             self.share_accounting
                 .track_validated_share(share.sequence_number, share_hash.to_raw_hash());
             self.share_accounting.increment_blocks_found();
-            return Ok(ShareValidationResult::BlockFound(share_hash.to_raw_hash()));
+            return Ok(ShareValidationResult::BlockFound(
+                share_hash.to_raw_hash(),
+                block_propagation_time,
+            ));
         }
 
         // check if the share hash meets the job target
@@ -598,7 +649,10 @@ impl<'a> ExtendedChannel<'a> {
             // update the best diff
             self.share_accounting.update_best_diff(share_hash_as_diff);
 
-            return Ok(ShareValidationResult::Valid(share_hash.to_raw_hash()));
+            return Ok(ShareValidationResult::Valid(
+                share_hash.to_raw_hash(),
+                block_propagation_time,
+            ));
         }
 
         Err(ShareValidationError::DoesNotMeetTarget)
@@ -616,7 +670,7 @@ mod tests {
     use mining_sv2::{
         NewExtendedMiningJob, SetNewPrevHash as SetNewPrevHashMp, SubmitSharesExtended,
     };
-    use std::convert::TryInto;
+    use std::{convert::TryInto, time::UNIX_EPOCH};
 
     #[test]
     fn test_future_job_activation_flow() {
@@ -687,7 +741,18 @@ mod tests {
             nbits: 503543726,
             min_ntime: ntime,
         };
-
+        let current_system_time = std::time::SystemTime::now();
+        let duration_since_epoch = match current_system_time.duration_since(UNIX_EPOCH) {
+            Ok(duration) => duration,
+            Err(error) => {
+                tracing::error!(
+                    "An error occurred while fetching timestamp - {}",
+                    error.to_string()
+                );
+                panic!()
+            }
+        };
+        let unix_timestamp = duration_since_epoch.as_secs() as u32;
         channel.on_set_new_prev_hash(set_new_prev_hash).unwrap();
 
         assert!(channel.get_future_jobs().is_empty());
@@ -700,7 +765,8 @@ mod tests {
             Some(&(
                 previously_future_job,
                 extranonce_prefix,
-                channel.get_target().clone()
+                channel.get_target().clone(),
+                Some(unix_timestamp)
             ))
         );
     }
@@ -760,12 +826,26 @@ mod tests {
             .unwrap();
 
         assert_eq!(channel.get_future_jobs().len(), 0);
+        let current_system_time = std::time::SystemTime::now();
+        let duration_since_epoch = match current_system_time.duration_since(UNIX_EPOCH) {
+            Ok(duration) => duration,
+            Err(error) => {
+                tracing::error!(
+                    "An error occurred while fetching timestamp - {}",
+                    error.to_string()
+                );
+                panic!()
+            }
+        };
+        let unix_timestamp = duration_since_epoch.as_secs() as u32;
+
         assert_eq!(
             channel.get_active_job(),
             Some(&(
                 active_job.clone(),
                 extranonce_prefix.clone(),
-                channel.get_target().clone()
+                channel.get_target().clone(),
+                Some(unix_timestamp)
             ))
         );
         assert_eq!(channel.get_past_jobs().len(), 0);
@@ -782,7 +862,8 @@ mod tests {
             Some(&(
                 new_active_job,
                 extranonce_prefix,
-                channel.get_target().clone()
+                channel.get_target().clone(),
+                Some(unix_timestamp)
             ))
         );
         assert_eq!(channel.get_past_jobs().len(), 1);
@@ -869,11 +950,12 @@ mod tests {
             ntime: 1745596971,
             version: 536870912,
             extranonce: vec![1, 0, 0, 0, 0, 0, 0, 0].try_into().unwrap(),
+            time: Sv2Option::new(None),
         };
 
         let res = channel.validate_share(share_valid_block.clone());
 
-        assert!(matches!(res, Ok(ShareValidationResult::BlockFound(_))));
+        assert!(matches!(res, Ok(ShareValidationResult::BlockFound(_, _))));
         assert_eq!(channel.get_share_accounting().get_blocks_found(), 1);
 
         // re-submitting the same valid block must be rejected as duplicate
@@ -971,6 +1053,7 @@ mod tests {
             ntime: 1745596971,
             version: 536870912,
             extranonce: vec![1, 0, 0, 0, 0, 0, 0, 0].try_into().unwrap(),
+            time: Sv2Option::new(None),
         };
 
         let res = channel.validate_share(share_low_diff);
@@ -1067,11 +1150,12 @@ mod tests {
             ntime: 1745596971,
             version: 536870912,
             extranonce: vec![1, 0, 0, 0, 0, 0, 0, 0].try_into().unwrap(),
+            time: Sv2Option::new(None),
         };
 
         let res = channel.validate_share(valid_share);
 
-        assert!(matches!(res, Ok(ShareValidationResult::Valid(_))));
+        assert!(matches!(res, Ok(ShareValidationResult::Valid(_, _))));
 
         // try to cheat by re-submitting the same share
         // with a different sequence number
@@ -1083,6 +1167,7 @@ mod tests {
             ntime: 1745596971,
             version: 536870912,
             extranonce: vec![1, 0, 0, 0, 0, 0, 0, 0].try_into().unwrap(),
+            time: Sv2Option::new(None),
         };
 
         let res = channel.validate_share(repeated_share);

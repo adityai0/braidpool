@@ -12,6 +12,7 @@ use stratum_apps::{
     custom_mutex::Mutex,
     fallback_coordinator::FallbackCoordinator,
     stratum_core::{
+        binary_sv2::Sv2Option,
         channels_sv2::client::{extended::ExtendedChannel, group::GroupChannel},
         codec_sv2::StandardSv2Frame,
         extensions_sv2::{EXTENSION_TYPE_WORKER_HASHRATE_TRACKING, TLV_FIELD_TYPE_USER_IDENTITY},
@@ -501,7 +502,16 @@ impl ChannelManager {
                         "SubmitSharesExtended: valid share, forwarding it to upstream | channel_id: {}, sequence_number: {} ☑️",
                         m.channel_id, m.sequence_number
                     );
-
+                    let template_propagation_time = match _result{
+                        stratum_apps::stratum_core::channels_sv2::client::share_accounting::ShareValidationResult::Valid(_hash,time )=>{
+                                time
+                        }
+                        stratum_apps::stratum_core::channels_sv2::client::share_accounting::ShareValidationResult::BlockFound(_hash,time)=>{
+                            time
+                        },
+                    };
+                    // Template propgation time when the downstream miner initially received the template for mining
+                    m.time = Sv2Option::new(template_propagation_time);
                     if is_aggregated()
                         && self.extended_channels.contains_key(&AGGREGATED_CHANNEL_ID)
                     {
@@ -739,8 +749,9 @@ impl ChannelManager {
 mod tests {
     use super::*;
     use async_channel::unbounded;
-    use stratum_apps::stratum_core::mining_sv2::{
-        OpenExtendedMiningChannel, SubmitSharesExtended, UpdateChannel,
+    use stratum_apps::stratum_core::{
+        binary_sv2::Sv2Option,
+        mining_sv2::{OpenExtendedMiningChannel, SubmitSharesExtended, UpdateChannel},
     };
 
     fn create_test_channel_manager() -> ChannelManager {
@@ -809,6 +820,7 @@ mod tests {
             ntime: 1234567890,
             version: 0x20000000,
             extranonce: vec![0x01, 0x02, 0x03, 0x04].try_into().unwrap(),
+            time: Sv2Option::new(None),
         };
 
         // Test that the message can be handled

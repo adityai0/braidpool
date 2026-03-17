@@ -42,7 +42,7 @@ pub struct PoolConfig {
     #[serde(default = "default_monitoring_cache_refresh_secs")]
     monitoring_cache_refresh_secs: u64,
     #[serde(default)]
-    braidpool_bind_addr: Option<String>,
+    braidpool_bind_addr: String,
     #[serde(default = "default_braidpool_max_peers")]
     braidpool_max_peers: usize,
     #[serde(default, deserialize_with = "opt_path_from_toml")]
@@ -103,7 +103,7 @@ impl PoolConfig {
                 9090,
             ))),
             monitoring_cache_refresh_secs: 15,
-            braidpool_bind_addr: Some(String::from("0.0.0.0:6680")),
+            braidpool_bind_addr: String::from("0.0.0.0:6680"),
             braidpool_max_peers: 8,
             braidpool_keystore_path: None,
             braidpool_addnodes: Vec::new(),
@@ -205,8 +205,8 @@ impl PoolConfig {
     }
 
     /// Returns the braidpool P2P bind address (if P2P is enabled).
-    pub fn braidpool_bind_addr(&self) -> Option<&str> {
-        self.braidpool_bind_addr.as_deref()
+    pub fn braidpool_bind_addr(&self) -> &str {
+        &self.braidpool_bind_addr
     }
 
     /// Returns the maximum braidpool P2P peers.

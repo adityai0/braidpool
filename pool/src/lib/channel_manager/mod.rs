@@ -49,6 +49,8 @@ use crate::{
     status::{handle_error, Status, StatusSender},
 };
 
+use node::SwarmHandler;
+
 mod mining_message_handler;
 mod template_distribution_message_handler;
 
@@ -103,6 +105,8 @@ pub struct ChannelManager {
     /// Protocol extensions that the pool requires (clients must support these).
     required_extensions: Vec<u16>,
     network_type: String,
+    /// Swarm handler for propagating valid beads to the P2P network
+    pub swarm_handler: Arc<tokio::sync::Mutex<SwarmHandler>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -117,6 +121,7 @@ impl ChannelManager {
         downstream_receiver: Receiver<(DownstreamId, Mining<'static>, Option<Vec<Tlv>>)>,
         coinbase_outputs: Vec<u8>,
         network_type: String,
+        swarm_handler: Arc<tokio::sync::Mutex<SwarmHandler>>,
     ) -> PoolResult<Self, error::ChannelManager> {
         let range_0 = 0..0;
         let range_1 = 0..POOL_ALLOCATION_BYTES;
@@ -168,6 +173,7 @@ impl ChannelManager {
             supported_extensions: config.supported_extensions().to_vec(),
             required_extensions: config.required_extensions().to_vec(),
             network_type,
+            swarm_handler,
         };
 
         Ok(channel_manager)

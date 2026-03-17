@@ -13,8 +13,8 @@ use bitcoin::hashes::sha256d::Hash;
 /// - `BlockFound`: The submitted share resulted in a new block being found.
 #[derive(Debug)]
 pub enum ShareValidationResult {
-    Valid(Hash),
-    BlockFound(Hash),
+    Valid(Hash, Option<u32>),
+    BlockFound(Hash, Option<u32>),
 }
 
 /// Possible errors encountered during share validation.

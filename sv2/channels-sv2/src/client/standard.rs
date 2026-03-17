@@ -348,7 +348,6 @@ impl<'a> StandardChannel<'a> {
             bytes_to_hex(&job_target_bytes),
             format!("{:x}", network_target)
         );
-
         // check if a block was found
         if network_target.is_met_by(share_hash) {
             if self
@@ -360,7 +359,10 @@ impl<'a> StandardChannel<'a> {
             self.share_accounting
                 .track_validated_share(share.sequence_number, share_hash.to_raw_hash());
             self.share_accounting.increment_blocks_found();
-            return Ok(ShareValidationResult::BlockFound(share_hash.to_raw_hash()));
+            return Ok(ShareValidationResult::BlockFound(
+                share_hash.to_raw_hash(),
+                None,
+            ));
         }
 
         // check if the share hash meets the job target
@@ -378,7 +380,7 @@ impl<'a> StandardChannel<'a> {
             // update the best diff
             self.share_accounting.update_best_diff(share_hash_as_diff);
 
-            return Ok(ShareValidationResult::Valid(share_hash.to_raw_hash()));
+            return Ok(ShareValidationResult::Valid(share_hash.to_raw_hash(), None));
         }
 
         Err(ShareValidationError::DoesNotMeetTarget)
@@ -580,7 +582,7 @@ mod tests {
 
         let res = channel.validate_share(share_valid_block.clone());
 
-        assert!(matches!(res, Ok(ShareValidationResult::BlockFound(_))));
+        assert!(matches!(res, Ok(ShareValidationResult::BlockFound(_, _))));
         assert_eq!(channel.get_share_accounting().get_blocks_found(), 1);
 
         // re-submitting the same valid block must be rejected as duplicate
@@ -740,6 +742,6 @@ mod tests {
 
         let res = channel.validate_share(valid_share);
 
-        assert!(matches!(res, Ok(ShareValidationResult::Valid(_))));
+        assert!(matches!(res, Ok(ShareValidationResult::Valid(_, _))));
     }
 }

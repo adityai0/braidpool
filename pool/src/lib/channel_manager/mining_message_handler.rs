@@ -557,7 +557,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
 
 
                 match res {
-                    Ok(ShareValidationResult::Valid(share_hash)) => {
+                    Ok(ShareValidationResult::Valid(share_hash,_bead_context)) => {
                         let share_accounting = standard_channel.get_share_accounting();
                         if share_accounting.should_acknowledge() {
                             let success = SubmitSharesSuccess {
@@ -577,7 +577,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                         }
 
                     }
-                    Ok(ShareValidationResult::BlockFound(share_hash, template_id, coinbase)) => {
+                    Ok(ShareValidationResult::BlockFound(share_hash, template_id, coinbase,_bead_context)) => {
                         info!("SubmitSharesStandard: 💰 Block Found!!! 💰{share_hash}");
                         // if we have a template id (i.e.: this was not a custom job)
                         // we can propagate the solution to the TP
@@ -706,12 +706,11 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
             None
         };
 
+        let self_clone = self.clone();
         let messages = self.channel_manager_data.super_safe_lock(|channel_manager_data| {
             let channel_id = msg.channel_id;
             let Some(downstream) = channel_manager_data.downstream.get(&downstream_id) else {
-                return Err(PoolError::disconnect(PoolErrorKind::DownstreamNotFound(downstream_id), downstream_id));
-            };
-
+                return Err(PoolError::disconnect(PoolErrorKind::DownstreamNotFound(downstream_id), downstream_id));};
             downstream.downstream_data.super_safe_lock(|downstream_data| {
                 let mut messages: Vec<RouteMessageTo> = Vec::new();
                 let Some(extended_channel) = downstream_data.extended_channels.get_mut(&channel_id) else {
@@ -734,13 +733,17 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                 let Some(vardiff) = channel_manager_data.vardiff.get_mut(&(downstream_id, channel_id).into()) else {
                     return Ok(vec![(downstream_id, Mining::CloseChannel(create_close_channel_msg(channel_id, "invalid-channel-id"))).into()]);
                 };
-
                 let res = extended_channel.validate_share(msg.clone());
                 vardiff.increment_shares_since_last_update();
-
                 match res {
-                    Ok(ShareValidationResult::Valid(share_hash)) => {
+                    Ok(ShareValidationResult::Valid(share_hash,bead_context)) => {
                         let share_accounting = extended_channel.get_share_accounting();
+                        tokio::spawn(
+                            async move{
+                            let mut swarm_guard = self_clone.swarm_handler.lock().await;
+                              if let Some(bead_context) = bead_context{
+                                info!("Sending bead for propagation and persistance in bead");
+                                let _ =  swarm_guard.propagate_valid_bead(bead_context.candidate_block, bead_context.extranonce_2_raw_value, "", bead_context.job_sent_timestamp, "", bead_context.extranonce_1_raw_value).await;}});                        
                         if share_accounting.should_acknowledge() {
                             let success = SubmitSharesSuccess {
                                 channel_id,
@@ -758,10 +761,16 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                             );
                         }
                     }
-                    Ok(ShareValidationResult::BlockFound(share_hash, template_id, coinbase)) => {
+                    Ok(ShareValidationResult::BlockFound(share_hash, template_id, coinbase,bead_context)) => {
                         info!("SubmitSharesExtended: 💰 Block Found!!! 💰{share_hash}");
                         // if we have a template id (i.e.: this was not a custom job)
                         // we can propagate the solution to the TP
+                        tokio::spawn(
+                            async move{
+                            let mut swarm_guard = self_clone.swarm_handler.lock().await;
+                              if let Some(bead_context) = bead_context{
+                                info!("Sending bead for propagation and persistance in bead");
+                                let _ =  swarm_guard.propagate_valid_bead(bead_context.candidate_block, bead_context.extranonce_2_raw_value, "", bead_context.job_sent_timestamp, "", bead_context.extranonce_1_raw_value).await;}});                        
                         if let Some(template_id) = template_id {
                             info!("SubmitSharesExtended: Propagating solution to the Template Provider.");
                             let solution = SubmitSolution {

@@ -24,6 +24,7 @@ use node::{
     },
     SwarmHandler,
 };
+use stratum_apps::key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -35,6 +36,8 @@ pub use node::swarm::p2p_event_loop;
 pub use node::swarm::SwarmContext;
 pub use node::utils::compute_block_hash;
 pub use node::SwarmCommand;
+
+use crate::error::BraidpoolError;
 
 #[derive(Debug, Clone)]
 pub struct BraidpoolConfig {
@@ -71,7 +74,7 @@ impl BraidpoolP2P {
         Self {
             config,
             braid: Arc::new(RwLock::new(Braid::new(Vec::new(), network_name.clone()))),
-            ibd_spinlock: Arc::new(AtomicBool::new(true)),
+            ibd_spinlock: Arc::new(AtomicBool::new(false)),
             cancellation_token,
             network_name,
         }
@@ -87,12 +90,15 @@ impl BraidpoolP2P {
 
     pub async fn spawn(
         self,
+        auth_key_public: Secp256k1PublicKey,
+        auth_key_secret: Secp256k1SecretKey,
     ) -> Result<
         (
             tokio::task::JoinHandle<()>,
             mpsc::Sender<SwarmCommand>,
             mpsc::Sender<BraidpoolDBTypes>,
             Arc<RwLock<Braid>>,
+            Arc<tokio::sync::Mutex<SwarmHandler>>,
         ),
         BraidpoolError,
     > {
@@ -141,8 +147,13 @@ impl BraidpoolP2P {
             let _res = db_handler.insert_query_handler().await;
         });
 
-        let (swarm_handler, swarm_command_receiver) =
-            SwarmHandler::new(Arc::clone(&self.braid), db_tx.clone());
+        //Swarm handler for additional event other than p2p events related to swarm
+        let (swarm_handler, swarm_command_receiver) = SwarmHandler::new(
+            Arc::clone(&self.braid),
+            db_tx.clone(),
+            auth_key_secret,
+            auth_key_public,
+        );
         let swarm_command_sender = swarm_handler.command_sender.clone();
 
         let keypair = if let Some(keystore_path) = &self.config.keystore_path {
@@ -206,7 +217,13 @@ impl BraidpoolP2P {
         });
 
         info!("Braidpool P2P started");
-        Ok((handle, swarm_command_sender, db_tx, braid_ref))
+        Ok((
+            handle,
+            swarm_command_sender,
+            db_tx,
+            braid_ref,
+            Arc::new(tokio::sync::Mutex::new(swarm_handler)),
+        ))
     }
 }
 
@@ -239,6 +256,8 @@ fn load_or_generate_keypair(keystore_path: &std::path::Path) -> Result<Keypair, 
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
+
+                use crate::error::BraidpoolError;
                 let mut perms = fs::metadata(keystore_path)
                     .map_err(|e| BraidpoolError::Keystore(format!("Failed to get perms: {}", e)))?
                     .permissions();
@@ -251,24 +270,3 @@ fn load_or_generate_keypair(keystore_path: &std::path::Path) -> Result<Keypair, 
         }
     }
 }
-
-#[derive(Debug)]
-pub enum BraidpoolError {
-    Config(String),
-    Database(String),
-    Keystore(String),
-    Swarm(String),
-}
-
-impl std::fmt::Display for BraidpoolError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BraidpoolError::Config(msg) => write!(f, "Config error: {}", msg),
-            BraidpoolError::Database(msg) => write!(f, "Database error: {}", msg),
-            BraidpoolError::Keystore(msg) => write!(f, "Keystore error: {}", msg),
-            BraidpoolError::Swarm(msg) => write!(f, "Swarm error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for BraidpoolError {}

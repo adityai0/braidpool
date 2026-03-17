@@ -690,17 +690,17 @@ impl JobFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use binary_sv2::{Seq064K, B016M};
     use bitcoin::ScriptBuf;
     use template_distribution_sv2::NewTemplate;
 
     #[test]
     fn test_new_pool_job() {
         let mut job_factory = JobFactory::new(true, Some("Stratum V2 SRI Pool".to_string()), None);
-
+        let dummy_data: Vec<B016M<'static>> = Vec::new();
         // note:
         // the messages on this test were collected from a sane message flow
         // we use them as test vectors to assert correct behavior of job creation
-
         let template = NewTemplate {
             template_id: 1,
             future_template: true,
@@ -719,6 +719,7 @@ mod tests {
             .unwrap(),
             coinbase_tx_locktime: 0,
             merkle_path: vec![].try_into().unwrap(),
+            txs: Seq064K::new(dummy_data).unwrap(),
         };
 
         // match the original script format used to generate the coinbase_reward_outputs for the
@@ -797,7 +798,7 @@ mod tests {
             0, 0, 0, 0, 0, 0, 1,
         ]
         .to_vec();
-
+        let dummy_data: Vec<B016M<'static>> = Vec::new();
         let template = NewTemplate {
             template_id: 1,
             future_template: false,
@@ -816,6 +817,7 @@ mod tests {
             .unwrap(),
             coinbase_tx_locktime: 0,
             merkle_path: vec![].try_into().unwrap(),
+            txs: Seq064K::new(dummy_data).unwrap(),
         };
 
         // match the original script format used to generate the coinbase_reward_outputs for the
