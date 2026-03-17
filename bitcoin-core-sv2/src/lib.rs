@@ -112,7 +112,7 @@ use std::{
 use stratum_core::{
     binary_sv2::U256,
     bitcoin::{
-        ScriptBuf, Transaction, TxIn, TxOut, Witness,
+        ScriptBuf, Transaction, TxIn, TxOut, Txid, Witness,
         absolute::LockTime,
         block::Header,
         consensus::{Decodable, deserialize},
@@ -125,7 +125,7 @@ use std::sync::RwLock;
 use tokio::{net::UnixStream, task::JoinHandle};
 use tokio_util::compat::*;
 pub use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{error, info};
 
 pub mod error;
 mod handlers;
@@ -356,9 +356,34 @@ impl BitcoinCoreSv2 {
                     return;
                 }
             };
-
+            //Fetching txids corresponding to given block_template
+            let template_tx_data = template_data
+                .get_request_transaction_data_success_message(self.thread_map.clone())
+                .await;
+            let mut txid_list: Vec<Txid> = Vec::new();
+            let raw_data = match template_tx_data {
+                Ok(msg) => {
+                    let tx_data_ref = msg.transaction_list.clone();
+                    for tx in msg.transaction_list.to_vec() {
+                        let transaction: Transaction = deserialize(&tx).unwrap();
+                        txid_list.push(transaction.compute_txid());
+                    }
+                    tracing::debug!(
+                        "Parsed transaction present in the bootstrap template - {}",
+                        txid_list.len()
+                    );
+                    tx_data_ref
+                }
+                Err(error) => {
+                    error!(
+                        "An error occurred while fetching template tx_data - {}",
+                        error
+                    );
+                    panic!();
+                }
+            };
             // send the future NewTemplate message
-            let future_template = match template_data.get_new_template_message(true) {
+            let future_template = match template_data.get_new_template_message(true, raw_data) {
                 Ok(future_template) => future_template,
                 Err(e) => {
                     tracing::error!("Failed to get future template message: {:?}", e);
@@ -502,7 +527,6 @@ impl BitcoinCoreSv2 {
             .get()
             .get_context()?
             .set_thread(thread_ipc_client.clone());
-
         let template_header_bytes = template_header_request
             .send()
             .promise

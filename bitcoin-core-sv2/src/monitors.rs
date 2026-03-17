@@ -1,6 +1,7 @@
 use crate::BitcoinCoreSv2;
 
 use std::collections::HashSet;
+use stratum_core::bitcoin::{Transaction, Txid, consensus::encode::deserialize};
 use stratum_core::parsers_sv2::TemplateDistribution;
 use tracing::info;
 
@@ -122,7 +123,33 @@ impl BitcoinCoreSv2 {
                                         break;
                                     }
                                 };
+                                //Fetching txids corresponding to given block_template
+                                let mut txid_list: Vec<Txid> = Vec::new();
+                                let template_tx_data = new_template_data
+                                    .get_request_transaction_data_success_message(self_clone.thread_map.clone())
+                                    .await;
 
+                                let raw_data = match template_tx_data {
+                                    Ok(msg) => {
+                                        let tx_data_ref = msg.transaction_list.clone();
+                                        for tx in msg.transaction_list.to_vec() {
+                                            let transaction: Transaction = deserialize(&tx).unwrap();
+                                            txid_list.push(transaction.compute_txid());
+                                        }
+                                        tracing::debug!(
+                                            "Parsed transaction present in the new template being fetched in monitor_ipc_templates- {}",
+                                            txid_list.len()
+                                        );
+                                        tx_data_ref
+                                    }
+                                    Err(error) => {
+                                        tracing::error!(
+                                            "An error occurred while fetching template tx_data - {}",
+                                            error
+                                        );
+                                        continue;
+                                    }
+                                };
                                 let new_prev_hash = new_template_data.get_prev_hash();
                                 let current_prev_hash = match self_clone.current_prev_hash.borrow().clone() {
                                     Some(prev_hash) => prev_hash,
@@ -164,7 +191,7 @@ impl BitcoinCoreSv2 {
                                     self_clone.process_stale_template_data(stale_template_ids).await;
 
                                     // send the future NewTemplate message
-                                    let future_template = match new_template_data.get_new_template_message(true) {
+                                    let future_template = match new_template_data.get_new_template_message(true,raw_data) {
                                         Ok(future_template) => future_template,
                                         Err(e) => {
                                             tracing::error!("Failed to get future template message: {:?}", e);
@@ -219,7 +246,7 @@ impl BitcoinCoreSv2 {
                                     tracing::debug!("MEMPOOL FEE CHANGE DETECTED - sending non-future template");
 
                                     // send the non-future NewTemplate message
-                                    let non_future_template = match new_template_data.get_new_template_message(false) {
+                                    let non_future_template = match new_template_data.get_new_template_message(false,raw_data) {
                                         Ok(non_future_template) => non_future_template,
                                         Err(e) => {
                                             tracing::error!("Failed to get non-future template message: {:?}", e);

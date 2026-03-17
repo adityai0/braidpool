@@ -73,9 +73,10 @@ impl TemplateData {
         self.template_id
     }
 
-    pub fn get_new_template_message(
+    pub fn get_new_template_message<'decoder>(
         &self,
         future_template: bool,
+        txs: Seq064K<'decoder, B016M<'decoder>>,
     ) -> Result<NewTemplate<'static>, TemplateDataError> {
         let new_template = NewTemplate {
             template_id: self.template_id,
@@ -89,6 +90,7 @@ impl TemplateData {
             coinbase_tx_outputs: self.get_serialized_empty_coinbase_outputs()?,
             coinbase_tx_locktime: self.get_coinbase_tx_lock_time(),
             merkle_path: self.get_merkle_path()?,
+            txs,
         };
         Ok(new_template.into_static())
     }
