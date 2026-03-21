@@ -87,3 +87,32 @@ export interface BandwidthHistoryPoint {
 export interface BandwidthPanelProps {
   bandwidthHistory: BandwidthHistoryPoint[];
 }
+export interface PeersProps {
+  bitcoinPeers: PeerInfo[];
+  braidpoolPeerInfo: BraidpoolPeerInfo | null;
+}
+export interface BraidpoolPeer {
+  peer_id: string;
+  ip: string | null;
+  inbound: boolean;
+  latency_ms: number | null;
+  score: number;
+  last_seen_secs: number;
+  geo_group: string | null;
+}
+
+export interface BraidpoolPeerInfo {
+  total_peers: number;
+  connected: number;
+  inbound: number;
+  outbound: number;
+  network_groups: number;
+  avg_latency_ms: number;
+  peers: BraidpoolPeer[];
+}
+
+export interface BraidpoolPeerMessage {
+  type: 'braidpool_peer_data';
+  data: BraidpoolPeerInfo;
+  time: string;
+}

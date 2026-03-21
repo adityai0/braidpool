@@ -10,6 +10,7 @@ import { fetchBlockDetails } from './utils/fetchBlockDetails.js';
 import { fetchAllNodeData } from './utils/fetchBlockChainInfo.js';
 import { fetchPoolInfo } from './utils/fetchPoolInfo.js';
 import { fetchMempoolStats } from './utils/fetchMempoolStats.js';
+import { fetchBraidpoolPeers } from './utils/fetchBraidpoolPeers.js';
 
 dotenv.config();
 
@@ -127,6 +128,28 @@ async function sendMempoolData() {
   }
 }
 
+async function sendBraidpoolPeerData() {
+  try {
+    const peerInfo = await fetchBraidpoolPeers();
+
+    if (peerInfo) {
+      const peerData = {
+        type: 'braidpool_peer_data',
+        data: peerInfo,
+        time: new Date().toLocaleString(),
+      };
+
+      wss.clients.forEach((client) => {
+        if (client.readyState === client.OPEN) {
+          client.send(JSON.stringify(peerData));
+        }
+      });
+    }
+  } catch (err) {
+    console.error('[Server] fetchBraidpoolPeers failed:', err.message);
+  }
+}
+
 setInterval(() => {
   sendDataToClients().catch((err) =>
     console.error('[Server] sendDataToClients failed:', err)
@@ -150,6 +173,7 @@ setInterval(() => {
   );
   sendPoolInfo();
   sendMempoolData();
+  sendBraidpoolPeerData();
 }, 30000); // 30-second interval
 
 console.log(`WebSocket server running on ws://localhost:${PORT}`);

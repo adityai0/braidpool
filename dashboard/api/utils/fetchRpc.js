@@ -13,13 +13,17 @@ export async function callRpc(
     params,
   };
 
+  const config = {
+    headers: { 'Content-Type': 'application/json' },
+    timeout,
+  };
+  if (user && pass) {
+    config.auth = { username: user, password: pass };
+  }
+
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      const response = await axios.post(url, payload, {
-        auth: { username: user, password: pass },
-        headers: { 'Content-Type': 'application/json' },
-        timeout,
-      });
+      const response = await axios.post(url, payload, config);
 
       if (response.data.error) {
         throw new Error(JSON.stringify(response.data.error));

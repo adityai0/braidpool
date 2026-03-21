@@ -17,6 +17,7 @@ import {
   MempoolInfo,
   NetTotals,
   BandwidthHistoryPoint,
+  BraidpoolPeerInfo,
 } from './Types';
 
 const NodeHealth: React.FC = () => {
@@ -25,6 +26,8 @@ const NodeHealth: React.FC = () => {
     null
   );
   const [peerInfo, setPeerInfo] = useState<PeerInfo[]>([]);
+  const [braidpoolPeerInfo, setBraidpoolPeerInfo] =
+    useState<BraidpoolPeerInfo | null>(null);
   const [networkInfo, setNetworkInfo] = useState<NetworkInfo | null>(null);
   const [mempoolInfo, setMempoolInfo] = useState<MempoolInfo | null>(null);
   const [netTotals, setNetTotals] = useState<NetTotals | null>(null);
@@ -117,6 +120,8 @@ const NodeHealth: React.FC = () => {
                 },
               ];
             });
+          } else if (message.type === 'braidpool_peer_data') {
+            setBraidpoolPeerInfo(message.data);
           }
         } catch (err) {
           console.error('Error parsing WebSocket message:', err);
@@ -327,7 +332,9 @@ const NodeHealth: React.FC = () => {
           </div>
         )}
 
-        {activeTab === 'peers' && peerInfo && <Peers peers={peerInfo} />}
+        {activeTab === 'peers' && peerInfo && (
+          <Peers bitcoinPeers={peerInfo} braidpoolPeerInfo={braidpoolPeerInfo} />
+        )}
         {activeTab === 'mempool' && mempoolInfo && (
           <MempoolPanel mempool={mempoolInfo} />
         )}
