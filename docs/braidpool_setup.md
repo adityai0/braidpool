@@ -41,7 +41,7 @@ A Braidpool node can be built using different configurations related to IPC. Che
 Before running `braidpool/node` make sure you have rust-toolchain and rustc installed along with cargo as the package-manager .
 
 ```
-# Refer here for setting up rust develoment environment 
+# Refer here for setting up rust development environment 
 https://rust-lang.org/tools/install/
 ```
 
@@ -50,11 +50,11 @@ https://rust-lang.org/tools/install/
 cd braidpool/node
 
 # With minimal options
-cargo run --bin=node -- \
+cargo run -- \
   --network cpunet
 
 # With additional options
-cargo run --bin=node -- \
+cargo run -- \
   --ipc-socket /tmp/bitcoin-cpunet.sock \
   --network cpunet \
   --bind 127.0.0.1:6680 \
@@ -71,18 +71,19 @@ You can find all available command-line arguments in [node/src/cli.rs](https://g
 - `braidpool-cli` crate can be utilized for accessing current braid-state including information about the `bead-count`,`bead-by-beadhash`,`tips` etc.
 ```
   # Change to cli-directory after running `node`
-  cd ./braidpool/braidpool-cli 
+  cd braidpool-cli 
   
   # Running the cli commands for current braid-state
-  cargo run gettips
+  cargo run -- gettips
 
   # Run --help for getting information about existing commands
   cargo run -- --help
 
 ```
 ## Setting up cpuminer for downstream connection
-  - If you don't have a physical miner, you can do tests with CPUMiner but make sure to mine on any testnet other than CPUNet because of the different hash compute for block-headers other wise use our cpunet specific `rust_cpunet_miner` details below.
-  - Firstly installation of `cpuminer` for connecting a downstream to the stratum service (can be done by any external ASIC device or cpu based).
+  - If you don't have a physical miner, you can use CPUMiner to run tests on Bitcoin `mainnet`, `testnet4`, or `signet`. CPUMiner does not support the `cpunet` network, because CPUNet uses a different block-header hash algorithm; to mine on CPUNet with a CPU, use our CPUNet-specific `rust_cpunet_miner` as described below.
+  - For mining over cpunet on CPU you can run our cpunet configured rust_cpu_miner instructions here - `https://github.com/braidpool/rust_cpunet_miner` .
+  - For mining over other testnets,firstly install `cpuminer` for connecting a downstream to the node's stratum service (can be done by any external ASIC device or cpu based).
 
   - Run the `node/src/mock_miner.sh` script for the installation in the cwd for cpuminerd setup.
 
@@ -93,4 +94,3 @@ You can find all available command-line arguments in [node/src/cli.rs](https://g
   `https://github.com/pooler/cpuminer` .
 
   - Run the `braidpool-binary` as stated above via `cargo run` for the logs to be seen in the console.
-  - For mining over cpunet on CPU you can run our cpunet configured rust_cpu_miner instructions here - `https://github.com/braidpool/rust_cpunet_miner` .

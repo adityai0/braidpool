@@ -16,7 +16,7 @@ The goals of the pool are:
 
 # Running the node
 
-Kindly refer to our docs - `https://github.com/braidpool/braidpool/blob/dev/docs/braidpool_setup.md` or `/braidpool/docs/braidpool_setup.md` for all the setup instructions and dependencies before-hand.
+Kindly refer to our [setup documentation](docs/braidpool_setup.md) for all the setup instructions and dependencies beforehand.
 
 # Running the CPUnet testing node using nix-script
 
