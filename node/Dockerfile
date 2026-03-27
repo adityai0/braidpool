@@ -14,11 +14,17 @@ COPY Cargo.toml Cargo.lock ./
 COPY node/Cargo.toml ./node/
 COPY braidpool-cli/Cargo.toml ./braidpool-cli/
 
-RUN mkdir -p node/src braidpool-cli/src 
+# Dummy main.rs to cache dependencies before copying the actual source code
+RUN mkdir -p node/src braidpool-cli/src && \
+echo "fn main() {}" > node/src/main.rs && \
+echo "" > node/src/lib.rs && \
+    echo "fn main() {}" > braidpool-cli/src/main.rs
 
 RUN mkdir -p node/schema 
-
-RUN cargo build --release --package node
+    
+# Caching the dependency only build 
+RUN cargo build --release --package node && \
+    cargo build --release --package braidpool-cli
 
 COPY node/src ./node/src/
 COPY node/schema ./node/schema/
@@ -30,7 +36,7 @@ RUN cargo build --release --package node && \
     cargo build --release --package braidpool-cli
 
 
-
+# Runtime phase 
 FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update && apt-get install -y \
