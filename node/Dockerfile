@@ -31,6 +31,8 @@ COPY node/schema ./node/schema/
 COPY node/build.rs ./node/build.rs
 COPY braidpool-cli/src ./braidpool-cli/src/
 
+RUN touch -a -m ./node/src/main.rs
+RUN touch -a -m ./braidpool-cli/src/main.rs
 
 RUN cargo build --release --package node && \
     cargo build --release --package braidpool-cli
