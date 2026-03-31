@@ -8,7 +8,7 @@ This document describes how to run containerized Braidpool nodes using Docker an
 
 ```bash
 # From repository root
-docker build -t braidpool/node:latest -f node/Dockerfile .
+docker build -t braidpool/node:latest -f docker/node/Dockerfile .
 ```
 
 ### Run a Single Node (Docker)
@@ -27,6 +27,7 @@ docker run -d \
 
 ### Running both the services under one 
 ```bash
-docker compose -f /braidpool/docker-compose-combined.yaml up 
-
+# From repository root
+cd docker
+docker compose -f docker-compose-test.yml up 
 ```

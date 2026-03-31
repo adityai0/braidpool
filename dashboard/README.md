@@ -86,6 +86,8 @@ You can use **Docker Compose** to run the frontend, backend API, and simulator t
 #### Run All Services
 
 ```bash
+# From repository root
+cd docker
 docker-compose up --build
 ```
 
@@ -98,6 +100,7 @@ docker-compose up --build
 #### Stop Services
 
 ```bash
+cd docker
 docker-compose down
 ```
 

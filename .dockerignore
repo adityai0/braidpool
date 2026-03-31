@@ -49,5 +49,7 @@ Thumbs.db
 
 k8s/
 
-docker-compose.yml
-docker-compose-nodes.yml
+# Ignore docker compose files but keep entrypoint scripts
+docker/*.yml
+docker/README.md
+docker/**/Dockerfile
