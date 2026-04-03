@@ -41,6 +41,7 @@ use std::collections::HashSet;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 use std::{collections::HashMap, error::Error};
@@ -148,11 +149,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // IBD will be triggered when peer count threshold is reached
     let mut ibd_initiated = false;
 
+    // Flag to indicate IBD completion - prevents miner connections until synced
+    let ibd_complete = Arc::new(AtomicBool::new(false));
+    let ibd_complete_for_stratum = ibd_complete.clone();
+
     //Initializing stratum server
     let mut stratum_server = Server::new(
         stratum_config,
         connection_mapping.clone(),
         Some(block_submission_tx),
+        ibd_complete_for_stratum,
     );
     //Running the notification service
     tokio::spawn(async move {
@@ -1021,6 +1027,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     else{
                                         //IBD completed
                                         let sync_mode = if next_batch_offset > IBD_BATCH_SIZE { "batches" } else { "single-fetch" };
+                                        ibd_complete.store(true, Ordering::Release);
                                         info!(
                                             peer = %peer,
                                             sync_mode = %sync_mode,
@@ -1098,6 +1105,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
                                     if flag{
                                         //No need to proceed further and continue to next event
+                                        ibd_complete.store(true, Ordering::Release);
                                         info!("Peer already synced to tip");
                                         continue;
                                     }
