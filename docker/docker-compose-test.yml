@@ -64,6 +64,26 @@ services:
       retries: 3
       start_period: 30s
 
+  miner:
+    build:
+      context: ..
+      dockerfile: docker/miner/Dockerfile
+    image: cpunet-miner:latest
+    container_name: cpunet-miner
+    restart: unless-stopped
+    depends_on:
+      - node
+    environment:
+      - STRATUM_URL=stratum+tcp://braidpool-node:3333
+      - WORKER_USER=miner
+      - WORKER_PASS=x
+      - MINER_THREADS=1
+      - DEBUG_MODE=false
+      - RUST_LOG=info
+      - RETRY_DELAY=5
+    networks:
+      - braidpool_net
+
 volumes:
   bitcoin_data:
   braidpool_data:
