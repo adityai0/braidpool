@@ -339,13 +339,10 @@ impl MinerAuditState {
                     warn!(
                         old = %prev_commitment.to_hex(),
                         current = %self.current_commitment.to_hex(),
-                        "Share used previous commitment, accepting it as valid under conditions"
+                        "Share used previous commitment, rejecting and not adding to DAG"
                     );
-                    return AuditVerificationResult::Valid {
-                        commitment: prev_commitment.clone(),
-                        miner_roll: hex::decode(extranonce2_hex)
-                            .ok()
-                            .and_then(|bytes| bytes.first().copied()),
+                    return AuditVerificationResult::Invalid {
+                        reason: "Stale commitment: share used previous bead commitment".to_string(),
                     };
                 }
             }
@@ -403,6 +400,8 @@ pub struct AuditDAG {
     pub active_parents: Vec<(BlockHash, BlockHash, bitcoin::absolute::Time)>,
     /// The accumulating set of valid shares mined during the current job.
     pub current_siblings: Vec<(BlockHash, BlockHash, bitcoin::absolute::Time)>,
+    // total beads in DB
+    db_bead_count: usize,
 }
 
 impl AuditDAG {
@@ -415,6 +414,7 @@ impl AuditDAG {
             db_handler: None,
             active_parents: Vec::new(),
             current_siblings: Vec::new(),
+            db_bead_count: 0,
         }
     }
 
@@ -431,6 +431,7 @@ impl AuditDAG {
             db_handler: Some(Arc::new(db_handler)),
             active_parents: Vec::new(),
             current_siblings: Vec::new(),
+            db_bead_count: 0,
         })
     }
     pub async fn load_from_db(&mut self) -> Result<Option<BlockHash>, String> {
@@ -540,6 +541,19 @@ impl AuditDAG {
                         .expect("No generation hash generated");
 
                     info!(tip_count = sibling_count, "Restored DAG tips from database");
+
+                    if let Some(ref db_handler) = self.db_handler {
+                        match db_handler.get_bead_count().await {
+                            Ok(count) => {
+                                self.db_bead_count = count as usize;
+                                info!(
+                                    db_bead_count = self.db_bead_count,
+                                    "Loaded total bead count from database"
+                                );
+                            }
+                            Err(e) => warn!(error = %e, "Failed to get bead count from DB"),
+                        }
+                    }
 
                     Ok(Some(generation_hash))
                 }
@@ -666,6 +680,7 @@ impl AuditDAG {
                         composite_hash = %composite_hash,
                         parents = ?bead.committed_metadata.parents,
                         sibling_count = self.current_siblings.len(),
+                        total_beads = self.db_bead_count + self.records.len() + 1,
                         miner = %miner_ip,
                         "Bead added to braid"
                     );

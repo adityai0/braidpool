@@ -357,6 +357,17 @@ impl AuditDBHandler {
 
         Ok(result.unwrap_or_default())
     }
+
+    pub async fn get_bead_count(&self) -> Result<i64, DBErrors> {
+        let pool = self.db_connection_pool.lock().await;
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM AuditBead")
+            .fetch_one(&*pool)
+            .await
+            .map_err(|e| DBErrors::TupleNotFetched {
+                error: e.to_string(),
+            })?;
+        Ok(row.0)
+    }
 }
 
 #[derive(Debug, Clone, Default)]

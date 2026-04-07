@@ -126,7 +126,7 @@ pub struct StratumServerConfig {
     /// Indicates audit mode.
     pub audit_mode: bool,
     /// Audit mode miner weak difficulty
-    pub audit_miner_difficulty: f64,
+    pub audit_miner_difficulty: Option<f64>,
 }
 
 impl Default for StratumServerConfig {
@@ -140,7 +140,7 @@ impl Default for StratumServerConfig {
             maximum_difficulty: None,
             solo_address: None,
             audit_mode: false,
-            audit_miner_difficulty: 100.0,
+            audit_miner_difficulty: None,
         }
     }
 }
@@ -245,7 +245,7 @@ pub struct DownstreamClient {
     // Payout address used in the audit mode
     pub payout_address: Option<String>,
     // Refers to the miner difficulty in audit mode
-    pub audit_miner_difficulty: f64,
+    pub audit_miner_difficulty: Option<f64>,
 }
 impl DownstreamClient {
     /// A helper function to keep connection_id immutable after assignment
@@ -415,7 +415,7 @@ impl DownstreamClient {
                     };
                     if let Some(diff) = upstream_diff {
                         let miner_difficulty: f64 = if self.is_proxy_mode {
-                            self.audit_miner_difficulty
+                            self.audit_miner_difficulty.unwrap_or(diff)
                         } else {
                             diff
                         };
@@ -1109,10 +1109,11 @@ impl DownstreamClient {
         let mut candidates = vec![self.extranonce1.clone()];
         candidates.extend(self.extranonce_history.iter().cloned());
         let miner_difficulty = if self.is_proxy_mode {
-            self.audit_miner_difficulty
+            self.audit_miner_difficulty.or(upstream_difficulty)
         } else {
-            100.0
-        };
+            None
+        }
+        .unwrap_or(100.0);
         let miner_target = Self::target_from_difficulty(miner_difficulty);
         let upstream_target = upstream_difficulty
             .map(|d| Self::target_from_difficulty(d))
@@ -1940,7 +1941,7 @@ impl Default for DownstreamClient {
             block_submission_tx: None,
             is_proxy_mode: false,
             payout_address: None,
-            audit_miner_difficulty: 100.0,
+            audit_miner_difficulty: None,
         }
     }
 }

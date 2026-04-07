@@ -173,7 +173,7 @@ impl UpstreamCache {
 
         self.latest_job = Some(CachedItem::new(job.clone(), 3600)); // 1 hour
 
-        info!(
+        debug!(
             job_id = %job.job_id,
             clean_jobs = %job.clean_jobs,
             "Cached upstream job"
