@@ -1,7 +1,7 @@
 use std::{sync::Arc, thread::JoinHandle};
 
 use async_channel::unbounded;
-use bitcoin_core_sv2::CancellationToken;
+use braidpool_template_provider::CancellationToken;
 use stratum_apps::{
     stratum_core::bitcoin::consensus::Encodable, task_manager::TaskManager,
     tp_type::TemplateProviderType, utils::types::GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,

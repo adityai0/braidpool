@@ -12,7 +12,7 @@ use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, trace, warn};
 pub mod client;
 pub use client::{
-    BitcoinNotification, BlockTemplateComponents, CheckBlockResult, RequestPriority,
+    BitcoinNotification, BlockTemplate, BlockTemplateComponents, CheckBlockResult, RequestPriority,
     SharedBitcoinClient,
 };
 

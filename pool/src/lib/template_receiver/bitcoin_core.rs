@@ -3,8 +3,10 @@ use crate::{
     status::{handle_error, State, Status, StatusSender},
 };
 use async_channel::{Receiver, Sender};
-use bitcoin_core_sv2::{BitcoinCoreSv2, CancellationToken};
-use std::{path::PathBuf, sync::Arc, thread::JoinHandle};
+use braidpool_template_provider::{sv2_template_consumer, CancellationToken};
+use node::ipc::{ipc_block_listener, BlockTemplate, SharedBitcoinClient};
+use node::TemplateId;
+use std::{collections::HashMap, path::PathBuf, sync::Arc, thread::JoinHandle};
 use stratum_apps::{stratum_core::parsers_sv2::TemplateDistribution, task_manager::TaskManager};
 
 #[derive(Clone)]
@@ -49,17 +51,12 @@ pub async fn connect_to_bitcoin_core(
 
     let status_sender_clone = status_sender.clone();
 
-    // spawn a dedicated thread to run the BitcoinCoreSv2 instance
-    // because we're limited to tokio::task::LocalSet due to the use of `capnp` clients on
-    // `bitcoin-core-sv2`, which are not `Send`
+    // Spawn a dedicated thread because capnp clients are not Send
     std::thread::spawn(move || {
-        // we need a dedicated runtime so we can spawn an async task inside the LocalSet
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
             Err(e) => {
                 tracing::error!("Failed to create Tokio runtime: {:?}", e);
-
-                // we can't use handle_error here because we're not in a async context yet
                 let _ = status_sender_clone.send_blocking(Status {
                     state: State::TemplateReceiverShutdown(
                         PoolErrorKind::FailedToCreateBitcoinCoreTokioRuntime,
@@ -71,29 +68,80 @@ pub async fn connect_to_bitcoin_core(
         let tokio_local_set = tokio::task::LocalSet::new();
 
         tokio_local_set.block_on(&rt, async move {
-            // create a new BitcoinCoreSv2 instance
-            let mut sv2_bitcoin_core = match BitcoinCoreSv2::new(
-                &bitcoin_core_config.unix_socket_path,
-                bitcoin_core_config.fee_threshold,
-                bitcoin_core_config.min_interval,
-                bitcoin_core_config.incoming_tdp_receiver,
-                bitcoin_core_config.outgoing_tdp_sender,
-                bitcoin_core_config.cancellation_token.clone(),
-                bitcoin_core_config.network_type,
-            )
-            .await
-            {
-                Ok(sv2_bitcoin_core) => sv2_bitcoin_core,
-                Err(e) => {
-                    tracing::error!("Failed to create BitcoinCoreToSv2: {:?}", e);
-                    bitcoin_core_config.cancellation_token.cancel();
-                    return;
-                }
-            };
+            let ipc_socket_path = bitcoin_core_config
+                .unix_socket_path
+                .to_string_lossy()
+                .to_string();
+            let network_name = bitcoin_core_config.network_type.clone();
+            let canc_token = bitcoin_core_config.cancellation_token.clone();
 
-            // run the BitcoinCoreSv2 instance, which will block until the cancellation token is
-            // activated
-            sv2_bitcoin_core.run().await;
+            // Create template channel (ipc_block_listener -> sv2_template_consumer)
+            let (template_tx, template_rx) = tokio::sync::mpsc::channel::<Arc<BlockTemplate>>(10);
+
+            // Create template cache (shared between ipc_block_listener and sv2_template_consumer)
+            let template_cache: Arc<tokio::sync::Mutex<HashMap<TemplateId, Arc<BlockTemplate>>>> =
+                Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+
+            // Create block submission channel (for SubmitSolution handling)
+            // This is for ipc_block_listener to receive block submissions, but in pool context
+            // we handle SubmitSolution via sv2_template_consumer directly using SharedBitcoinClient
+            let (_block_submission_tx, block_submission_rx) =
+                tokio::sync::mpsc::unbounded_channel();
+
+            // Create SharedBitcoinClient for sv2_template_consumer to submit solutions
+            let shared_client =
+                match SharedBitcoinClient::new(&ipc_socket_path, network_name.clone()).await {
+                    Ok(client) => client,
+                    Err(e) => {
+                        tracing::error!("Failed to create SharedBitcoinClient: {:?}", e);
+                        bitcoin_core_config.cancellation_token.cancel();
+                        return;
+                    }
+                };
+
+            // Spawn ipc_block_listener (fetches templates from Bitcoin Core)
+            let listener_task = tokio::task::spawn_local({
+                let socket = ipc_socket_path.clone();
+                let tx = template_tx;
+                let cache = template_cache.clone();
+                let network = network_name.clone();
+                async move {
+                    match ipc_block_listener(socket, tx, cache, block_submission_rx, network).await
+                    {
+                        Ok(_) => tracing::info!("IPC block listener exited"),
+                        Err(e) => tracing::error!("IPC block listener error: {:?}", e),
+                    }
+                }
+            });
+
+            // Spawn sv2_template_consumer (converts templates to SV2 messages)
+            let consumer_task = tokio::task::spawn_local({
+                let cache = template_cache.clone();
+                let outgoing_tx = bitcoin_core_config.outgoing_tdp_sender;
+                let incoming_rx = bitcoin_core_config.incoming_tdp_receiver;
+                let token = canc_token.clone();
+                async move {
+                    if let Err(e) = sv2_template_consumer(
+                        template_rx,
+                        outgoing_tx,
+                        incoming_rx,
+                        cache,
+                        &shared_client,
+                        token,
+                    )
+                    .await
+                    {
+                        tracing::error!("SV2 template consumer error: {:?}", e);
+                    }
+                }
+            });
+
+            // Wait for either task to complete or cancellation
+            tokio::select! {
+                _ = listener_task => tracing::info!("IPC listener completed"),
+                _ = consumer_task => tracing::info!("SV2 consumer completed"),
+                _ = canc_token.cancelled() => tracing::info!("Template provider cancelled"),
+            }
         });
     })
 }
