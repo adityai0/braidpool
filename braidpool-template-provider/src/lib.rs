@@ -7,10 +7,11 @@
 //! This follows the same pattern as `ipc_template_consumer` in node crate:
 //! - Receives `Arc<BlockTemplate>` from a channel (populated by `ipc_block_listener`)
 //! - Converts to SV2 `NewTemplate` and `SetNewPrevHash` messages
-//! - Handles `SubmitSolution` by delegating back to node's IPC client
+//! - Handles `SubmitSolution` by sending through block_submission channel to ipc_block_listener
 
 use async_channel::{Receiver, Sender};
-use node::ipc::{BlockTemplate, SharedBitcoinClient};
+use node::ipc::BlockTemplate;
+use node::stratum::BlockSubmissionRequest;
 use node::{MAX_CACHED_TEMPLATES, TemplateId, get_next_template_id};
 use std::{collections::HashMap, sync::Arc};
 use stratum_core::{
@@ -33,7 +34,7 @@ pub use error::BraidpoolTemplateProviderError;
 /// This follows the same pattern as `ipc_template_consumer` in node crate:
 /// - Receives `Arc<BlockTemplate>` from channel (populated by `ipc_block_listener`)
 /// - Converts to SV2 `NewTemplate` and `SetNewPrevHash` messages
-/// - Handles incoming `SubmitSolution` by delegating to shared_client
+/// - Handles incoming `SubmitSolution` by building BlockSubmissionRequest and sending through channel
 ///
 /// # Parameters
 ///
@@ -41,14 +42,14 @@ pub use error::BraidpoolTemplateProviderError;
 /// * `sv2_outgoing_tx` - Sender for outgoing SV2 TemplateDistribution messages
 /// * `sv2_incoming_rx` - Receiver for incoming SV2 messages (SubmitSolution, RequestTransactionData)
 /// * `template_cache` - Shared template cache (same one used by ipc_block_listener)
-/// * `shared_client` - Reference to SharedBitcoinClient for submitting solutions
+/// * `block_submission_tx` - Channel to send block submissions to ipc_block_listener
 /// * `cancellation_token` - Token for graceful shutdown
 pub async fn sv2_template_consumer(
     mut template_rx: tokio::sync::mpsc::Receiver<Arc<BlockTemplate>>,
     sv2_outgoing_tx: Sender<TemplateDistribution<'static>>,
     sv2_incoming_rx: Receiver<TemplateDistribution<'static>>,
     template_cache: Arc<tokio::sync::Mutex<HashMap<TemplateId, Arc<BlockTemplate>>>>,
-    shared_client: &SharedBitcoinClient,
+    block_submission_tx: tokio::sync::mpsc::UnboundedSender<BlockSubmissionRequest>,
     cancellation_token: CancellationToken,
 ) -> Result<(), BraidpoolTemplateProviderError> {
     info!("SV2 template consumer started");
@@ -201,7 +202,7 @@ pub async fn sv2_template_consumer(
                         handle_submit_solution(
                             solution,
                             &template_cache,
-                            shared_client,
+                            &block_submission_tx,
                         ).await;
                     }
 
@@ -259,22 +260,25 @@ async fn handle_request_transaction_data(
 async fn handle_submit_solution(
     solution: SubmitSolution<'static>,
     template_cache: &Arc<tokio::sync::Mutex<HashMap<TemplateId, Arc<BlockTemplate>>>>,
-    shared_client: &SharedBitcoinClient,
+    block_submission_tx: &tokio::sync::mpsc::UnboundedSender<BlockSubmissionRequest>,
 ) {
     let cache = template_cache.lock().await;
 
     if let Some(template) = cache.get(&solution.template_id) {
-        match sv2_messages::submit_mining_solution(
+        match sv2_messages::build_block_submission_request(
             solution.template_id,
-            template.clone(),
-            solution.clone(),
-            shared_client,
-        )
-        .await
-        {
-            Ok(()) => info!(template_id = %solution.template_id, "Solution submitted successfully"),
+            template,
+            &solution,
+        ) {
+            Ok(submission_request) => {
+                if let Err(e) = block_submission_tx.send(submission_request) {
+                    error!(template_id = %solution.template_id, error = %e, "Failed to send block submission");
+                } else {
+                    info!(template_id = %solution.template_id, "Block submission sent to IPC listener");
+                }
+            }
             Err(e) => {
-                error!(template_id = %solution.template_id, error = %e, "Solution submission failed")
+                error!(template_id = %solution.template_id, error = %e, "Failed to build block submission request");
             }
         }
     } else {

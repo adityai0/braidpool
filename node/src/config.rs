@@ -148,7 +148,7 @@ impl CoinbaseConfig {
             let pool_payout_address = match network {
                 Network::Bitcoin => "bc1qpa77defz30uavu8lxef98q95rae6m7t8au9vp7".to_string(),
                 Network::Testnet => "tb1qpa77defz30uavu8lxef98q95rae6m7t8au9vp7".to_string(),
-                Network::Signet => "tb1qpa77defz30uavu8lxef98q95rae6m7t8au9vp7".to_string(),
+                Network::Signet => "tb1qn30rrwmg3umx3x8md20jwfnac6recn83h62r8s".to_string(),
                 Network::Regtest => "bcrt1qpa77defz30uavu8lxef98q95rae6m7t8au9vp7".to_string(),
                 _ => "tb1qpa77defz30uavu8lxef98q95rae6m7t8au9vp7".to_string(),
             };

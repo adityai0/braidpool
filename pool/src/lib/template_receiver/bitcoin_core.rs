@@ -4,7 +4,7 @@ use crate::{
 };
 use async_channel::{Receiver, Sender};
 use braidpool_template_provider::{sv2_template_consumer, CancellationToken};
-use node::ipc::{ipc_block_listener, BlockTemplate, SharedBitcoinClient};
+use node::ipc::{ipc_block_listener, BlockTemplate};
 use node::TemplateId;
 use std::{collections::HashMap, path::PathBuf, sync::Arc, thread::JoinHandle};
 use stratum_apps::{stratum_core::parsers_sv2::TemplateDistribution, task_manager::TaskManager};
@@ -82,22 +82,9 @@ pub async fn connect_to_bitcoin_core(
             let template_cache: Arc<tokio::sync::Mutex<HashMap<TemplateId, Arc<BlockTemplate>>>> =
                 Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
-            // Create block submission channel (for SubmitSolution handling)
-            // This is for ipc_block_listener to receive block submissions, but in pool context
-            // we handle SubmitSolution via sv2_template_consumer directly using SharedBitcoinClient
-            let (_block_submission_tx, block_submission_rx) =
-                tokio::sync::mpsc::unbounded_channel();
-
-            // Create SharedBitcoinClient for sv2_template_consumer to submit solutions
-            let shared_client =
-                match SharedBitcoinClient::new(&ipc_socket_path, network_name.clone()).await {
-                    Ok(client) => client,
-                    Err(e) => {
-                        tracing::error!("Failed to create SharedBitcoinClient: {:?}", e);
-                        bitcoin_core_config.cancellation_token.cancel();
-                        return;
-                    }
-                };
+            // Create block submission channel
+            // sv2_template_consumer sends BlockSubmissionRequest -> ipc_block_listener submits via IPC
+            let (block_submission_tx, block_submission_rx) = tokio::sync::mpsc::unbounded_channel();
 
             // Spawn ipc_block_listener (fetches templates from Bitcoin Core)
             let listener_task = tokio::task::spawn_local({
@@ -126,7 +113,7 @@ pub async fn connect_to_bitcoin_core(
                         outgoing_tx,
                         incoming_rx,
                         cache,
-                        &shared_client,
+                        block_submission_tx,
                         token,
                     )
                     .await

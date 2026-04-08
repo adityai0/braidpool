@@ -10,8 +10,8 @@ use bitcoin::{
     consensus::{deserialize, serialize},
     hashes::{Hash, HashEngine, sha256d},
 };
-use node::ipc::{BlockTemplate, RequestPriority, SharedBitcoinClient};
-use std::sync::Arc;
+use node::ipc::BlockTemplate;
+use node::stratum::BlockSubmissionRequest;
 use stratum_core::{
     binary_sv2::{B016M, B064K, B0255, Seq064K, Seq0255, U256},
     template_distribution_sv2::{
@@ -235,21 +235,20 @@ pub fn get_prev_hash_from_block_template(
     Ok((*header.prev_blockhash.as_byte_array()).into())
 }
 
-/// Submit a mining solution via the node's IPC client
+/// Build a BlockSubmissionRequest from an SV2 SubmitSolution message
 ///
-/// Validates the solution and submits it.
+/// This creates a submission request that can be sent through the block_submission channel
+/// to ipc_block_listener, which will submit it via the IPC client.
 ///
 /// # Arguments
 /// * `template_id` - The template ID for this solution
-/// * `block_template` - The block template used for this solution
+/// * `block_template` - The block template used for this solution  
 /// * `submit_solution` - The SV2 submit solution message
-/// * `shared_client` - The node's shared Bitcoin client
-pub async fn submit_mining_solution(
+pub fn build_block_submission_request(
     template_id: u64,
-    block_template: Arc<BlockTemplate>,
-    submit_solution: SubmitSolution<'static>,
-    shared_client: &SharedBitcoinClient,
-) -> Result<(), TemplateDataError> {
+    block_template: &BlockTemplate,
+    submit_solution: &SubmitSolution<'static>,
+) -> Result<BlockSubmissionRequest, TemplateDataError> {
     let components = &block_template.components;
 
     // Parse original header and coinbase
@@ -285,7 +284,7 @@ pub async fn submit_mining_solution(
     }
 
     debug!(
-        "Submitting solution: version={}, timestamp={}, nonce={}",
+        "Building submission: version={}, timestamp={}, nonce={}",
         submit_solution.version, submit_solution.header_timestamp, submit_solution.header_nonce
     );
 
@@ -299,26 +298,11 @@ pub async fn submit_mining_solution(
         bits: original_header.bits,
     };
 
-    // Submit via shared client with Critical priority
-    let result = shared_client
-        .submit_solution(
-            block_template,
-            solution_header,
-            solution_coinbase_tx_bytes,
-            template_id,
-            Some(RequestPriority::Critical),
-        )
-        .await
-        .map_err(|e| TemplateDataError::InvalidCoinbaseTx(format!("Submit failed: {}", e)))?;
-
-    if !result.success {
-        return Err(TemplateDataError::InvalidCoinbaseTx(format!(
-            "Submit rejected: {}",
-            result.reason
-        )));
-    }
-
-    Ok(())
+    Ok(BlockSubmissionRequest {
+        template_id,
+        header: solution_header,
+        coinbase_transaction: solution_coinbase_tx,
+    })
 }
 
 /// Compute merkle root from coinbase transaction and merkle path
