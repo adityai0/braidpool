@@ -38,6 +38,7 @@ use bitcoin::{
 use mining_sv2::{NewExtendedMiningJob, NewMiningJob, SetCustomMiningJob};
 use std::convert::TryInto;
 use template_distribution_sv2::NewTemplate;
+use tracing::{debug, info};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct JobIdFactory {
@@ -73,6 +74,21 @@ pub struct JobFactory {
 }
 
 impl JobFactory {
+    /// Returns true if this factory is in Braidpool mode.
+    ///
+    /// Braidpool mode is active when:
+    /// - `pool_tag_string` is None, OR
+    /// - `pool_tag_string` equals "Braidpool"
+    ///
+    /// Used to distinguish how the coinbase is constructed depending on the data flow either from template_creator or otherwise 
+    /// directly from the config reward coinbase script 
+    fn is_braidpool_mode(&self) -> bool {
+        match &self.pool_tag_string {
+            None => true,
+            Some(tag) => tag == "Braidpool",
+        }
+    }
+
     /// Creates a new [`JobFactory`] instance.
     ///
     /// The `pool_tag_string` and `miner_tag_string` are optional and will be added to the coinbase
@@ -97,8 +113,16 @@ impl JobFactory {
     ///
     /// The character `/` is used as a delimiter.
     ///
-    /// If no pool or miner tag is provided, the delimiters are still added.
+    /// If in Braidpool mode (pool_tag is None or "Braidpool"), returns an empty vector
+    /// the template's coinbase_prefix already contains the pool identifier.
     pub fn op_pushbytes_pool_miner_tag(&self) -> Result<Vec<u8>, JobFactoryError> {
+        // Braidpool mode: skip pool/miner tag entirely
+        // Template's coinbase_prefix already has [height][pool_id]
+        if self.is_braidpool_mode() {
+            return Ok(vec![]);
+        }
+
+        //Stratum specific miner tag
         let mut pool_miner_tag = vec![];
         pool_miner_tag.extend_from_slice(b"/");
         if let Some(pool_tag_string) = &self.pool_tag_string {
@@ -149,12 +173,16 @@ impl JobFactory {
         template: NewTemplate<'a>,
         additional_coinbase_outputs: Vec<TxOut>,
     ) -> Result<StandardJob<'a>, JobFactoryError> {
-        let coinbase_outputs_sum = additional_coinbase_outputs
-            .iter()
-            .map(|o| o.value.to_sat())
-            .sum::<u64>();
-        if coinbase_outputs_sum != template.coinbase_tx_value_remaining {
-            return Err(JobFactoryError::InvalidCoinbaseOutputsSum);
+        // In Braidpool mode, template already has correct outputs, skip validation
+        // In SV2 mode, validate that additional outputs sum equals template value
+        if !self.is_braidpool_mode() {
+            let coinbase_outputs_sum = additional_coinbase_outputs
+                .iter()
+                .map(|o| o.value.to_sat())
+                .sum::<u64>();
+            if coinbase_outputs_sum != template.coinbase_tx_value_remaining {
+                return Err(JobFactoryError::InvalidCoinbaseOutputsSum);
+            }
         }
 
         let job_id = self.job_id_factory.next();
@@ -237,12 +265,16 @@ impl JobFactory {
         additional_coinbase_outputs: Vec<TxOut>,
         full_extranonce_size: usize,
     ) -> Result<ExtendedJob<'a>, JobFactoryError> {
-        let coinbase_outputs_sum = additional_coinbase_outputs
-            .iter()
-            .map(|o| o.value.to_sat())
-            .sum::<u64>();
-        if coinbase_outputs_sum != template.coinbase_tx_value_remaining {
-            return Err(JobFactoryError::InvalidCoinbaseOutputsSum);
+        // In Braidpool mode, template already has correct outputs, skip validation
+        // In SV2 mode, validate that additional outputs sum equals template value
+        if !self.is_braidpool_mode() {
+            let coinbase_outputs_sum = additional_coinbase_outputs
+                .iter()
+                .map(|o| o.value.to_sat())
+                .sum::<u64>();
+            if coinbase_outputs_sum != template.coinbase_tx_value_remaining {
+                return Err(JobFactoryError::InvalidCoinbaseOutputsSum);
+            }
         }
 
         let job_id = self.job_id_factory.next();
@@ -566,40 +598,108 @@ impl JobFactory {
         coinbase_reward_outputs: Vec<TxOut>,
         full_extranonce_size: usize,
     ) -> Result<Transaction, JobFactoryError> {
-        // check that the sum of the additional coinbase outputs is equal to the value remaining in
-        // the active template
-        let mut coinbase_reward_outputs_sum = Amount::from_sat(0);
-        for output in coinbase_reward_outputs.iter() {
-            coinbase_reward_outputs_sum = coinbase_reward_outputs_sum
-                .checked_add(output.value)
-                .ok_or(JobFactoryError::CoinbaseOutputsSumOverflow)?;
-        }
+        let mode = if self.is_braidpool_mode() { "Braidpool" } else { "SV2" };
+        info!(
+            "[JobFactory::coinbase] Building coinbase in {} mode, template_id={}, extranonce_size={}",
+            mode, template.template_id, full_extranonce_size
+        );
 
-        if template.coinbase_tx_value_remaining < coinbase_reward_outputs_sum.to_sat() {
-            return Err(JobFactoryError::InvalidCoinbaseOutputsSum);
-        }
+        // Braidpool mode: use only template outputs
+        // The template already contains correct outputs: [reward][segwit_commit][braidpool_op_return]
+        let outputs = if self.is_braidpool_mode() {
+            // Use template outputs directly (Braidpool mode)
+            let template_outputs = deserialize_template_outputs(
+                template.coinbase_tx_outputs.to_vec(),
+                template.coinbase_tx_outputs_count,
+            )
+            .map_err(|_| JobFactoryError::DeserializeCoinbaseOutputsError)?;
+            
+            info!(
+                "[JobFactory::coinbase] Braidpool mode: using {} template outputs directly",
+                template_outputs.len()
+            );
+            for (i, output) in template_outputs.iter().enumerate() {
+                info!(
+                    "[JobFactory::coinbase]   output[{}]: value={} sats, script_pubkey={}",
+                    i,
+                    output.value.to_sat(),
+                    output.script_pubkey.as_bytes().iter().map(|b| format!("{:02x}", b)).collect::<String>()
+                );
+            }
+            template_outputs
+        } else {
+            // SV2 mode: prepend pool reward outputs before template outputs
+            let mut coinbase_reward_outputs_sum = Amount::from_sat(0);
+            for output in coinbase_reward_outputs.iter() {
+                coinbase_reward_outputs_sum = coinbase_reward_outputs_sum
+                    .checked_add(output.value)
+                    .ok_or(JobFactoryError::CoinbaseOutputsSumOverflow)?;
+            }
 
-        let mut outputs = vec![];
+            if template.coinbase_tx_value_remaining < coinbase_reward_outputs_sum.to_sat() {
+                return Err(JobFactoryError::InvalidCoinbaseOutputsSum);
+            }
 
-        for output in coinbase_reward_outputs.iter() {
-            outputs.push(output.clone());
-        }
+            let mut outputs = vec![];
+            for output in coinbase_reward_outputs.iter() {
+                outputs.push(output.clone());
+            }
 
-        let mut template_outputs = deserialize_template_outputs(
-            template.coinbase_tx_outputs.to_vec(),
-            template.coinbase_tx_outputs_count,
-        )
-        .map_err(|_| JobFactoryError::DeserializeCoinbaseOutputsError)?;
+            let mut template_outputs = deserialize_template_outputs(
+                template.coinbase_tx_outputs.to_vec(),
+                template.coinbase_tx_outputs_count,
+            )
+            .map_err(|_| JobFactoryError::DeserializeCoinbaseOutputsError)?;
 
-        outputs.append(&mut template_outputs);
+            info!(
+                "[JobFactory::coinbase] SV2 mode: {} reward outputs + {} template outputs",
+                coinbase_reward_outputs.len(),
+                template_outputs.len()
+            );
+
+            outputs.append(&mut template_outputs);
+            
+            for (i, output) in outputs.iter().enumerate() {
+                debug!(
+                    "[JobFactory::coinbase]   output[{}]: value={} sats, script_pubkey={}",
+                    i,
+                    output.value.to_sat(),
+                    output.script_pubkey.as_bytes().iter().map(|b| format!("{:02x}", b)).collect::<String>()
+                );
+            }
+            outputs
+        };
 
         let op_pushbytes_pool_miner_tag = self.op_pushbytes_pool_miner_tag()?;
 
+        //Modifying according to template_creator 
         let mut script_sig = vec![];
         script_sig.extend_from_slice(&template.coinbase_prefix.to_vec());
         script_sig.extend_from_slice(&op_pushbytes_pool_miner_tag);
         script_sig.push(full_extranonce_size as u8); // OP_PUSHBYTES_X (for the full extranonce)
         script_sig.extend_from_slice(&vec![0; full_extranonce_size]);
+
+        info!(
+            "[JobFactory::coinbase] scriptSig ({} bytes): {}",
+            script_sig.len(),
+            script_sig.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+        );
+        info!(
+            "[JobFactory::coinbase]   coinbase_prefix ({} bytes): {}",
+            template.coinbase_prefix.len(),
+            template.coinbase_prefix.to_vec().iter().map(|b| format!("{:02x}", b)).collect::<String>()
+        );
+        if !op_pushbytes_pool_miner_tag.is_empty() {
+            info!(
+                "[JobFactory::coinbase]   pool_miner_tag ({} bytes): {}",
+                op_pushbytes_pool_miner_tag.len(),
+                op_pushbytes_pool_miner_tag.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+            );
+        }
+        debug!(
+            "[JobFactory::coinbase]   extranonce_space: OP_PUSHBYTES_{} + {} zero bytes",
+            full_extranonce_size, full_extranonce_size
+        );
 
         let tx_in = TxIn {
             previous_output: OutPoint::null(),
@@ -631,11 +731,16 @@ impl JobFactory {
         )?;
         let serialized_coinbase = serialize(&coinbase);
 
-        // Calculate the full pool/miner tag length including delimiters and OP_PUSHBYTES opcode
-        let pool_miner_tag_len = 1 // OP_PUSHBYTES opcode
+        // Braidpool mode: pool_miner_tag_len is 0 (no pool/miner tag added)
+        // SV2 mode: calculate full length including delimiters and OP_PUSHBYTES
+        let pool_miner_tag_len = if self.is_braidpool_mode() {
+            0
+        } else {
+            1 // OP_PUSHBYTES opcode
             + 3 // three "/" delimiters
             + self.pool_tag_string.as_ref().map_or(0, |s| s.len())
-            + self.miner_tag_string.as_ref().map_or(0, |s| s.len());
+            + self.miner_tag_string.as_ref().map_or(0, |s| s.len())
+        };
 
         let index = 4 // tx version
             + 2 // segwit bytes
@@ -648,6 +753,12 @@ impl JobFactory {
             + 1; // OP_PUSHBYTES_X (for the extranonce)
 
         let coinbase_tx_prefix = serialized_coinbase[0..index].to_vec();
+
+        info!(
+            "[JobFactory::coinbase_tx_prefix] ({} bytes): {}",
+            coinbase_tx_prefix.len(),
+            coinbase_tx_prefix.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+        );
 
         Ok(coinbase_tx_prefix)
     }
@@ -665,11 +776,16 @@ impl JobFactory {
         )?;
         let serialized_coinbase = serialize(&coinbase);
 
-        // Calculate the full pool/miner tag length including delimiters and OP_PUSHBYTES opcode
-        let pool_miner_tag_len = 1 // OP_PUSHBYTES opcode
+        // Braidpool mode: pool_miner_tag_len is 0 (no pool/miner tag added)
+        // SV2 mode: calculate full length including delimiters and OP_PUSHBYTES
+        let pool_miner_tag_len = if self.is_braidpool_mode() {
+            0
+        } else {
+            1 // OP_PUSHBYTES opcode
             + 3 // three "/" delimiters
             + self.pool_tag_string.as_ref().map_or(0, |s| s.len())
-            + self.miner_tag_string.as_ref().map_or(0, |s| s.len());
+            + self.miner_tag_string.as_ref().map_or(0, |s| s.len())
+        };
 
         let coinbase_tx_suffix = serialized_coinbase[4 // tx version
             + 2 // segwit bytes
@@ -682,6 +798,12 @@ impl JobFactory {
             + 1 // OP_PUSHBYTES_X (for the full extranonce)
             + full_extranonce_size..]
             .to_vec();
+
+        info!(
+            "[JobFactory::coinbase_tx_suffix] ({} bytes): {}",
+            coinbase_tx_suffix.len(),
+            coinbase_tx_suffix.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+        );
 
         Ok(coinbase_tx_suffix)
     }

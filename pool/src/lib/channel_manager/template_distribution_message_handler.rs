@@ -8,7 +8,7 @@ use stratum_apps::stratum_core::{
     parsers_sv2::{Mining, Tlv},
     template_distribution_sv2::*,
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     channel_manager::{ChannelManager, RouteMessageTo},
@@ -41,6 +41,7 @@ impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
             let mut messages: Vec<RouteMessageTo> = Vec::new();
             //Fetching the coinbase outputes being set via the config during initialization of pool 
             let mut coinbase_output = deserialize_outputs(channel_manager_data.coinbase_outputs.clone()).expect("deserialization failed");
+            debug!("Number of outputs received in case of braidpool mode template construction - {:?}",msg.coinbase_tx_outputs_count);
             coinbase_output[0].value = Amount::from_sat(msg.coinbase_tx_value_remaining);
 
             for (downstream_id, downstream) in channel_manager_data.downstream.iter_mut() {
@@ -71,7 +72,6 @@ impl HandleTemplateDistributionMessagesFromServerAsync for ChannelManager {
                             )?
                         },
                     };
-
                     let mut messages: Vec<RouteMessageTo> = vec![];
 
                     // if REQUIRES_STANDARD_JOBS is not set and the group channel is not empty
