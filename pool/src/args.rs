@@ -76,7 +76,7 @@ fn create_default_config() -> Result<PoolConfig, KeyManagementError> {
 
     let listen_address: SocketAddr = "0.0.0.0:43333".parse().expect("Invalid default address");
     let cert_validity_sec = 3600;
-    let pool_signature = "Stratum V2 SRI Pool".to_string();
+    let pool_signature = "Braidpool".to_string();
 
     let connection_config =
         ConnectionConfig::new(listen_address, cert_validity_sec, pool_signature);

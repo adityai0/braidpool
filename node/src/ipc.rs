@@ -410,8 +410,43 @@ async fn get_template(
         .get_block_template_components(None, Some(priority))
         .await?;
 
+    debug!(
+        "[IPC] Fetched BlockTemplateComponents for {}: header={} bytes, coinbase_tx={} bytes, merkle_path={} hashes, commitment={} bytes, block={} bytes",
+        context,
+        components.components.header.len(),
+        components.components.coinbase_transaction.len(),
+        components.components.coinbase_merkle_path.len(),
+        components.components.coinbase_commitment.len(),
+        components.components.block_hex.len()
+    );
+    debug!(
+        "[IPC] Block header: {}",
+        hex::encode(&components.components.header)
+    );
+    if !components.components.coinbase_commitment.is_empty() {
+        debug!(
+            "[IPC] SegWit commitment: {}",
+            hex::encode(&components.components.coinbase_commitment)
+        );
+    }
+
     let final_template =
         create_braidpool_template(&components.components, &config, block_height, NONCE)?;
+
+    //Additional logging for tracing flow during debug 
+        debug!(
+        "[IPC] FINAL_TEMPLATE coinbase: {} outputs, {} bytes",
+        final_template.coinbase.transaction.output.len(),
+        final_template.coinbase.full_hex().len()
+    );
+    for (i, output) in final_template.coinbase.transaction.output.iter().enumerate() {
+        debug!(
+            "[IPC]   final_template output[{}]: value={} sats, script={}",
+            i,
+            output.value.to_sat(),
+            hex::encode(output.script_pubkey.as_bytes())
+        );
+    }
 
     let template_transaction_count = final_template.block_transaction_count();
 
@@ -429,8 +464,18 @@ async fn get_template(
         );
     }
 
+    debug!(
+        "[IPC] BEFORE: components.coinbase_transaction = {} bytes",
+        components.components.coinbase_transaction.len()
+    );
+
     let mut processed_template = (*components).clone();
     processed_template.processed_block_hex = Some(complete_block_bytes);
+
+    debug!(
+        "[IPC] AFTER: processed_template.coinbase_transaction = {} bytes (coinbase NOT updated)",
+        processed_template.components.coinbase_transaction.len()
+    );
 
     Ok(processed_template)
 }
@@ -442,12 +487,23 @@ fn create_braidpool_template(
     nonce: u32,
 ) -> Result<FinalTemplate, CoinbaseError> {
     let braidpool_commitment = b"braidpool_bead_metadata_hash_32b";
-    //8 bytes that is extranonce has a size of 32 bits
-    let extranonce = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+    debug!(
+        "[IPC] Creating Braidpool template: height={}, network={:?}, payout={}, pool_id={}",
+        block_height,
+        config.get_network(),
+        config.pool_payout_address,
+        config.pool_identifier
+    );
+    debug!(
+        "[IPC] Braidpool commitment ({} bytes): {}",
+        braidpool_commitment.len(),
+        String::from_utf8_lossy(braidpool_commitment)
+    );
+    // Extranonce is NOT included in the template because the Sv2 utilizes the extended extranonce being appended 
+    // during the coinbase reformation at factory.rs module hence the bytes are added at that point and not before 
     create_block_template(
         components,
         braidpool_commitment,
-        extranonce,
         block_height,
         nonce,
         config,
