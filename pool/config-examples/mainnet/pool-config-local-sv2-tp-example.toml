@@ -17,7 +17,7 @@ coinbase_reward_script = "addr(bc1qtzqxqaxyy6lda2fhdtp5dp0v56vlf6g0tljy2x)"
 server_id = 1
 
 # Pool signature (string to be included in coinbase tx)
-pool_signature = "Stratum V2 SRI Pool"
+pool_signature = "Braidpool"
 
 # Enable this option to set a predefined log file path.
 # When enabled, logs will always be written to this file.
