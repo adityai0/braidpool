@@ -2,7 +2,6 @@ use crate::config::CoinbaseConfig;
 use crate::cpunet::Cpunet;
 use crate::error::CoinbaseError;
 use crate::ipc::client::BlockTemplateComponents;
-use crate::EXTRANONCE_SEPARATOR;
 use bitcoin::consensus::encode::{deserialize_partial, serialize, VarInt};
 use bitcoin::hashes::Hash;
 use bitcoin::{
@@ -220,14 +219,12 @@ fn find_transaction_end(tx_data: &[u8]) -> Result<usize, CoinbaseError> {
 ///
 /// # Arguments
 /// * `block_height` - Current blockchain tip height
-/// * `extranonce` - Miner's work distribution data
 /// * `pool_identifier` - Pool identification string
 ///
 /// # ScriptSig Structure:
-///   <height_push> <height_bytes> <extranonce_push> <extranonce> <pool_id_push> <pool_id>
+///   <height_push> <height_bytes> <pool_id_push> <pool_id>
 fn build_coinbase_input(
     block_height: u32,
-    extranonce: &[u8],
     pool_identifier: &str,
 ) -> Result<TxIn, CoinbaseError> {
     let coinbase_height = block_height + 1;
@@ -236,14 +233,11 @@ fn build_coinbase_input(
     if height_bytes.len() > constants::MAX_BIP34_HEIGHT_BYTES {
         return Err(CoinbaseError::ScriptCreationError);
     }
-    if extranonce.len() > 32 {
-        return Err(CoinbaseError::InvalidExtranonceLength);
-    }
     let pool_bytes = pool_identifier.as_bytes();
     if pool_bytes.len() > 20 {
         return Err(CoinbaseError::ScriptCreationError);
     }
-    let total_script_size = 1 + height_bytes.len() + 1 + extranonce.len() + 1 + pool_bytes.len();
+    let total_script_size = 1 + height_bytes.len() + 1 + pool_bytes.len();
     if total_script_size > constants::MAX_COINBASE_SCRIPT_SIG {
         return Err(CoinbaseError::ScriptCreationError);
     }
@@ -251,11 +245,6 @@ fn build_coinbase_input(
     let mut script_data = Vec::new();
     script_data.push(height_bytes.len() as u8);
     script_data.extend_from_slice(&height_bytes);
-    //extranonce starts with 8 assigned to extranonce bytes
-    //therefore the extranonce separator must be before this
-    //TODO KINDLY REVERT IF NOT WORKS
-    script_data.push(EXTRANONCE_SEPARATOR.len() as u8);
-    script_data.extend_from_slice(&EXTRANONCE_SEPARATOR);
     script_data.push(pool_bytes.len() as u8);
     script_data.extend_from_slice(pool_bytes);
 
@@ -273,22 +262,20 @@ fn build_coinbase_input(
 
 /// Creates an OP_RETURN output containing Braidpool commitment data
 ///
-/// Combines the pool's commitment data with the miner's extranonce to create
-/// a standard Bitcoin OP_RETURN output for commitment purposes.
-/// The total data size is strictly limited to 80 bytes
+/// Creates a standard Bitcoin OP_RETURN output for commitment purposes.
+/// The total data size is strictly limited to 80 bytes.
 ///
 /// # Arguments
-/// * `commitment` - Pool-specific commitment data
-/// * `extranonce` - Miner's unique work identifier
-fn build_braidpool_op_return(commitment: &[u8], extranonce: &[u8]) -> Result<TxOut, CoinbaseError> {
-    let mut op_return_data = commitment.to_vec();
-    op_return_data.extend_from_slice(extranonce);
-
-    if op_return_data.len() > constants::MAX_OP_RETURN_DATA {
+/// * `commitment` - Pool-specific commitment data (e.g., bead hash)
+///
+/// NOTE: Extranonce is NOT included in OP_RETURN. Pool handles
+/// extranonce allocation separately via SV2 ExtendedExtranonce.
+fn build_braidpool_op_return(commitment: &[u8]) -> Result<TxOut, CoinbaseError> {
+    if commitment.len() > constants::MAX_OP_RETURN_DATA {
         return Err(CoinbaseError::OpReturnTooLarge);
     }
     let op_return_data_buf =
-        PushBytesBuf::try_from(op_return_data).map_err(CoinbaseError::PushBytesError)?;
+        PushBytesBuf::try_from(commitment.to_vec()).map_err(CoinbaseError::PushBytesError)?;
 
     let op_return_script = Builder::new()
         .push_opcode(opcodes::all::OP_RETURN)
@@ -338,32 +325,54 @@ fn create_segwit_commitment_output(commitment_bytes: &[u8]) -> Result<TxOut, Coi
 /// This creates a coinbase transaction with the format:
 /// - Output 0: Paying the full block reward (subsidy + fees) to the pool's address.
 /// - Output 1: The wtxid commitment (SegWit commitment), if present.
-/// - Output 2: OP_RETURN with Braidpool commitment + extranonce.
+/// - Output 2: OP_RETURN with Braidpool commitment.
+///
 /// # Arguments
 /// * `components` - Block template data from Bitcoin Core IPC
 /// * `braidpool_commitment` - Pool-specific commitment data (max 72 bytes)
-/// * `extranonce` - Mining work distribution data (max 32 bytes)
 /// * `block_height` - Current blockchain tip height (will be incremented for BIP-34)
 /// * `config` - Pool configuration including payout address and identifier
+///
+/// NOTE: Extranonce is NOT included in the coinbase. Pool's factory.rs handles
+/// dynamic extranonce allocation via coinbase_tx_prefix + extranonce + coinbase_tx_suffix.
 pub fn build_braidpool_coinbase_from_template(
     components: &BlockTemplateComponents,
     braidpool_commitment: &[u8],
-    extranonce: &[u8],
     block_height: u32,
     config: &CoinbaseConfig,
 ) -> Result<FinalCoinbase, CoinbaseError> {
-    if extranonce.len() > constants::MAX_EXTRANONCE_LEN {
-        return Err(CoinbaseError::InvalidExtranonceLength);
-    }
+    debug!(
+        "[template_creator] Building Braidpool coinbase: height={}, pool_id={}, commitment_len={}",
+        block_height + 1,
+        config.pool_identifier,
+        braidpool_commitment.len()
+    );
+
     if braidpool_commitment.len() > constants::MAX_BRAIDPOOL_COMMITMENT_LEN {
         return Err(CoinbaseError::InvalidCommitmentLength);
     }
-    if braidpool_commitment.len() + extranonce.len() > 78 {
-        return Err(CoinbaseError::OpReturnTooLarge);
-    }
 
     let original_coinbase = parse_coinbase_transaction(&components.coinbase_transaction)?;
+    debug!(
+        "[template_creator] Bitcoin Core coinbase: {} inputs, {} outputs",
+        original_coinbase.input.len(),
+        original_coinbase.output.len()
+    );
+    for (i, output) in original_coinbase.output.iter().enumerate() {
+        debug!(
+            "[template_creator]   Original output[{}]: value={} sats, script={}",
+            i,
+            output.value.to_sat(),
+            hex::encode(output.script_pubkey.as_bytes())
+        );
+    }
+
     let segwit_commitment = if !components.coinbase_commitment.is_empty() {
+        debug!(
+            "[template_creator] SegWit commitment ({} bytes): {}",
+            components.coinbase_commitment.len(),
+            hex::encode(&components.coinbase_commitment)
+        );
         Some(create_segwit_commitment_output(
             &components.coinbase_commitment,
         )?)
@@ -400,7 +409,11 @@ pub fn build_braidpool_coinbase_from_template(
     };
 
     // Build OP_RETURN output.
-    let braidpool_output = build_braidpool_op_return(braidpool_commitment, extranonce)?;
+    let braidpool_output = build_braidpool_op_return(braidpool_commitment)?;
+    debug!(
+        "[template_creator] Braidpool OP_RETURN: {}",
+        hex::encode(braidpool_output.script_pubkey.as_bytes())
+    );
 
     // Build final outputs in the correct order: [REWARD, WTXID, BRAIDPOOL_OPRETURN].
     let mut final_outputs = vec![reward_payout];
@@ -409,8 +422,35 @@ pub fn build_braidpool_coinbase_from_template(
     }
     final_outputs.push(braidpool_output);
 
+    debug!(
+        "[template_creator] Final Braidpool coinbase outputs ({}): [REWARD: {} sats] [SEGWIT_COMMIT] [OP_RETURN]",
+        final_outputs.len(),
+        total_available
+    );
+    for (i, output) in final_outputs.iter().enumerate() {
+        debug!(
+            "[template_creator]   Final output[{}]: value={} sats, script={}",
+            i,
+            output.value.to_sat(),
+            hex::encode(output.script_pubkey.as_bytes())
+        );
+    }
+
     // Build coinbase input
-    let coinbase_input = build_coinbase_input(block_height, extranonce, &config.pool_identifier)?;
+    let coinbase_input = build_coinbase_input(block_height, &config.pool_identifier)?;
+    info!(
+        "[template_creator] Coinbase input scriptSig ({} bytes): {}",
+        coinbase_input.script_sig.len(),
+        hex::encode(coinbase_input.script_sig.as_bytes())
+    );
+    info!(
+        "[template_creator]   BIP-34 height: {} (encoded as next block)",
+        block_height + 1
+    );
+    info!(
+        "[template_creator]   Pool identifier: {}",
+        config.pool_identifier
+    );
     if coinbase_input.script_sig.len() > constants::MAX_COINBASE_SCRIPT_SIG {
         return Err(CoinbaseError::ScriptCreationError);
     }
@@ -515,15 +555,14 @@ pub fn build_complete_block(
 /// # Arguments
 /// * `components` - Block template data from Bitcoin Core
 /// * `braidpool_commitment` - Pool-specific commitment data
-/// * `extranonce` - Mining work distribution identifier
 /// * `block_height` - Current blockchain tip height
 /// * `nonce` - Mining nonce value
 /// * `config` - Pool configuration settings
 ///
+/// NOTE: Extranonce is NOT included. Pool's factory.rs handles dynamic allocation.
 pub fn create_block_template(
     components: &BlockTemplateComponents,
     braidpool_commitment: &[u8],
-    extranonce: &[u8],
     block_height: u32,
     nonce: u32,
     config: &CoinbaseConfig,
@@ -532,7 +571,6 @@ pub fn create_block_template(
     let final_coinbase = build_braidpool_coinbase_from_template(
         components,
         braidpool_commitment,
-        extranonce,
         block_height,
         config,
     )?;
@@ -738,13 +776,12 @@ fn rejects_bad_witness_commitment() {
 }
 
 #[test]
-fn coinbase_input_too_big_is_rejected() {
+fn coinbase_input_pool_id_too_long_is_rejected() {
     let block_height = 740_000;
-    // Should fail because 33 > MAX_EXTRANONCE_LEN (32)
-    let extranonce = vec![0u8; 33];
-    let pool_id = "braidpool";
-    let res = build_coinbase_input(block_height, &extranonce, pool_id);
-    assert!(matches!(res, Err(CoinbaseError::InvalidExtranonceLength)));
+    // Should fail because pool_id > 20 bytes
+    let pool_id = "this_pool_id_is_way_too_long_to_fit";
+    let res = build_coinbase_input(block_height, pool_id);
+    assert!(matches!(res, Err(CoinbaseError::ScriptCreationError)));
 }
 
 #[test]
