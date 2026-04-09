@@ -825,24 +825,24 @@ impl DownstreamClient {
         if valid_weak_share_flag {
             //Passing both the extranonces for committment in uncommitted metadata
             let extranonce_2_raw_value = match u32::from_str_radix(extranonce2, 16) {
-            Ok(v) => v,
-            Err(e) => {
-                error!(connection_id = %connection_id_hex, error = %e, extranonce2 = %extranonce2, "Failed to parse extranonce2");
-                return Err(StratumErrors::InvalidMethodParams {
-                    method: "mining.submit".to_string(),
-                });
-            }
-        };
+                Ok(v) => v,
+                Err(e) => {
+                    error!(connection_id = %connection_id_hex, error = %e, extranonce2 = %extranonce2, "Failed to parse extranonce2");
+                    return Err(StratumErrors::InvalidMethodParams {
+                        method: "mining.submit".to_string(),
+                    });
+                }
+            };
             let extranonce_1_hex_str = hex::encode(self.extranonce1.clone());
             let extranonce_1_raw_value = match u32::from_str_radix(&extranonce_1_hex_str, 16) {
-            Ok(v) => v,
-            Err(e) => {
-                error!(connection_id = %connection_id_hex, error = %e, extranonce1 = %extranonce_1_hex_str, "Failed to parse extranonce1");
-                return Err(StratumErrors::InvalidMethodParams {
-                    method: "mining.submit".to_string(),
-                });
-            }
-        };
+                Ok(v) => v,
+                Err(e) => {
+                    error!(connection_id = %connection_id_hex, error = %e, extranonce1 = %extranonce_1_hex_str, "Failed to parse extranonce1");
+                    return Err(StratumErrors::InvalidMethodParams {
+                        method: "mining.submit".to_string(),
+                    });
+                }
+            };
             let _swarm_command_sent = match swarm_handler
                 .lock()
                 .await

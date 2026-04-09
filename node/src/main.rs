@@ -484,8 +484,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 network,
                                 template_cache,
                                 block_submission_rx,
-                                payout_cmd_sender,
                                 rpc_command_rx,
+                                payout_cmd_sender,
                             )
                             .await
                             {
