@@ -750,7 +750,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         {
                                             Some(id) => id,
                                             None => {
-                                                error!(bead_hash = ?bead.block_header.block_hash(), "Bead ID not found in index mapping (GetAllBeads)");
+                                                error!(
+                                                    bead_hash = ?bead.block_header.block_hash(),
+                                                    "Bead ID not found in index mapping (GetAllBeads)"
+                                                );
                                                 continue;
                                             }
                                         };
@@ -1088,7 +1091,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                             {
                                                 Some(id) => id,
                                                 None => {
-                                                    error!(bead_hash = ?bead.block_header.block_hash(), "Bead ID not found in index mapping (GetBeadsAfter)");
+                                                    error!(
+                                                        bead_hash = ?bead.block_header.block_hash(),
+                                                        "Bead ID not found in index mapping (GetBeadsAfter)"
+                                                    );
                                                     continue;
                                                 }
                                             };
