@@ -68,7 +68,7 @@ pub fn build_new_template<'decoder>(
         .sum::<u64>();
 
     // Get coinbase outputs to include in template
-    // Braidpool mode: include ALL outputs (REWARD + SegWit + OP_RETURN) - factory.rs uses them directly as coinbase_prefix 
+    // Braidpool mode: include ALL outputs (REWARD + SegWit + OP_RETURN) - factory.rs uses them directly as coinbase_prefix
     let outputs_to_include: Vec<_> = if braidpool_mode {
         coinbase_tx.output.iter().cloned().collect()
     } else {
@@ -219,11 +219,15 @@ pub fn build_new_template_from_block_template(
     let header: Header = deserialize(&components.header)
         .map_err(|e| TemplateDataError::InvalidCoinbaseTx(format!("Header deserialize: {}", e)))?;
 
-    // Extract coinbase from processed_block_hex which has been updated via template_creator 
-    let coinbase_tx: Transaction = if let Some(processed_hex) = &block_template.processed_block_hex {
+    // Extract coinbase from processed_block_hex which has been updated via template_creator
+    let coinbase_tx: Transaction = if let Some(processed_hex) = &block_template.processed_block_hex
+    {
         if !processed_hex.is_empty() {
             let block: bitcoin::Block = deserialize(processed_hex).map_err(|e| {
-                TemplateDataError::InvalidCoinbaseTx(format!("Block deserialize from processed_block_hex: {}", e))
+                TemplateDataError::InvalidCoinbaseTx(format!(
+                    "Block deserialize from processed_block_hex: {}",
+                    e
+                ))
             })?;
             info!(
                 "[sv2_messages] Using coinbase from processed_block_hex: {} outputs",
@@ -234,7 +238,9 @@ pub fn build_new_template_from_block_template(
             })?
         } else {
             // Fallback to components.coinbase_transaction (original Bitcoin Core coinbase)
-            info!("[sv2_messages] processed_block_hex empty, using components.coinbase_transaction");
+            info!(
+                "[sv2_messages] processed_block_hex empty, using components.coinbase_transaction"
+            );
             deserialize(&components.coinbase_transaction).map_err(|e| {
                 TemplateDataError::InvalidCoinbaseTx(format!("Coinbase deserialize: {}", e))
             })?
@@ -254,8 +260,8 @@ pub fn build_new_template_from_block_template(
         &coinbase_tx,
         &components.coinbase_merkle_path,
         empty_tx_sequence(),
-        //keeping this true for the case of braidpool_template_provider being used for template fetching 
-        true, 
+        //keeping this true for the case of braidpool_template_provider being used for template fetching
+        true,
     )
 }
 
@@ -303,12 +309,17 @@ pub fn build_block_submission_request(
     let original_header: Header = deserialize(&components.header)
         .map_err(|e| TemplateDataError::InvalidCoinbaseTx(format!("Header deserialize: {}", e)))?;
 
-    // Extract original coinbase from processed_block_hex braidpool specific coinbase 
+    // Extract original coinbase from processed_block_hex braidpool specific coinbase
     // This matches the coinbase used in build_new_template_from_block_template
-    let original_coinbase_tx: Transaction = if let Some(processed_hex) = &block_template.processed_block_hex {
+    let original_coinbase_tx: Transaction = if let Some(processed_hex) =
+        &block_template.processed_block_hex
+    {
         if !processed_hex.is_empty() {
             let block: bitcoin::Block = deserialize(processed_hex).map_err(|e| {
-                TemplateDataError::InvalidCoinbaseTx(format!("Block deserialize from processed_block_hex: {}", e))
+                TemplateDataError::InvalidCoinbaseTx(format!(
+                    "Block deserialize from processed_block_hex: {}",
+                    e
+                ))
             })?;
             info!(
                 "[sv2_messages] build_block_submission_request: using coinbase from processed_block_hex: {} outputs",
@@ -319,14 +330,21 @@ pub fn build_block_submission_request(
             })?
         } else {
             // Fallback to components.coinbase_transaction
-            info!("[sv2_messages] build_block_submission_request: processed_block_hex empty, using components.coinbase_transaction");
+            info!(
+                "[sv2_messages] build_block_submission_request: processed_block_hex empty, using components.coinbase_transaction"
+            );
             deserialize(&components.coinbase_transaction).map_err(|e| {
-                TemplateDataError::InvalidCoinbaseTx(format!("Original coinbase deserialize: {}", e))
+                TemplateDataError::InvalidCoinbaseTx(format!(
+                    "Original coinbase deserialize: {}",
+                    e
+                ))
             })?
         }
     } else {
         // Fallback to components.coinbase_transaction
-        info!("[sv2_messages] build_block_submission_request: processed_block_hex missing, using components.coinbase_transaction");
+        info!(
+            "[sv2_messages] build_block_submission_request: processed_block_hex missing, using components.coinbase_transaction"
+        );
         deserialize(&components.coinbase_transaction).map_err(|e| {
             TemplateDataError::InvalidCoinbaseTx(format!("Original coinbase deserialize: {}", e))
         })?
@@ -340,7 +358,7 @@ pub fn build_block_submission_request(
             TemplateDataError::InvalidCoinbaseTx(e.to_string())
         })?;
 
-    // Validate solution coinbase against original braidpool_coinbase 
+    // Validate solution coinbase against original braidpool_coinbase
     // Note: scriptSig will differ (solution has extranonce filled in), so we only check structural fields
     if solution_coinbase_tx.version != original_coinbase_tx.version
         || solution_coinbase_tx.lock_time != original_coinbase_tx.lock_time
@@ -351,11 +369,15 @@ pub fn build_block_submission_request(
     {
         error!(
             "Solution coinbase tx is not matching with original coinbase tx: version={}/{}, locktime={}/{}, inputs={}, sequence={}/{}, prevout={}/{}",
-            solution_coinbase_tx.version, original_coinbase_tx.version,
-            solution_coinbase_tx.lock_time, original_coinbase_tx.lock_time,
+            solution_coinbase_tx.version,
+            original_coinbase_tx.version,
+            solution_coinbase_tx.lock_time,
+            original_coinbase_tx.lock_time,
             solution_coinbase_tx.input.len(),
-            solution_coinbase_tx.input[0].sequence, original_coinbase_tx.input[0].sequence,
-            solution_coinbase_tx.input[0].previous_output, original_coinbase_tx.input[0].previous_output
+            solution_coinbase_tx.input[0].sequence,
+            original_coinbase_tx.input[0].sequence,
+            solution_coinbase_tx.input[0].previous_output,
+            original_coinbase_tx.input[0].previous_output
         );
         return Err(TemplateDataError::InvalidCoinbaseTx(
             "Coinbase tx mismatch".into(),

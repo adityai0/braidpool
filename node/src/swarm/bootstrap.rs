@@ -23,20 +23,20 @@ pub fn setup_and_bootstrap(
     swarm.listen_on(listen_addr.clone())?;
 
     // Add boot nodes to DHT
-    // let boot_nodes = parse_boot_nodes();
-    // for (peer_id, addr) in &boot_nodes {
-    //     swarm
-    //         .behaviour_mut()
-    //         .kademlia
-    //         .add_address(peer_id, addr.clone());
-    // }
-    // info!(boot_node_count = %boot_nodes.len(), "Boot nodes added to DHT");
+    let boot_nodes = parse_boot_nodes();
+    for (peer_id, addr) in &boot_nodes {
+        swarm
+            .behaviour_mut()
+            .kademlia
+            .add_address(peer_id, addr.clone());
+    }
+    info!(boot_node_count = %boot_nodes.len(), "Boot nodes added to DHT");
 
-    // // Dial primary boot node
-    // let boot_addr =
-    //     parse_boot_addr().map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-    // swarm.dial(boot_addr.clone())?;
-    // info!(address = %boot_addr, "Dialed boot node");
+    // Dial primary boot node
+    let boot_addr =
+        parse_boot_addr().map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    swarm.dial(boot_addr.clone())?;
+    info!(address = %boot_addr, "Dialed boot node");
 
     Ok(())
 }

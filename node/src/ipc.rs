@@ -433,13 +433,19 @@ async fn get_template(
     let final_template =
         create_braidpool_template(&components.components, &config, block_height, NONCE)?;
 
-    //Additional logging for tracing flow during debug 
-        debug!(
+    //Additional logging for tracing flow during debug
+    debug!(
         "[IPC] FINAL_TEMPLATE coinbase: {} outputs, {} bytes",
         final_template.coinbase.transaction.output.len(),
         final_template.coinbase.full_hex().len()
     );
-    for (i, output) in final_template.coinbase.transaction.output.iter().enumerate() {
+    for (i, output) in final_template
+        .coinbase
+        .transaction
+        .output
+        .iter()
+        .enumerate()
+    {
         debug!(
             "[IPC]   final_template output[{}]: value={} sats, script={}",
             i,
@@ -499,8 +505,8 @@ fn create_braidpool_template(
         braidpool_commitment.len(),
         String::from_utf8_lossy(braidpool_commitment)
     );
-    // Extranonce is NOT included in the template because the Sv2 utilizes the extended extranonce being appended 
-    // during the coinbase reformation at factory.rs module hence the bytes are added at that point and not before 
+    // Extranonce is NOT included in the template because the Sv2 utilizes the extended extranonce being appended
+    // during the coinbase reformation at factory.rs module hence the bytes are added at that point and not before
     create_block_template(
         components,
         braidpool_commitment,

@@ -925,7 +925,8 @@ mod tests {
             share_batch_size,
             expected_share_per_minute,
             job_store,
-            None,
+            //Modifying according to the braidpool or non-braidpool coinbase construction
+            Some("".to_string()),
             None,
             "mainnet".to_string(),
         )
@@ -1074,7 +1075,8 @@ mod tests {
             share_batch_size,
             expected_share_per_minute,
             job_store,
-            None,
+            //Modifying according to the braidpool or non-braidpool coinbase construction
+            Some("".to_string()),
             None,
             "mainnet".to_string(),
         )
@@ -1198,7 +1200,8 @@ mod tests {
             share_batch_size,
             expected_share_per_minute,
             job_store,
-            None,
+            //Modifying according to the braidpool or non-braidpool coinbase construction
+            Some("".to_string()),
             None,
             "mainnet".to_string(),
         )
@@ -1519,7 +1522,8 @@ mod tests {
             share_batch_size,
             expected_share_per_minute,
             job_store,
-            None,
+            //Modifying according to the braidpool or non-braidpool coinbase construction
+            Some("".to_string()),
             None,
             "mainnet".to_string(),
         )

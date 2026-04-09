@@ -80,8 +80,8 @@ impl JobFactory {
     /// - `pool_tag_string` is None, OR
     /// - `pool_tag_string` equals "Braidpool"
     ///
-    /// Used to distinguish how the coinbase is constructed depending on the data flow either from template_creator or otherwise 
-    /// directly from the config reward coinbase script 
+    /// Used to distinguish how the coinbase is constructed depending on the data flow either from template_creator or otherwise
+    /// directly from the config reward coinbase script
     fn is_braidpool_mode(&self) -> bool {
         match &self.pool_tag_string {
             None => true,
@@ -598,7 +598,11 @@ impl JobFactory {
         coinbase_reward_outputs: Vec<TxOut>,
         full_extranonce_size: usize,
     ) -> Result<Transaction, JobFactoryError> {
-        let mode = if self.is_braidpool_mode() { "Braidpool" } else { "SV2" };
+        let mode = if self.is_braidpool_mode() {
+            "Braidpool"
+        } else {
+            "SV2"
+        };
         info!(
             "[JobFactory::coinbase] Building coinbase in {} mode, template_id={}, extranonce_size={}",
             mode, template.template_id, full_extranonce_size
@@ -613,7 +617,7 @@ impl JobFactory {
                 template.coinbase_tx_outputs_count,
             )
             .map_err(|_| JobFactoryError::DeserializeCoinbaseOutputsError)?;
-            
+
             info!(
                 "[JobFactory::coinbase] Braidpool mode: using {} template outputs directly",
                 template_outputs.len()
@@ -623,7 +627,12 @@ impl JobFactory {
                     "[JobFactory::coinbase]   output[{}]: value={} sats, script_pubkey={}",
                     i,
                     output.value.to_sat(),
-                    output.script_pubkey.as_bytes().iter().map(|b| format!("{:02x}", b)).collect::<String>()
+                    output
+                        .script_pubkey
+                        .as_bytes()
+                        .iter()
+                        .map(|b| format!("{:02x}", b))
+                        .collect::<String>()
                 );
             }
             template_outputs
@@ -658,13 +667,18 @@ impl JobFactory {
             );
 
             outputs.append(&mut template_outputs);
-            
+
             for (i, output) in outputs.iter().enumerate() {
                 debug!(
                     "[JobFactory::coinbase]   output[{}]: value={} sats, script_pubkey={}",
                     i,
                     output.value.to_sat(),
-                    output.script_pubkey.as_bytes().iter().map(|b| format!("{:02x}", b)).collect::<String>()
+                    output
+                        .script_pubkey
+                        .as_bytes()
+                        .iter()
+                        .map(|b| format!("{:02x}", b))
+                        .collect::<String>()
                 );
             }
             outputs
@@ -672,7 +686,7 @@ impl JobFactory {
 
         let op_pushbytes_pool_miner_tag = self.op_pushbytes_pool_miner_tag()?;
 
-        //Modifying according to template_creator 
+        //Modifying according to template_creator
         let mut script_sig = vec![];
         script_sig.extend_from_slice(&template.coinbase_prefix.to_vec());
         script_sig.extend_from_slice(&op_pushbytes_pool_miner_tag);
@@ -682,18 +696,29 @@ impl JobFactory {
         info!(
             "[JobFactory::coinbase] scriptSig ({} bytes): {}",
             script_sig.len(),
-            script_sig.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+            script_sig
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>()
         );
         info!(
             "[JobFactory::coinbase]   coinbase_prefix ({} bytes): {}",
             template.coinbase_prefix.len(),
-            template.coinbase_prefix.to_vec().iter().map(|b| format!("{:02x}", b)).collect::<String>()
+            template
+                .coinbase_prefix
+                .to_vec()
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>()
         );
         if !op_pushbytes_pool_miner_tag.is_empty() {
             info!(
                 "[JobFactory::coinbase]   pool_miner_tag ({} bytes): {}",
                 op_pushbytes_pool_miner_tag.len(),
-                op_pushbytes_pool_miner_tag.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+                op_pushbytes_pool_miner_tag
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<String>()
             );
         }
         debug!(
@@ -757,7 +782,10 @@ impl JobFactory {
         info!(
             "[JobFactory::coinbase_tx_prefix] ({} bytes): {}",
             coinbase_tx_prefix.len(),
-            coinbase_tx_prefix.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+            coinbase_tx_prefix
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>()
         );
 
         Ok(coinbase_tx_prefix)
@@ -802,7 +830,10 @@ impl JobFactory {
         info!(
             "[JobFactory::coinbase_tx_suffix] ({} bytes): {}",
             coinbase_tx_suffix.len(),
-            coinbase_tx_suffix.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+            coinbase_tx_suffix
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>()
         );
 
         Ok(coinbase_tx_suffix)

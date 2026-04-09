@@ -343,7 +343,8 @@ mod tests {
             group_channel_id,
             job_store,
             full_extranonce_size,
-            None,
+            //Modifying according to the braidpool or non-braidpool coinbase construction
+            Some("".to_string()),
             None,
         )
         .unwrap();
@@ -474,7 +475,8 @@ mod tests {
             group_channel_id,
             job_store,
             full_extranonce_size,
-            None,
+            //Modifying according to the braidpool or non-braidpool coinbase construction
+            Some("".to_string()),
             None,
         )
         .unwrap();
@@ -574,7 +576,8 @@ mod tests {
             group_channel_id,
             job_store,
             full_extranonce_size,
-            None,
+            //Modifying according to the braidpool or non-braidpool coinbase construction
+            Some("".to_string()),
             None,
         )
         .unwrap();

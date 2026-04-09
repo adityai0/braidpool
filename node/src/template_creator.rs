@@ -223,10 +223,7 @@ fn find_transaction_end(tx_data: &[u8]) -> Result<usize, CoinbaseError> {
 ///
 /// # ScriptSig Structure:
 ///   <height_push> <height_bytes> <pool_id_push> <pool_id>
-fn build_coinbase_input(
-    block_height: u32,
-    pool_identifier: &str,
-) -> Result<TxIn, CoinbaseError> {
+fn build_coinbase_input(block_height: u32, pool_identifier: &str) -> Result<TxIn, CoinbaseError> {
     let coinbase_height = block_height + 1;
     let height_bytes = encode_bip34_height(coinbase_height)?;
 
