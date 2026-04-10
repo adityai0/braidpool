@@ -24,7 +24,7 @@ use tokio::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpListener,
     },
-    sync::mpsc,
+    sync::{mpsc, RwLock},
 };
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec};
@@ -1216,12 +1216,12 @@ impl Default for DownstreamClient {
 /// # Fields
 /// * `stratum_config` - The configuration settings for the Stratum server.
 /// * `downstream_connection_mapping` - Thread-safe mapping of downstream
-///   miner connections, wrapped in `Arc<Mutex<...>>` to allow concurrent access
-///   across async tasks and threads.
+///   miner connections, wrapped in `Arc<RwLock<...>>` to allow concurrent reads
+///   (e.g. RPC, Notifier) while stratum holds a write lock only for add/remove.
 #[derive(Debug)]
 pub struct Server {
     stratum_config: StratumServerConfig,
-    downstream_connection_mapping: Arc<Mutex<ConnectionMapping>>,
+    downstream_connection_mapping: Arc<RwLock<ConnectionMapping>>,
     block_submission_tx: Option<mpsc::UnboundedSender<BlockSubmissionRequest>>,
 }
 ///Types for the `mining.notify` jobs to be sent to the fellow connected downstream nodes
@@ -1593,7 +1593,7 @@ where
     ///
     pub async fn run_notifier(
         &mut self,
-        downstream_connection_map: Arc<Mutex<ConnectionMapping>>,
+        downstream_connection_map: Arc<RwLock<ConnectionMapping>>,
         latest_template_arc: &mut Arc<Mutex<BlockTemplate>>,
         latest_template_merkle_branch_arc: &mut Arc<Mutex<Vec<Vec<u8>>>>,
         latest_template_id: Arc<Mutex<TemplateId>>,
@@ -1646,7 +1646,7 @@ where
                         );
                     }
                     let connection_snapshot = downstream_connection_map
-                        .lock()
+                        .read()
                         .await
                         .downstream_channel_mapping
                         .clone();
@@ -1776,7 +1776,7 @@ where
                 } => {
                     let current_template_id = *latest_template_id.lock().await;
                     let connection_entry = {
-                        let current_downstream_mapping = downstream_connection_map.lock().await;
+                        let current_downstream_mapping = downstream_connection_map.read().await;
                         current_downstream_mapping
                             .downstream_channel_mapping
                             .get(&new_downstream_addr)
@@ -1985,7 +1985,7 @@ impl Server {
     ///`Spawning` new stratum server along with custom_config or default config .
     pub fn new(
         server_config: StratumServerConfig,
-        connection_mapping_arc: Arc<Mutex<ConnectionMapping>>,
+        connection_mapping_arc: Arc<RwLock<ConnectionMapping>>,
         block_submission_tx: Option<mpsc::UnboundedSender<BlockSubmissionRequest>>,
     ) -> Self {
         debug!(config = ?server_config, "Initializing stratum server");
@@ -2079,7 +2079,7 @@ impl Server {
                          let (downstream_tx,mut downstream_rx) = mpsc::channel(1024);
                          //adding the new connection to the connection map
                          self.downstream_connection_mapping
-                                    .lock()
+                                    .write()
                                     .await
                                     .new_connection(peer_addr.to_string(), connection_id, downstream_tx.clone());
                          info!(
@@ -2104,7 +2104,7 @@ impl Server {
 
                              // cleanup after connection closes, remove from connection mapping
                              connection_mapping_clone
-                                     .lock()
+                                     .write()
                                      .await
                                      .downstream_channel_mapping
                                      .remove(&peer_addr_string);
@@ -2308,7 +2308,7 @@ mod test {
         let genesis_beads = Vec::from([]);
         let test_braid: Arc<RwLock<braid::Braid>> =
             Arc::new(RwLock::new(braid::Braid::new(genesis_beads)));
-        let connection_mapping = Arc::new(Mutex::new(ConnectionMapping::new()));
+        let connection_mapping = Arc::new(RwLock::new(ConnectionMapping::new()));
         let mining_job_map = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let notify_tx = mpsc::channel::<NotifyCmd>(32).0;
         let (_test_db_handler, test_db_tx) = DBHandler::new().await.unwrap();
@@ -2363,7 +2363,7 @@ mod test {
 
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        let conn_map = connection_mapping.lock().await;
+        let conn_map = connection_mapping.read().await;
         assert_eq!(conn_map.downstream_channel_mapping.len(), 3);
         drop(streams);
         drop(server_task);
@@ -2373,7 +2373,7 @@ mod test {
     pub async fn server_subscribe_response() {
         let ibd_or_not: AtomicBool = AtomicBool::new(false);
         let test_ibd_spinlock = Arc::new(ibd_or_not);
-        let connection_mapping = Arc::new(Mutex::new(ConnectionMapping::new()));
+        let connection_mapping = Arc::new(RwLock::new(ConnectionMapping::new()));
         let genesis_beads = Vec::from([]);
         let test_braid: Arc<RwLock<braid::Braid>> =
             Arc::new(RwLock::new(braid::Braid::new(genesis_beads)));
@@ -2426,7 +2426,7 @@ mod test {
     async fn test_mining_authorize_response() {
         let ibd_or_not: AtomicBool = AtomicBool::new(false);
         let ibd_spinlock = Arc::new(ibd_or_not);
-        let connection_mapping = Arc::new(Mutex::new(ConnectionMapping::new()));
+        let connection_mapping = Arc::new(RwLock::new(ConnectionMapping::new()));
         let genesis_beads = Vec::from([]);
         let test_braid: Arc<RwLock<braid::Braid>> =
             Arc::new(RwLock::new(braid::Braid::new(genesis_beads)));
@@ -2480,7 +2480,7 @@ mod test {
     async fn test_mining_suggest_difficulty_response() {
         let ibd_or_not: AtomicBool = AtomicBool::new(false);
         let ibd_spinlock = Arc::new(ibd_or_not);
-        let connection_mapping = Arc::new(Mutex::new(ConnectionMapping::new()));
+        let connection_mapping = Arc::new(RwLock::new(ConnectionMapping::new()));
         let genesis_beads = Vec::from([]);
         let test_braid: Arc<RwLock<braid::Braid>> =
             Arc::new(RwLock::new(braid::Braid::new(genesis_beads)));
@@ -2526,7 +2526,7 @@ mod test {
     async fn test_invalid_json() {
         let ibd_or_not: AtomicBool = AtomicBool::new(false);
         let ibd_spinlock = Arc::new(ibd_or_not);
-        let connection_mapping = Arc::new(Mutex::new(ConnectionMapping::new()));
+        let connection_mapping = Arc::new(RwLock::new(ConnectionMapping::new()));
         let genesis_beads = Vec::from([]);
         let test_braid: Arc<RwLock<braid::Braid>> =
             Arc::new(RwLock::new(braid::Braid::new(genesis_beads)));
