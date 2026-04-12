@@ -2,8 +2,7 @@ name: Docker Image Publish
 
 on:
   push:
-    # for testing only added the current branch will be removed afterwards
-    branches: [dev, docker-test-env]
+    branches: [dev]
   workflow_dispatch:  
 
 env:
