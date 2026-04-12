@@ -249,25 +249,31 @@ impl AuditDBHandler {
             error: format!("Failed to fetch parents for bead id {}: {}", bead_id, e),
         })?;
 
-        let mut parents = std::collections::HashSet::new();
-        let mut parent_timestamps = Vec::new();
+        let mut parent_pairs: Vec<(BlockHash, bitcoin::absolute::Time)> = Vec::new();
+
         for p_row in parent_rows {
             let p_hash: Vec<u8> = p_row.get("parent_block_hash");
-            parents.insert(BlockHash::from_byte_array(p_hash.try_into().map_err(
-                |_| DBErrors::TupleAttributeParsingError {
+            let hash = BlockHash::from_byte_array(p_hash.try_into().map_err(|_| {
+                DBErrors::TupleAttributeParsingError {
                     error: "Expected 32 bytes".to_string(),
                     attribute: "parent_block_hash".to_string(),
-                },
-            )?));
-            parent_timestamps.push(
-                bitcoin::absolute::MedianTimePast::from_u32(
-                    p_row.get::<i64, _>("parent_timestamp") as u32,
-                )
-                .map_err(|e| DBErrors::TupleAttributeParsingError {
-                    error: e.to_string(),
-                    attribute: "parent_timestamp".to_string(),
-                })?,
-            );
+                }
+            })?);
+            let time = bitcoin::absolute::MedianTimePast::from_u32(
+                p_row.get::<i64, _>("parent_timestamp") as u32,
+            )
+            .map_err(|e| DBErrors::TupleAttributeParsingError {
+                error: e.to_string(),
+                attribute: "parent_timestamp".to_string(),
+            })?;
+            parent_pairs.push((hash, time));
+        }
+        parent_pairs.sort_by_key(|(hash, _)| *hash);
+        let mut parents: Vec<BlockHash> = Vec::new();
+        let mut parent_timestamps = Vec::new();
+        for (hash, time) in parent_pairs {
+            parents.push(hash);
+            parent_timestamps.push(time);
         }
 
         let bead = Bead {

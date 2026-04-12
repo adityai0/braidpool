@@ -403,6 +403,8 @@ pub async fn fetch_beads_in_batch(
                         error: e.to_string(),
                     })?;
 
+            let mut parent_pairs_batch: Vec<(BlockHash, bitcoin::absolute::MedianTimePast)> =
+                Vec::new();
             for parent in parent_rows {
                 let parent_id = parent.get::<i64, _>("parent");
                 let timestamp = parent.get::<i32, _>("timestamp");
@@ -417,9 +419,15 @@ pub async fn fetch_beads_in_batch(
 
                 match parent_hash_row.get::<Vec<u8>, _>("hash").try_into() {
                     Ok(arr) => {
-                        bead.committed_metadata
-                            .parents
-                            .insert(BlockHash::from_byte_array(arr));
+                        parent_pairs_batch.push((
+                            BlockHash::from_byte_array(arr),
+                            MedianTimePast::from_u32(timestamp as u32).map_err(|e| {
+                                DBErrors::TupleAttributeParsingError {
+                                    error: format!("Invalid timestamp {}: {}", timestamp, e),
+                                    attribute: "parent_timestamp".into(),
+                                }
+                            })?,
+                        ));
                     }
                     Err(_) => {
                         return Err(DBErrors::TupleAttributeParsingError {
@@ -428,11 +436,12 @@ pub async fn fetch_beads_in_batch(
                         });
                     }
                 };
+            }
 
-                bead.committed_metadata
-                    .parent_bead_timestamps
-                    .0
-                    .push(MedianTimePast::from_u32(timestamp as u32).unwrap());
+            parent_pairs_batch.sort_by_key(|(hash, _)| *hash);
+            for (hash, time) in parent_pairs_batch {
+                bead.committed_metadata.parents.push(hash);
+                bead.committed_metadata.parent_bead_timestamps.0.push(time);
             }
 
             fetched_beads.push(bead);
@@ -552,6 +561,8 @@ pub async fn fetch_bead_by_bead_hash(
                 });
             }
         };
+
+    let mut parent_pairs_single: Vec<(BlockHash, MedianTimePast)> = Vec::new();
     for parent_beads in parent_timestamp_rows {
         let parent_timestamp = parent_beads.get::<i32, _>("timestamp");
         let parent_bead_id = parent_beads.get::<i64, _>("parent");
@@ -578,18 +589,27 @@ pub async fn fetch_bead_by_bead_hash(
                 });
             }
         };
-        //Extending parent bead timestamp
+        parent_pairs_single.push((
+            parent_blockhash,
+            MedianTimePast::from_u32(parent_timestamp as u32).map_err(|e| {
+                DBErrors::TupleAttributeParsingError {
+                    error: format!("Invalid timestamp {}: {}", parent_timestamp, e),
+                    attribute: "parent_timestamp".into(),
+                }
+            })?,
+        ));
+    }
+
+    parent_pairs_single.sort_by_key(|(hash, _)| *hash);
+    for (hash, time) in parent_pairs_single {
+        fetched_bead.committed_metadata.parents.push(hash);
         fetched_bead
             .committed_metadata
             .parent_bead_timestamps
             .0
-            .push(MedianTimePast::from_u32(parent_timestamp as u32).unwrap());
-        //Extending parent committment by parent hash
-        fetched_bead
-            .committed_metadata
-            .parents
-            .insert(parent_blockhash);
+            .push(time);
     }
+
     for tx_row in rows {
         let _txid = tx_row.get::<Vec<u8>, _>("txid");
         let raw_tx_id = match _txid.clone().try_into() {

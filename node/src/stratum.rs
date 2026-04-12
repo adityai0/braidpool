@@ -1223,14 +1223,22 @@ impl DownstreamClient {
                     .to_string();
 
                 let (parent_hash_set, time_hash_set) = {
-                    let mut parents = std::collections::HashSet::new();
+                    let mut parents: Vec<crate::utils::BeadHash> = Vec::new();
                     let mut timestamps = crate::committed_metadata::TimeVec(Vec::new());
 
                     if let Some(ref dag_mutex) = audit_dag {
                         let dag = dag_mutex.lock().await;
-                        for &(_comp_hash, block_hash, parent_time) in &dag.active_parents {
-                            parents.insert(crate::utils::BeadHash::from(block_hash));
-                            timestamps.0.push(parent_time);
+                        let mut pairs: Vec<(crate::utils::BeadHash, bitcoin::absolute::Time)> = dag
+                            .active_parents
+                            .iter()
+                            .map(|&(_, block_hash, parent_time)| {
+                                (crate::utils::BeadHash::from(block_hash), parent_time)
+                            })
+                            .collect();
+                        pairs.sort_by_key(|(hash, _)| *hash);
+                        for (hash, time) in pairs {
+                            parents.push(hash);
+                            timestamps.0.push(time);
                         }
                     }
                     if parents.is_empty() {

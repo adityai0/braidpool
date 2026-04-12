@@ -51,7 +51,7 @@ fn create_genesis_bead_for_audit() -> Result<Bead, String> {
     // Create committed metadata with no parents
     let committed_metadata = CommittedMetadata {
         transaction_ids: TxIdVec(Vec::new()),
-        parents: std::collections::HashSet::new(),
+        parents: Vec::new(),
         parent_bead_timestamps: TimeVec(Vec::new()),
         payout_address: "bc1qgdjqv0av3q56jvd82tkdjpy7gdp9ut8tlqmgrpmv24sq90ecnvqqjwvw97"
             .to_string(),
