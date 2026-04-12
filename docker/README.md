@@ -2,6 +2,37 @@
 
 This directory contains all Docker-related files for Braidpool.
 
+## Pre-built Images
+
+Pre-built Docker images are automatically published to Docker Hub when changes are merged to the `dev` branch.
+
+### Pull Images
+
+```bash
+# Braidpool Node
+docker pull braidpool/node:latest
+
+# CPU Miner
+docker pull braidpool/miner:latest
+
+# Bitcoin CPUNet
+docker pull braidpool/bitcoin-cpunet:latest
+```
+
+### Available Tags
+
+| Tag | Description |
+|-----|-------------|
+| `latest` | Latest build from dev branch |
+| `dev` | Alias for latest dev build |
+| `sha-<commit>` | Specific commit (e.g., `sha-a1b2c3d`) |
+
+### Docker Hub Repositories
+
+- [braidpool/node](https://hub.docker.com/r/braidpool/node)
+- [braidpool/miner](https://hub.docker.com/r/braidpool/miner)
+- [braidpool/bitcoin-cpunet](https://hub.docker.com/r/braidpool/bitcoin-cpunet)
+
 ## Directory Structure
 
 ```
