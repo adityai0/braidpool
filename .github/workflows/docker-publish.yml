@@ -32,11 +32,11 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: braidpool/node
+          images: braidpool/braidpool
           tags: |
-            type=raw,value=latest
-            type=raw,value=dev
-            type=sha,prefix=sha-,format=short
+            type=raw,value=node-latest
+            type=raw,value=node-dev
+            type=sha,prefix=node-sha-,format=short
 
       - name: Build and push Node image
         uses: docker/build-push-action@v5
@@ -71,11 +71,11 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: braidpool/miner
+          images: braidpool/braidpool
           tags: |
-            type=raw,value=latest
-            type=raw,value=dev
-            type=sha,prefix=sha-,format=short
+            type=raw,value=miner-latest
+            type=raw,value=miner-dev
+            type=sha,prefix=miner-sha-,format=short
 
       - name: Build and push Miner image
         uses: docker/build-push-action@v5
@@ -110,11 +110,11 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: braidpool/bitcoin-cpunet
+          images: braidpool/braidpool
           tags: |
-            type=raw,value=latest
-            type=raw,value=dev
-            type=sha,prefix=sha-,format=short
+            type=raw,value=cpunet-latest
+            type=raw,value=cpunet-dev
+            type=sha,prefix=cpunet-sha-,format=short
 
       - name: Build and push Bitcoin CPUNet image
         uses: docker/build-push-action@v5

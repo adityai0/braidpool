@@ -10,28 +10,26 @@ Pre-built Docker images are automatically published to Docker Hub when changes a
 
 ```bash
 # Braidpool Node
-docker pull braidpool/node:latest
+docker pull braidpool/braidpool:node-latest
 
 # CPU Miner
-docker pull braidpool/miner:latest
+docker pull braidpool/braidpool:miner-latest
 
 # Bitcoin CPUNet
-docker pull braidpool/bitcoin-cpunet:latest
+docker pull braidpool/braidpool:cpunet-latest
 ```
 
 ### Available Tags
 
-| Tag | Description |
-|-----|-------------|
-| `latest` | Latest build from dev branch |
-| `dev` | Alias for latest dev build |
-| `sha-<commit>` | Specific commit (e.g., `sha-a1b2c3d`) |
+| Image | Tags |
+|-------|------|
+| Node | `node-latest`, `node-dev`, `node-sha-<commit>` |
+| Miner | `miner-latest`, `miner-dev`, `miner-sha-<commit>` |
+| CPUNet | `cpunet-latest`, `cpunet-dev`, `cpunet-sha-<commit>` |
 
-### Docker Hub Repositories
+### Docker Hub Repository
 
-- [braidpool/node](https://hub.docker.com/r/braidpool/node)
-- [braidpool/miner](https://hub.docker.com/r/braidpool/miner)
-- [braidpool/bitcoin-cpunet](https://hub.docker.com/r/braidpool/bitcoin-cpunet)
+- [braidpool/braidpool](https://hub.docker.com/r/braidpool/braidpool)
 
 ## Directory Structure
 
