@@ -2,6 +2,7 @@ import axios from 'axios';
 
 const TIMEOUT = 10000;
 const MAX_RETRIES = 2;
+let requestId = 0;
 
 async function rpcCall(method, params = [], retries = MAX_RETRIES) {
   const url = process.env.BRAIDPOOL_NODE_URL;
@@ -15,7 +16,7 @@ async function rpcCall(method, params = [], retries = MAX_RETRIES) {
       url,
       {
         jsonrpc: '2.0',
-        id: Date.now(),
+        id: ++requestId,
         method,
         params,
       },
@@ -39,62 +40,79 @@ async function rpcCall(method, params = [], retries = MAX_RETRIES) {
     throw error;
   }
 }
-const getBeadCount = () => rpcCall('getbeadcount');
-const getCohortCount = () => rpcCall('getcohortcount');
-const getTips = () => rpcCall('gettips');
-const getGenesis = () => rpcCall('getgenesis');
+
 const getPeerInfo = () => rpcCall('getpeerinfo');
 const getBraidInfo = () => rpcCall('getbraidinfo');
 const getHighestWorkPathByCount = (count = 50) =>
   rpcCall('gethighestworkpathbycount', [count]);
+const getCohortById = (id) => rpcCall('getcohortbyid', [id]);
+const getParents = (hash) => rpcCall('getparents', [hash]);
 
-export async function fetchBraidpoolBeadInfo() {
-  const url = process.env.BRAIDPOOL_NODE_URL;
+async function fetchDAGData(cohortCount, numCohorts = 10) {
+  const startCohort = Math.max(0, cohortCount - numCohorts);
 
-  if (!url) {
-    console.warn('BRAIDPOOL_NODE_URL not set');
-    return null;
+  const cohortPromises = [];
+  for (let i = startCohort; i < cohortCount; i++) {
+    cohortPromises.push(
+      getCohortById(i).catch((err) => {
+        console.warn(`Failed to fetch cohort ${i}:`, err.message);
+        return [];
+      })
+    );
+  }
+  const cohorts = await Promise.all(cohortPromises);
+
+  const allBeads = cohorts.flat();
+
+  const parentPromises = allBeads.map((hash) =>
+    getParents(hash)
+      .then((parents) => [hash, parents])
+      .catch(() => [hash, []])
+  );
+  const parentPairs = await Promise.all(parentPromises);
+  const parents = Object.fromEntries(parentPairs);
+
+  const children = {};
+  for (const [nodeId, parentList] of Object.entries(parents)) {
+    for (const parentId of parentList) {
+      if (!children[parentId]) {
+        children[parentId] = [];
+      }
+      children[parentId].push(nodeId);
+    }
   }
 
-  console.log('Fetching Braidpool data');
+  return { cohorts, parents, children };
+}
 
-  const results = await Promise.allSettled([
-    getBeadCount(),
-    getCohortCount(),
-    getTips(),
-    getGenesis(),
+export async function fetchBraidpoolBeadInfo() {
+  const [braidInfoResult, peerInfoResult, hwpResult] = await Promise.allSettled([
     getBraidInfo(),
     getPeerInfo(),
     getHighestWorkPathByCount(50),
   ]);
 
-  const keys = [
-    'beadCount',
-    'cohortCount',
-    'tips',
-    'genesis',
-    'braidInfo',
-    'peerInfo',
-    'highestWorkPath',
-  ];
+  const braidInfo = braidInfoResult.status === 'fulfilled' ? braidInfoResult.value : null;
+  const cohortCount = braidInfo?.cohort_count ?? 0;
 
-  const data = {};
-  const errors = [];
+  const data = {
+    braidInfo,
+    peerInfo: peerInfoResult.status === 'fulfilled' ? peerInfoResult.value : null,
+    highestWorkPath: hwpResult.status === 'fulfilled' ? hwpResult.value : [],
+    cohorts: [],
+    parents: {},
+    children: {},
+  };
 
-  results.forEach((result, i) => {
-    if (result.status === 'fulfilled') {
-      data[keys[i]] = result.value;
-    } else {
-      data[keys[i]] = null;
-      errors.push({
-        method: keys[i],
-        error: result.reason?.message,
-      });
+  if (cohortCount > 0) {
+    try {
+      const dagData = await fetchDAGData(cohortCount, 10);
+      data.cohorts = dagData.cohorts;
+      data.parents = dagData.parents;
+      data.children = dagData.children;
+    } catch (err) {
+      console.warn('Failed to fetch DAG data:', err.message);
     }
-  });
-
-  if (errors.length > 0) {
-    console.warn('Some RPC calls failed:', errors);
   }
 
   return data;

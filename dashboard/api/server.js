@@ -10,7 +10,7 @@ import { fetchBlockDetails } from './utils/fetchBlockDetails.js';
 import { fetchAllNodeData } from './utils/fetchBlockChainInfo.js';
 import { fetchPoolInfo } from './utils/fetchPoolInfo.js';
 import { fetchMempoolStats } from './utils/fetchMempoolStats.js';
-import { fetchBraidpoolBeadInfo } from './braidpool/utils/fetchBeadInfo.js';
+import { fetchBraidpoolBeadInfo } from './braidpool/utils/fetchbeadinfo.js';
 dotenv.config();
 
 const PORT = process.env.WS_PORT || 5000;
@@ -139,13 +139,12 @@ async function sendBeadInfo() {
       const payload = {
         type: 'braidpool_bead_info',
         data: {
-          beadCount: braidpoolData.beadCount,
-          cohortCount: braidpoolData.cohortCount,
-          tips: braidpoolData.tips,
-          genesis: braidpoolData.genesis,
           braidInfo: braidpoolData.braidInfo,
           peerInfo: braidpoolData.peerInfo,
           highestWorkPath: braidpoolData.highestWorkPath,
+          cohorts: braidpoolData.cohorts,
+          parents: braidpoolData.parents,
+          children: braidpoolData.children,
         },
         time: new Date().toLocaleString(),
       };
@@ -187,6 +186,6 @@ setInterval(() => {
   sendPoolInfo();
   sendMempoolData();
   sendBeadInfo();
-}, 30000); // 30-second interval
+}, 10000); // 10-second interval
 
 console.log(`WebSocket server running on ws://localhost:${PORT}`);
