@@ -56,7 +56,7 @@ export async function fetchBraidpoolBeadInfo() {
     return null;
   }
 
-  console.log('Fetching Braidpool data from:', url);
+  console.log('Fetching Braidpool data');
 
   const results = await Promise.allSettled([
     getBeadCount(),
