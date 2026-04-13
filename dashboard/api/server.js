@@ -186,9 +186,7 @@ setInterval(() => {
   );
   sendPoolInfo();
   sendMempoolData();
-  sendBeadInfo().catch((err) =>
-    console.error('[Server] sendBeadInfo failed:', err)
-  );
+  sendBeadInfo();
 }, 30000); // 30-second interval
 
 console.log(`WebSocket server running on ws://localhost:${PORT}`);
