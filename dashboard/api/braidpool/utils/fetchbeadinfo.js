@@ -86,18 +86,18 @@ async function fetchDAGData(cohortCount, numCohorts = 10) {
 }
 
 export async function fetchBraidpoolBeadInfo() {
-  const [braidInfoResult, peerInfoResult, hwpResult] = await Promise.allSettled([
-    getBraidInfo(),
-    getPeerInfo(),
-    getHighestWorkPathByCount(50),
-  ]);
+  const [braidInfoResult, peerInfoResult, hwpResult] = await Promise.allSettled(
+    [getBraidInfo(), getPeerInfo(), getHighestWorkPathByCount(50)]
+  );
 
-  const braidInfo = braidInfoResult.status === 'fulfilled' ? braidInfoResult.value : null;
+  const braidInfo =
+    braidInfoResult.status === 'fulfilled' ? braidInfoResult.value : null;
   const cohortCount = braidInfo?.cohort_count ?? 0;
 
   const data = {
     braidInfo,
-    peerInfo: peerInfoResult.status === 'fulfilled' ? peerInfoResult.value : null,
+    peerInfo:
+      peerInfoResult.status === 'fulfilled' ? peerInfoResult.value : null,
     highestWorkPath: hwpResult.status === 'fulfilled' ? hwpResult.value : [],
     cohorts: [],
     parents: {},
