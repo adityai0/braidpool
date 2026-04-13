@@ -10,7 +10,7 @@ import { fetchBlockDetails } from './utils/fetchBlockDetails.js';
 import { fetchAllNodeData } from './utils/fetchBlockChainInfo.js';
 import { fetchPoolInfo } from './utils/fetchPoolInfo.js';
 import { fetchMempoolStats } from './utils/fetchMempoolStats.js';
-import {fetchBraidpoolBeadInfo} from './braidpool/utils/fetchbeadinfo.js';
+import { fetchBraidpoolBeadInfo } from './braidpool/utils/fetchbeadinfo.js';
 dotenv.config();
 
 const PORT = process.env.WS_PORT || 5000;
@@ -130,7 +130,10 @@ async function sendBeadInfo() {
   try {
     const braidpoolData = await fetchBraidpoolBeadInfo();
 
-    console.log('[sendBeadInfo] Received braidpool data:', JSON.stringify(braidpoolData, null, 2));
+    console.log(
+      '[sendBeadInfo] Received braidpool data:',
+      JSON.stringify(braidpoolData, null, 2)
+    );
 
     if (braidpoolData) {
       const payload = {
