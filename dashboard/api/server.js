@@ -184,6 +184,6 @@ setInterval(() => {
   sendPoolInfo();
   sendMempoolData();
   sendBeadInfo();
-}, 10000); // 10-second interval
+}, 30000); // 30-second interval
 
 console.log(`WebSocket server running on ws://localhost:${PORT}`);
