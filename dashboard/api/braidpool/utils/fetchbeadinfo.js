@@ -2,6 +2,7 @@ import axios from 'axios';
 
 const TIMEOUT = 10000;
 const MAX_RETRIES = 2;
+const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 let requestId = 0;
 
 async function rpcCall(method, params = [], retries = MAX_RETRIES) {
@@ -34,9 +35,9 @@ async function rpcCall(method, params = [], retries = MAX_RETRIES) {
   } catch (error) {
     if (retries > 0) {
       console.warn(`Retrying ${method}...`);
+      await delay(1000);
       return rpcCall(method, params, retries - 1);
     }
-    console.error(`[RPC ERROR] ${method}:`, error.message);
     throw error;
   }
 }

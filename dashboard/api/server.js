@@ -135,7 +135,7 @@ async function sendBeadInfo() {
       JSON.stringify(braidpoolData, null, 2)
     );
 
-    if (braidpoolData) {
+    if (braidpoolData?.braidInfo) {
       const payload = {
         type: 'braidpool_bead_info',
         data: {
@@ -154,9 +154,7 @@ async function sendBeadInfo() {
           client.send(JSON.stringify(payload));
         }
       });
-    } else {
-      console.log('[sendBeadInfo] No braidpool data received');
-    }
+    } 
   } catch (err) {
     console.error('[Server] fetchBraidpoolBeadInfo failed:', err.message);
   }
