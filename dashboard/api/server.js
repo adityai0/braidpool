@@ -154,7 +154,7 @@ async function sendBeadInfo() {
           client.send(JSON.stringify(payload));
         }
       });
-    } 
+    }
   } catch (err) {
     console.error('[Server] fetchBraidpoolBeadInfo failed:', err.message);
   }
