@@ -2,8 +2,6 @@
 use crate::bead::{Bead, BeadCodec, BeadHashes, BeadRequest, BeadResponse, BeadSyncError};
 use crate::utils::BeadHash;
 
-use crate::bead::{Bead, BeadCodec, BeadRequest, BeadResponse};
-use crate::utils::BeadHash;
 
 
 use libp2p::floodsub;

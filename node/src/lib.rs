@@ -28,13 +28,15 @@ use crate::{
     bead::Bead,
     braid::{AddBeadStatus, Braid},
     committed_metadata::{CommittedMetadata, TimeVec, TxIdVec},
-    db::BraidpoolDBTypes,
+    db::{BraidpoolDBTypes, db_handlers::prepare_bead_tuple_data},
     error::{IPCtemplateError, StratumErrors},
     stratum::{BlockTemplate, NotifyCmd},
     uncommitted_metadata::UnCommittedMetadata,
     utils::timestamp::MicrosecondTimestamp,
 };
 use std::error::Error;
+#[macro_use]
+pub mod macros;
 pub mod bead;
 pub mod behaviour;
 pub mod braid;
@@ -42,6 +44,7 @@ pub mod cli;
 pub mod committed_metadata;
 pub mod config;
 pub mod db;
+pub mod ibd_manager;
 pub mod error;
 pub mod ipc;
 pub mod peer_manager;
@@ -247,6 +250,8 @@ pub async fn ipc_template_consumer(
 }
 pub enum SwarmCommand {
     PropagateValidBead { bead_bytes: Vec<u8> },
+    //Initiate IBD after waiting for connection_mapping to be populated via peer discovery
+    InitiateIBD,
 }
 pub struct SwarmHandler {
     pub command_sender: Sender<SwarmCommand>,
@@ -357,61 +362,84 @@ impl SwarmHandler {
             AddBeadStatus::BeadAdded => {
                 let new_tips: Vec<_> = braid_data.tips.iter().map(|&idx| idx).collect();
                 info!(
-                    hash = %weak_share.hash(),
+                    hash = %weak_share.block_header.block_hash(),
                     new_tips = ?new_tips,
                     "Braid extended successfully"
                 );
+                //Considering the index of the beads in braid will be same as the (insertion ids-1)
+                let bead_id = braid_data
+                    .index
+                    .get(&weak_share.block_header.block_hash())
+                    .unwrap();
+                //Constructing the parent set using braid.parent_indices()
+                let mut braid_parent_set: braid::Relatives = braid::Relatives::new();
+                for (bead_idx, bead) in braid_data.beads.iter().enumerate() {
+                    let parent_set = braid_data.parent_indices(bead);
+                    braid_parent_set.insert(bead_idx, parent_set);
+                }
+                let (txs_json, relative_json, parent_timestamp_json) = prepare_bead_tuple_data(
+                    &braid_data.beads,
+                    &braid_data.index,
+                    &braid_parent_set,
+                    &weak_share,
+                )
+                .unwrap();
+                let _db_insertion_command = match self
+                    .db_command_sender
+                    .send(BraidpoolDBTypes::InsertTupleTypes {
+                        query: db::InsertTupleTypes::InsertBeadSequentially {
+                            bead_to_insert: weak_share.clone(),
+                            txs_json: txs_json,
+                            relative_json: relative_json,
+                            parent_timestamp_json: parent_timestamp_json,
+                            bead_id: *bead_id,
+                        },
+                    })
+                    .await
+                {
+                    Ok(_) => {
+                        debug!(
+                            hash = %weak_share.block_header.block_hash(),
+                            "InsertBeadSequentially sent to DB thread"
+                        );
+                    }
+                    Err(error) => {
+                        error!(error = ?error, "Database insertion command failed");
+                    }
+                };
+                let serialized_weak_share_bytes = bitcoin::consensus::serialize(&weak_share);
+                //After validation of the candidate block constructed by the downstream node sending it to swarm for further propogation
+                match self
+                    .command_sender
+                    .send(SwarmCommand::PropagateValidBead {
+                        bead_bytes: serialized_weak_share_bytes,
+                    })
+                    .await
+                {
+                    Ok(_) => {
+                        info!(
+                            hash = %weak_share.block_header.block_hash(),
+                            "Bead sent to swarm"
+                        );
+                    }
+                    Err(e) => {
+                        error!(
+                            hash = %weak_share.block_header.block_hash(),
+                            error = %e,
+                            "Failed to send candidate block to swarm"
+                        );
+                        return Err(StratumErrors::CandidateBlockNotSent {
+                            error: e.to_string(),
+                        });
+                    }
+                };
             }
             _ => {
                 warn!(status = ?status, hash = %weak_share.hash(),
                     "Failed to extend Braid")
             }
         }
-        let _db_insertion_command = match self
-            .db_command_sender
-            .send(BraidpoolDBTypes::InsertTupleTypes {
-                query: db::InsertTupleTypes::InsertBeadSequentially {
-                    bead_to_insert: weak_share.clone(),
-                },
-            })
-            .await
-        {
-            Ok(_) => {
-                debug!(
-                    hash = %weak_share.hash(),
-                    "InsertBeadSequentially sent to DB thread"
-                );
-            }
-            Err(error) => {
-                error!(error = ?error, "Database insertion command failed");
-            }
-        };
-        let serialized_weak_share_bytes = bitcoin::consensus::serialize(&weak_share);
-        //After validation of the candidate block constructed by the downstream node sending it to swarm for further propogation
-        match self
-            .command_sender
-            .send(SwarmCommand::PropagateValidBead {
-                bead_bytes: serialized_weak_share_bytes,
-            })
-            .await
-        {
-            Ok(_) => {
-                info!(
-                    hash = %weak_share.hash(),
-                    "Bead sent to swarm"
-                );
-            }
-            Err(e) => {
-                error!(
-                    hash = %weak_share.hash(),
-                    error = %e,
-                    "Failed to send candidate block to swarm"
-                );
-                return Err(StratumErrors::CandidateBlockNotSent {
-                    error: e.to_string(),
-                });
-            }
-        };
+
         Ok(())
     }
 }

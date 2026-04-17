@@ -25,7 +25,6 @@ pub enum AddBeadStatus {
     DuplicateBead,
     InvalidBead,
     BeadAdded,
-    ParentsMissing,
 }
 
 #[derive(Debug, Clone)]

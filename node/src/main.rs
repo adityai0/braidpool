@@ -404,13 +404,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     ));
     match server_join.await {
         Ok(Ok(_addr)) => {}
-        Ok(Err(())) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "RPC server startup failed",
-            )
-            .into());
-        }
         Err(e) => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -598,7 +591,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         }
                                     };
                                       //If the received  bead exceeds the timestamp of ibd completion wrt to a sync node
-                                      if let braid::AddBeadStatus::ParentsNotYetReceived = status {
+                                      if let braid::AddBeadStatus::ParentsMissing = status {
                                         //request the parents using request response protocol
                                         let peer_id = {
                                             let peer_manager = peer_manager_arc.read().await;
@@ -629,7 +622,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     } else if let braid::AddBeadStatus::BeadAdded = status {
                                      //Considering the index of the beads in braid will be same as the (insertion ids-1)
                                         let bead_id = match braid_data
-                                            .bead_index_mapping
+                                            .index
                                             .get(&bead.block_header.block_hash()) {
                                             Some(id) => id,
                                             None => {
@@ -637,9 +630,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                                 continue;
                                             }
                                         };
+                                        //Constructing the parent set using braid.parent_indices()
+                                        let mut braid_parent_set: node::braid::Relatives = node::braid::Relatives::new();
+                                        for (bead_idx, b) in braid_data.beads.iter().enumerate() {
+                                            let parent_set = braid_data.parent_indices(b);
+                                            braid_parent_set.insert(bead_idx, parent_set);
+                                        }
                                         let (txs_json, relative_json, parent_timestamp_json) = match prepare_bead_tuple_data(
                                             &braid_data.beads,
-                                            &braid_data.bead_index_mapping,
+                                            &braid_data.index,
+                                            &braid_parent_set,
                                             &bead,
                                         ){
                                             Ok(received_tuples)=>received_tuples,
@@ -679,7 +679,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         if broadcast_ts  < threshold as u32 {
                                             info!("Incoming BEAD received during IBD within threshold limit with broadcast timestamp - {:?} and threshold is - {:?}",broadcast_ts,threshold);
                                            match status{
-                                            braid::AddBeadStatus::InvalidBead | braid::AddBeadStatus::ParentsNotYetReceived=>{
+                                            braid::AddBeadStatus::InvalidBead | braid::AddBeadStatus::ParentsMissing=>{
                                                 //Aborting/evicting the wait_ibd handler corresponding to the sync peer
                                                 match ibd_command_tx.send(IBDCommands::AbortWaitHandle { peer_id:sync_peer_id }).await{
                                                     Ok(_)=>{
@@ -700,7 +700,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                                 }
                                                 continue;
                                             },
-                                            braid::AddBeadStatus::BeadAdded | braid::AddBeadStatus::DagAlreadyContainsBead =>{
+                                            braid::AddBeadStatus::BeadAdded | braid::AddBeadStatus::DuplicateBead =>{
                                                 ibd_spinlock.store(false,Ordering::SeqCst);
                                                 continue;
                                             },
@@ -714,7 +714,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     }
                                 }
                                 else{
-                                    if let braid::AddBeadStatus::ParentsNotYetReceived = status {
+                                    if let braid::AddBeadStatus::ParentsMissing = status {
                                         //request the parents using request response protocol
                                         let peer_id = {
                                             let peer_manager = peer_manager_arc.read().await;
@@ -744,7 +744,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         }
                                     } else if let braid::AddBeadStatus::BeadAdded = status {
                                         let bead_id = match braid_data
-                                            .bead_index_mapping
+                                            .index
                                             .get(&bead.block_header.block_hash()) {
                                             Some(id) => id,
                                             None => {
@@ -752,9 +752,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                                 continue;
                                             }
                                         };
+                                        //Constructing the parent set using braid.parent_indices()
+                                        let mut braid_parent_set: node::braid::Relatives = node::braid::Relatives::new();
+                                        for (bead_idx, b) in braid_data.beads.iter().enumerate() {
+                                            let parent_set = braid_data.parent_indices(b);
+                                            braid_parent_set.insert(bead_idx, parent_set);
+                                        }
                                         let (txs_json, relative_json, parent_timestamp_json) = match prepare_bead_tuple_data(
                                             &braid_data.beads,
-                                            &braid_data.bead_index_mapping,
+                                            &braid_data.index,
+                                            &braid_parent_set,
                                             &bead,
                                         ){
                                             Ok(received_tuples)=>received_tuples,
@@ -956,7 +963,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                             let braid_lock = braid.read().await;
                                             for hash in hashes.iter() {
                                                 if let Some(index) =
-                                                    braid_lock.bead_index_mapping.get(hash)
+                                                    braid_lock.index.get(hash)
                                                 {
                                                     if let Some(bead) = braid_lock.beads.get(*index) {
                                                         beads.push(bead.clone());
@@ -986,7 +993,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         {
                                             let braid_lock = braid.read().await;
                                             genesis = braid_lock
-                                                .genesis_beads
+                                                .geneses
                                                 .iter()
                                                 .filter_map(|index| braid_lock.beads.get(*index))
                                                 .cloned()
@@ -1089,9 +1096,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                                     continue;
                                                 }
                                             };
+                                            //Constructing the parent set using braid.parent_indices()
+                                            let mut braid_parent_set: node::braid::Relatives = node::braid::Relatives::new();
+                                            for (bead_idx, b) in braid_data.beads.iter().enumerate() {
+                                                let parent_set = braid_data.parent_indices(b);
+                                                braid_parent_set.insert(bead_idx, parent_set);
+                                            }
                                             let (txs_json, relative_json, parent_timestamp_json) = match prepare_bead_tuple_data(
                                                 &braid_data.beads,
                                                 &braid_data.bead_index_mapping,
+                                                &braid_parent_set,
                                                 &bead,
                                             ){
                                                 Ok(received_tuples)=>received_tuples,

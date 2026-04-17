@@ -1,5 +1,6 @@
 #[cfg(test)]
-use crate::bead::{Bead, BeadHash};
+use crate::{bead::Bead, utils::BeadHash};
+
 #[cfg(test)]
 pub use crate::braid::{BeadIdx, BeadSet, BeadWork, Cohort, CohortIdx, Relatives};
 

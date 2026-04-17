@@ -1,7 +1,6 @@
 use super::*;
 use crate::utils::hashset_to_vec_deterministic;
-use crate::utils::test_utils::test_utility_functions::TestCommittedMetadataBuilder;
-use bitcoin::absolute::MedianTimePast;
+use crate::utils::test_utils::TestCommittedMetadataBuilder;
 use bitcoin::consensus::encode::deserialize;
 use bitcoin::consensus::serialize;
 use bitcoin::BlockHash;
@@ -93,8 +92,8 @@ fn parse_block_hash(value: &str) -> BlockHash {
     BlockHash::from_str(value).unwrap()
 }
 
-fn parse_time(value: u32) -> Time {
-    Time::from_consensus(value).unwrap()
+fn parse_time(value: u32) -> MicrosecondTimestamp {
+    MicrosecondTimestamp::from_secs(value)
 }
 
 fn parse_public_key(value: &str) -> PublicKey {
@@ -181,7 +180,7 @@ fn test_committed_metadata_default() {
         metadata.payout_address,
         data.payout_addresses.default.as_str()
     );
-    assert_eq!(metadata.start_timestamp, MedianTimePast::MIN);
+    assert_eq!(metadata.start_timestamp, MicrosecondTimestamp::default());
     assert_eq!(
         metadata.comm_pub_key,
         parse_public_key(&data.public_keys.default_committed)
@@ -349,7 +348,7 @@ fn test_committed_metadata_consensus_field_order_decode() {
     let decoded_parent_times = TimeVec::consensus_decode(&mut reader).unwrap();
     let decoded_payout = String::consensus_decode(&mut reader).unwrap();
     let decoded_start_timestamp =
-        Time::from_consensus(u32::consensus_decode(&mut reader).unwrap()).unwrap();
+        MicrosecondTimestamp::from_secs(u32::consensus_decode(&mut reader).unwrap());
     let decoded_pubkey =
         PublicKey::from_slice(&Vec::<u8>::consensus_decode(&mut reader).unwrap()).unwrap();
     let decoded_min_target = CompactTarget::consensus_decode(&mut reader).unwrap();
