@@ -344,19 +344,10 @@ fn test_committed_metadata_consensus_field_order_decode() {
     let mut reader = &bytes[..];
 
     let decoded_txids = TxIdVec::consensus_decode(&mut reader).unwrap();
-    let decoded_parents = Vec::<BeadHash>::consensus_decode(&mut reader).unwrap();
-    let decoded_parent_times = TimeVec::consensus_decode(&mut reader).unwrap();
-    let decoded_payout = String::consensus_decode(&mut reader).unwrap();
-    let decoded_start_timestamp =
-        MicrosecondTimestamp::from_secs(u32::consensus_decode(&mut reader).unwrap());
-    let decoded_pubkey =
-        PublicKey::from_slice(&Vec::<u8>::consensus_decode(&mut reader).unwrap()).unwrap();
-    let decoded_min_target = CompactTarget::consensus_decode(&mut reader).unwrap();
-    let decoded_weak_target = CompactTarget::consensus_decode(&mut reader).unwrap();
-    let decoded_miner_ip = String::consensus_decode(&mut reader).unwrap();
-
     assert_eq!(decoded_txids, TxIdVec(txids));
+    let decoded_parents = Vec::<BeadHash>::consensus_decode(&mut reader).unwrap();
     assert_eq!(decoded_parents, hashset_to_vec_deterministic(&parents));
+    let decoded_parent_times = TimeVec::consensus_decode(&mut reader).unwrap();
     assert_eq!(
         decoded_parent_times,
         TimeVec(vec![
@@ -365,12 +356,20 @@ fn test_committed_metadata_consensus_field_order_decode() {
             parse_time(data.timestamps.third),
         ])
     );
+    let decoded_payout = String::consensus_decode(&mut reader).unwrap();
     assert_eq!(decoded_payout, data.payout_addresses.populated);
+    let decoded_start_timestamp = MicrosecondTimestamp::consensus_decode(&mut reader).unwrap();
     assert_eq!(decoded_start_timestamp, parse_time(data.timestamps.first));
+    let decoded_pubkey =
+        PublicKey::from_slice(&Vec::<u8>::consensus_decode(&mut reader).unwrap()).unwrap();
     assert_eq!(
         decoded_pubkey,
         parse_public_key(&data.public_keys.default_committed)
     );
+    let decoded_min_target = CompactTarget::consensus_decode(&mut reader).unwrap();
+    let decoded_weak_target = CompactTarget::consensus_decode(&mut reader).unwrap();
+    let decoded_miner_ip = String::consensus_decode(&mut reader).unwrap();
+
     assert_eq!(decoded_min_target, parse_target(data.targets.default_bits));
     assert_eq!(decoded_weak_target, parse_target(data.targets.default_bits));
     assert_eq!(decoded_miner_ip, data.miner_ips.lan);
