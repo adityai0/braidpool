@@ -10,7 +10,6 @@ use bitcoin::{
     Txid,
 };
 use futures::lock::Mutex;
-use num::ToPrimitive;
 use serde_json::json;
 use sqlx::{Pool, Row, Sqlite};
 use std::{collections::HashMap, sync::Arc};
@@ -112,14 +111,14 @@ impl DBHandler {
             .bind(bead.block_header.bits.to_consensus())
             .bind(bead.block_header.nonce)
             .bind(payout_addr_bytes)
-            .bind(bead.committed_metadata.start_timestamp.to_u32())
+            .bind(bead.committed_metadata.start_timestamp.as_micros() as i64)
             .bind(public_key_bytes)
             .bind(bead.committed_metadata.min_target.to_consensus())
             .bind(bead.committed_metadata.weak_target.to_consensus())
             .bind(bead.committed_metadata.miner_ip)
             .bind(hex_converted_extranonce_1.to_string())
             .bind(hex_converted_extranonce_2.to_string())
-            .bind(bead.uncommitted_metadata.broadcast_timestamp.to_u32())
+            .bind(bead.uncommitted_metadata.broadcast_timestamp.as_micros() as i64)
             .bind(signature_bytes)
             .bind(txs_json)
             .bind(relative_json)
@@ -241,7 +240,7 @@ pub fn prepare_bead_tuple_data(
         parent_timestamp_tuples.push((
             parent_bead as u64,
             bead_id as u64,
-            current_parent_timestamp.to_u32().to_u64().unwrap(), // FIXME: loses precision
+            current_parent_timestamp.as_micros(),
         ));
     }
 
@@ -370,10 +369,10 @@ pub async fn fetch_beads_in_batch(
             bead.committed_metadata.miner_ip = row.get("miner_ip");
 
             bead.committed_metadata.start_timestamp =
-                MicrosecondTimestamp::from_secs(row.get::<u32, _>("start_timestamp"));
+                MicrosecondTimestamp::from_micros(row.get::<i64, _>("start_timestamp") as u64);
 
             bead.uncommitted_metadata.broadcast_timestamp =
-                MicrosecondTimestamp::from_secs(row.get::<u32, _>("broadcast_timestamp"));
+                MicrosecondTimestamp::from_micros(row.get::<i64, _>("broadcast_timestamp") as u64);
 
             bead.uncommitted_metadata.extra_nonce_1 =
                 u32::from_str_radix(&row.get::<String, _>("extranonce1"), 16).unwrap();
@@ -419,7 +418,7 @@ pub async fn fetch_beads_in_batch(
 
             for parent in parent_rows {
                 let parent_id = parent.get::<i64, _>("parent");
-                let timestamp = parent.get::<i32, _>("timestamp");
+                let timestamp = parent.get::<i64, _>("timestamp");
 
                 let parent_hash_row = sqlx::query("SELECT hash FROM BEAD WHERE id = ?")
                     .bind(parent_id)
@@ -446,7 +445,7 @@ pub async fn fetch_beads_in_batch(
                 bead.committed_metadata
                     .parent_bead_timestamps
                     .0
-                    .push(MicrosecondTimestamp::from_secs(timestamp as u32));
+                    .push(MicrosecondTimestamp::from_micros(timestamp as u64));
             }
 
             fetched_beads.push(bead);
@@ -492,7 +491,7 @@ pub async fn fetch_bead_by_bead_hash(
                 .unwrap()
                 .to_string();
             let start_timestamp =
-                MicrosecondTimestamp::from_secs(row.get::<u32, _>("start_timestamp"));
+                MicrosecondTimestamp::from_micros(row.get::<i64, _>("start_timestamp") as u64);
             let pub_key = PublicKey::from_slice(&row.get::<Vec<u8>, _>("comm_pub_key")).unwrap();
             let min_target = CompactTarget::from_consensus(row.get::<u32, _>("min_target"));
             let weak_target = CompactTarget::from_consensus(row.get::<u32, _>("weak_target"));
@@ -502,7 +501,7 @@ pub async fn fetch_bead_by_bead_hash(
             let extranonce_2 =
                 u32::from_str_radix(&row.get::<String, _>("extranonce2"), 16).unwrap();
             let broadcast_timestamp =
-                MicrosecondTimestamp::from_secs(row.get::<u32, _>("broadcast_timestamp"));
+                MicrosecondTimestamp::from_micros(row.get::<i64, _>("broadcast_timestamp") as u64);
             let signature = Signature::from_slice(&row.get::<Vec<u8>, _>("signature")).unwrap();
             bead_id = id;
             fetched_bead.block_header.version = version;
@@ -567,7 +566,7 @@ pub async fn fetch_bead_by_bead_hash(
             }
         };
     for parent_beads in parent_timestamp_rows {
-        let parent_timestamp = parent_beads.get::<i32, _>("timestamp");
+        let parent_timestamp = parent_beads.get::<i64, _>("timestamp");
         let parent_bead_id = parent_beads.get::<i64, _>("parent");
         //Fetching parent_bead from DB
         let parent_bead_hash_raw_bytes = match sqlx::query("SELECT  hash FROM Bead WHERE id = ?")
@@ -597,7 +596,7 @@ pub async fn fetch_bead_by_bead_hash(
             .committed_metadata
             .parent_bead_timestamps
             .0
-            .push(MicrosecondTimestamp::from_secs(parent_timestamp as u32));
+            .push(MicrosecondTimestamp::from_micros(parent_timestamp as u64));
         //Extending parent committment by parent hash
         fetched_bead
             .committed_metadata
