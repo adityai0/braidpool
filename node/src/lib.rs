@@ -88,20 +88,20 @@ pub fn get_next_template_id() -> TemplateId {
 /// In Stratum mining, the extranonce is split into two parts:
 /// `EXTRANONCE1` (prefix) and `EXTRANONCE2` (suffix).
 ///
-/// This constant defines the size of `EXTRANONCE1` as **4 bytes**.
+/// This constant defines the size of `EXTRANONCE1` as **8 bytes**.
 /// Typically assigned by the mining pool to uniquely identify a miner generated randomly or can be done via the peer_addr hash.
-pub const EXTRANONCE1_SIZE: usize = 4;
+pub const EXTRANONCE1_SIZE: usize = 8;
 
 /// **Length of the extranonce suffix (in bytes).**
 ///
 ///These are the rollable bits defined under the extanonce,along with nonce and Version which can be worked upon to produce suitable valid share
 /// being submitted by the miner via `mining.submit` .
-pub const EXTRANONCE2_SIZE: usize = 4;
+pub const EXTRANONCE2_SIZE: usize = 8;
 /// **Separator between `EXTRANONCE1` and `EXTRANONCE2`.**
 ///
 /// This is an array of bytes used to clearly delimit the two extranonce parts.
-/// In this testing configuration, the separator length equals
-/// `EXTRANONCE1_SIZE + EXTRANONCE2_SIZE` (8 bytes total),
+/// The separator length equals
+/// `EXTRANONCE1_SIZE + EXTRANONCE2_SIZE` (16 bytes total),
 /// and is filled with the byte value `1u8` for simplicity.
 /// can be changed accordingly as per discussion .
 pub const EXTRANONCE_SEPARATOR: [u8; EXTRANONCE1_SIZE + EXTRANONCE2_SIZE] =
@@ -280,12 +280,12 @@ impl SwarmHandler {
     pub async fn propagate_valid_bead(
         &mut self,
         candidate_block: bitcoin::Block,
-        extranonce_2_raw_value: u32,
+        extranonce_2_raw_value: u64,
         downstream_client_ip: &str,
         job_sent_timestamp: u32,
         downstream_payout_addr: &str,
         //TODO: Will be used as seperate entity after altering `uncommitted_metadata`
-        extranonce_1_raw_value: u32,
+        extranonce_1_raw_value: u64,
     ) -> Result<(), StratumErrors> {
         let (candidate_block_header, candidate_block_transactions) = candidate_block.into_parts();
         let ids: Vec<Txid> = candidate_block_transactions
