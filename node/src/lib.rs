@@ -5,12 +5,7 @@ use bitcoin::{
     CompactTarget, EcdsaSighashType, Txid,
 };
 use num::ToPrimitive;
-use std::{
-    collections::{HashMap, HashSet},
-    str::FromStr,
-    sync::Arc,
-    time::UNIX_EPOCH,
-};
+use std::{collections::HashMap, str::FromStr, sync::Arc, time::UNIX_EPOCH};
 
 use futures::lock::Mutex;
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -37,6 +32,7 @@ use crate::{
 use std::error::Error;
 #[macro_use]
 pub mod macros;
+pub mod audit;
 pub mod bead;
 pub mod behaviour;
 pub mod braid;
@@ -52,7 +48,9 @@ pub mod rpc_server;
 pub mod stratum;
 pub mod template_creator;
 pub mod uncommitted_metadata;
+pub mod upstream_pool;
 pub mod utils;
+use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 //Including the capnp modules after building while compiling the workspace.package
@@ -72,15 +70,41 @@ pub mod init_capnp {
     include!(concat!(env!("OUT_DIR"), "/init_capnp.rs"));
 }
 
-/// Unique identifier assigned to each block template.
-pub type TemplateId = u64;
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TemplateId {
+    /// Internal Braidpool template (sequential counter)
+    Braidpool(u64),
+    /// Upstream pool template (arbitrary string from upstream)
+    Upstream(String),
+}
+
+impl TemplateId {
+    pub fn from_upstream_string(job_id: &str) -> Self {
+        TemplateId::Upstream(job_id.to_string())
+    }
+}
+
+impl Default for TemplateId {
+    fn default() -> Self {
+        TemplateId::Braidpool(0)
+    }
+}
+
+impl fmt::Display for TemplateId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TemplateId::Braidpool(id) => write!(f, "Braidpool({})", id),
+            TemplateId::Upstream(id) => write!(f, "Upstream({})", id),
+        }
+    }
+}
 
 /// Global template ID counter that persists across the application lifetime
 static GLOBAL_TEMPLATE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Get the next unique template ID (increments on each call)
 pub fn get_next_template_id() -> TemplateId {
-    GLOBAL_TEMPLATE_COUNTER.fetch_add(1, Ordering::SeqCst)
+    TemplateId::Braidpool(GLOBAL_TEMPLATE_COUNTER.fetch_add(1, Ordering::SeqCst))
 }
 
 /// **Length of the extranonce prefix (in bytes).**
@@ -153,17 +177,17 @@ pub async fn ipc_template_consumer(
             let template_id = get_next_template_id();
             {
                 let mut latest_id = latest_template_id.lock().await;
-                *latest_id = template_id;
+                *latest_id = template_id.clone();
             }
 
             // Cache the IPC template with this new ID
             {
                 let mut cache = template_cache.lock().await;
-                cache.insert(template_id, ipc_template.clone());
+                cache.insert(template_id.clone(), ipc_template.clone());
 
                 // Cleanup old templates
                 if cache.len() > MAX_CACHED_TEMPLATES {
-                    let mut ids: Vec<TemplateId> = cache.keys().copied().collect();
+                    let mut ids: Vec<TemplateId> = cache.keys().cloned().collect();
                     ids.sort_unstable();
 
                     let remove_count = cache.len() - MAX_CACHED_TEMPLATES;
@@ -230,7 +254,7 @@ pub async fn ipc_template_consumer(
                 .send(NotifyCmd::SendToAll {
                     template: template,
                     merkle_branch_coinbase,
-                    template_id,
+                    template_id: template_id.clone(),
                 })
                 .await;
             match notification_sent_or_not {
@@ -298,19 +322,27 @@ impl SwarmHandler {
         let public_key = "020202020202020202020202020202020202020202020202020202020202020202"
             .parse::<bitcoin::PublicKey>()
             .unwrap();
-        let mut time_hash_set = TimeVec(Vec::new());
-        let mut parent_hash_set: HashSet<BlockHash> = HashSet::new();
         let mut braid_data = self.braid_arc.write().await;
-        let tips_index = &braid_data.tips;
-        //Committing parents data in bead
-        for tip_bead in tips_index {
-            let current_tip_bead = braid_data.beads.get(*tip_bead).unwrap();
-            parent_hash_set.insert(current_tip_bead.block_header.block_hash());
-            time_hash_set
-                .0
-                .push(current_tip_bead.committed_metadata.start_timestamp);
+        let mut pairs: Vec<(BlockHash, bitcoin::absolute::Time)> = braid_data
+            .tips
+            .iter()
+            .map(|&idx| {
+                let tip = braid_data.beads.get(idx).unwrap();
+                (
+                    tip.block_header.block_hash(),
+                    tip.committed_metadata.start_timestamp,
+                )
+            })
+            .collect();
+        pairs.sort_by_key(|(hash, _)| *hash);
+
+        let mut time_hash_set = TimeVec(Vec::new());
+        let mut parent_hash_set: Vec<BlockHash> = Vec::new();
+        for (hash, time) in pairs {
+            parent_hash_set.push(hash);
+            time_hash_set.0.push(time);
         }
-        debug!(tip_indices = ?tips_index, tip_hashes = ?parent_hash_set,
+        debug!(tip_indices = ?braid_data.tips, tip_hashes = ?parent_hash_set,
             "Tips before extending the Braid");
         //TODO:This will be replaced via the allotted `WeakShareDifficulty` after Difficulty adjustment
         let weak_target = CompactTarget::from_unprefixed_hex("1d00ffff").unwrap();

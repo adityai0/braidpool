@@ -186,6 +186,9 @@ pub enum StratumErrors {
         error: std::io::Error,
     },
     InvalidCoinbase,
+    InvalidShare {
+        reason: String,
+    },
     PeerNotFoundInConnectionMapping {
         peer_addr: String,
     },
@@ -234,6 +237,15 @@ pub enum StratumErrors {
     },
     /// A bead received was not able to get persisted to DB locally
     BeadPersistenceFailed {
+        error: String,
+    },
+    UpstreamConnectionFailed {
+        error: String,
+    },
+    UpstreamShareForwardFailed {
+        error: String,
+    },
+    UpstreamNotReady {
         error: String,
     },
 }
@@ -326,6 +338,9 @@ impl fmt::Display for StratumErrors {
             StratumErrors::InvalidCoinbase => {
                 write!(f, "Provided coinbase is invalid")
             }
+            StratumErrors::InvalidShare { reason } => {
+                write!(f, "Invalid share: {}", reason)
+            }
             StratumErrors::ResponseWriteError { error } => {
                 write!(f, "{:?}", error)
             }
@@ -369,6 +384,15 @@ impl fmt::Display for StratumErrors {
                     "Self-mined bead added to braid but not persisted to DB - {}",
                     error
                 )
+            }
+            StratumErrors::UpstreamConnectionFailed { error } => {
+                write!(f, "Failed to connect to upstream pool: {}", error)
+            }
+            StratumErrors::UpstreamShareForwardFailed { error } => {
+                write!(f, "Failed to forward share to upstream: {}", error)
+            }
+            StratumErrors::UpstreamNotReady { error } => {
+                write!(f, "Upstream pool is not ready: {}", error)
             }
         }
     }
