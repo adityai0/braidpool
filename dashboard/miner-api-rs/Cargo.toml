@@ -1,0 +1,22 @@
+[package]
+name = "miner-api-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ASIC miner discovery and inventory service for Braidpool"
+repository.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+asic-rs = "0.6"
+tokio = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[[bin]]
+name = "diagnose"
+path = "src/bin/diagnose.rs"
