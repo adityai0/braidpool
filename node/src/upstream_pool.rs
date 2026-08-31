@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::config::PoolNetwork;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use tokio::{
@@ -1498,7 +1500,7 @@ impl UpstreamPoolClient {
 mod tests {
     use super::*;
     use crate::braid::Braid;
-    use bitcoin::BlockHash;
+    use bitcoin::{hashes::Hash, BlockHash};
     use serde_json::json;
     use std::time::Duration;
     use tokio::sync::mpsc;
@@ -1522,7 +1524,10 @@ mod tests {
         let (response_tx, _response_rx) = mpsc::channel(10);
         let (_configure_tx, configure_rx) = mpsc::channel(10);
         let (audit_log_tx, _audit_log_rx) = mpsc::channel(10);
-        let braid_arc = Arc::new(tokio::sync::RwLock::new(Braid::new(vec![])));
+        let braid_arc = Arc::new(tokio::sync::RwLock::new(Braid::new(
+            vec![],
+            PoolNetwork::Bitcoin(bitcoin::Network::Bitcoin),
+        )));
         let audit_dag_arc = Arc::new(futures::lock::Mutex::new(crate::audit::AuditDAG::new(
             braid_arc,
         )));

@@ -1,4 +1,5 @@
 // Bitcoin Imports
+use crate::config::PoolNetwork;
 use crate::{
     bead::Bead,
     committed_metadata::{CommittedMetadata, TimeVec, TxIdVec},
@@ -6,8 +7,11 @@ use crate::{
 };
 use ::bitcoin::BlockHash;
 use bitcoin::{
-    absolute::MedianTimePast as Time, ecdsa::Signature, BlockHeader, BlockTime, BlockVersion,
-    CompactTarget, EcdsaSighashType, TxMerkleNode,
+    absolute::Time,
+    block::{Header as BlockHeader, Version as BlockVersion},
+    ecdsa::Signature,
+    hashes::Hash,
+    secp256k1, CompactTarget, EcdsaSighashType, TxMerkleNode,
 };
 // Standard Imports
 #[allow(unused_imports)]
@@ -26,6 +30,10 @@ pub(crate) type Relatives = HashSet<BeadHash>;
 
 // Error Definitions
 use std::{collections::HashSet, net::IpAddr, str::FromStr};
+/// Computes a bead's block hash under the rules of `network`.
+pub fn compute_block_hash(block_header: &BlockHeader, network: PoolNetwork) -> BlockHash {
+    network.block_hash(block_header)
+}
 
 /// Get list of actual local IPv4 addresses for servers binding to 0.0.0.0
 ///
@@ -114,7 +122,7 @@ pub fn create_test_bead(nonce: u32, prev_hash: Option<BlockHash>) -> Bead {
         prev_blockhash: prev_hash.unwrap_or(BlockHash::from_byte_array(test_bytes)),
         bits: CompactTarget::from_consensus(486604799),
         nonce: nonce,
-        time: BlockTime::from_u32(8328429),
+        time: 8328429,
         merkle_root: TxMerkleNode::from_byte_array(test_bytes),
     };
     Bead {

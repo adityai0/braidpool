@@ -1,12 +1,14 @@
+use crate::config::PoolNetwork;
 use crate::error::StratumErrors;
 use crate::template_creator::calculate_merkle_root;
+use crate::utils::compute_block_hash;
 use crate::{SwarmHandler, TemplateId, EXTRANONCE1_SIZE, EXTRANONCE2_SIZE, EXTRANONCE_SEPARATOR};
-use bitcoin::block::HeaderExt;
-use bitcoin::consensus::serialize;
+use bitcoin::absolute::Time;
+use bitcoin::consensus::{serialize, Decodable};
+use bitcoin::hashes::Hash;
 use bitcoin::io::Cursor;
-use bitcoin::pow::CompactTargetExt;
-use bitcoin::{absolute::Decodable, Transaction};
-use bitcoin::{BlockHash, BlockHeader, BlockTime, TxMerkleNode, Txid, Witness};
+use bitcoin::Transaction;
+use bitcoin::{block::Header as BlockHeader, BlockHash, TxMerkleNode, Txid, Witness};
 use futures::{lock::Mutex, FutureExt};
 use num::ToPrimitive;
 use rand::RngCore;
@@ -68,13 +70,13 @@ pub struct BlockTemplate {
     pub coinbasevalue: Option<u64>,
     pub longpollid: Option<String>,
     pub target: bitcoin::Target,
-    pub mintime: Option<bitcoin::time::BlockTime>,
+    pub mintime: Option<u32>,
     pub mutable: Option<Vec<String>>,
     pub noncerange: Option<String>,
     pub sigoplimit: Option<u32>,
     pub sizelimit: Option<usize>,
     pub weightlimit: Option<bitcoin::blockdata::Weight>,
-    pub curtime: bitcoin::time::BlockTime,
+    pub curtime: u32,
     pub bits: bitcoin::CompactTarget,
     pub height: bitcoin::absolute::Height,
     pub default_witness_commitment: Option<Witness>,
@@ -86,7 +88,7 @@ impl Default for BlockTemplate {
             rules: None,
             vbavailable: None,
             vbrequired: None,
-            previousblockhash: BlockHash::GENESIS_PREVIOUS_BLOCK_HASH,
+            previousblockhash: BlockHash::all_zeros(),
             transactions: Vec::new(),
             coinbaseaux: None,
             coinbasevalue: None,
@@ -98,7 +100,7 @@ impl Default for BlockTemplate {
             sigoplimit: None,
             sizelimit: None,
             weightlimit: None,
-            curtime: bitcoin::BlockTime::from_u32(1759998900),
+            curtime: 1759998900,
             bits: bitcoin::CompactTarget::from_consensus(0),
             height: bitcoin::absolute::Height::ZERO,
             default_witness_commitment: None,
@@ -243,6 +245,8 @@ pub struct DownstreamClient {
     pub payout_address: Option<String>,
     // Refers to the miner difficulty in audit mode
     pub audit_miner_difficulty: Option<f64>,
+    /// Network this connection mines on, deciding which block hash proof-of-work is checked against
+    pub network: PoolNetwork,
 }
 impl DownstreamClient {
     /// A helper function to keep connection_id immutable after assignment
@@ -821,7 +825,7 @@ impl DownstreamClient {
             version: bitcoin::blockdata::block::Version::from_consensus(final_masked_version),
             prev_blockhash: submitted_job.blocktemplate.previousblockhash,
             merkle_root: merkle_root,
-            time: BlockTime::from_u32(ntime_u32),
+            time: ntime_u32,
             bits: submitted_job.blocktemplate.bits,
             nonce: nonce_u32,
         };
@@ -829,12 +833,12 @@ impl DownstreamClient {
         let target = bitcoin::Target::from_compact(compact_target);
         debug!(
             connection_id = %connection_id_hex,
-            target = %target.to_hex(),
+            target = %hex::encode(target.to_be_bytes()),
             "Mining target"
         );
         debug!(
             connection_id = %connection_id_hex,
-            block_hash = %header.block_hash(),
+            block_hash = %compute_block_hash(&header,self.network),
             "Block hash computed"
         );
 
@@ -846,7 +850,7 @@ impl DownstreamClient {
         };
         let prevhash_be_hex = hex::encode(header.prev_blockhash.to_byte_array());
         let merkle_root_be_hex = hex::encode(header.merkle_root.to_byte_array());
-        let time_be_hex = hex::encode(header.time.to_u32().to_be_bytes());
+        let time_be_hex = hex::encode(header.time.to_be_bytes());
         let bits_be_hex = hex::encode(header.bits.to_consensus().to_be_bytes());
         let nonce_be_hex = hex::encode(header.nonce.to_be_bytes());
 
@@ -880,7 +884,7 @@ impl DownstreamClient {
                 return Err(StratumErrors::InvalidCoinbase);
             }
         };
-        match coinbase_tx.inputs_mut().get_mut(0) {
+        match coinbase_tx.input.get_mut(0) {
             Some(input) => input.witness.push(witness_bytes),
             None => {
                 error!(connection_id = %connection_id_hex, "Coinbase transaction has no inputs");
@@ -892,15 +896,30 @@ impl DownstreamClient {
         block_transactions.extend(submitted_job.blocktemplate.transactions.clone());
 
         // Construct and log the complete block using rust-bitcoin's Block struct
-        let complete_block = bitcoin::Block::new_unchecked(header, block_transactions);
+        let complete_block = bitcoin::Block {
+            header,
+            txdata: block_transactions,
+        };
+        // For cpunet, use custom block_hash calculation; otherwise use standard validate_pow
+        let pow_result = if self.network.is_cpunet() {
+            // Cpunet uses a modified block hash with "cpunet\0" suffix
+            let block_hash = self.network.block_hash(&header);
+            if target.is_met_by(block_hash) {
+                Ok(block_hash)
+            } else {
+                Err(bitcoin::block::ValidationError::BadProofOfWork)
+            }
+        } else {
+            header.validate_pow(target)
+        };
 
-        //Checking with PoW of the target whether the block sent by downstream is below that or not
-        match header.validate_pow(target) {
-            Ok(_) => {
+        match pow_result {
+            Ok(block_hash) => {
                 debug!(
                     connection_id = %connection_id_hex,
-                    target = %target.to_hex(),
-                    hash = %header.block_hash(),
+                    target = %target,
+                    hash = %block_hash,
+                    is_cpunet = self.network.is_cpunet(),
                     "Header meets target"
                 );
 
@@ -942,7 +961,7 @@ impl DownstreamClient {
                 warn!(
                     connection_id = %connection_id_hex,
                     error = %e,
-                    target = %target.to_hex(),
+                    target = %target,
                     "Header does not meet target"
                 );
                 return Ok(StratumResponses::StandardResponse {
@@ -1099,7 +1118,6 @@ impl DownstreamClient {
                 }
                 merkle_branches_bytes.push(bytes.to_vec());
             }
-
             let merkle_root_bytes =
                 calculate_merkle_root(coinbase_tx.compute_txid(), &merkle_branches_bytes);
             let merkle_root = TxMerkleNode::from_byte_array(merkle_root_bytes);
@@ -1107,7 +1125,7 @@ impl DownstreamClient {
                 version: bitcoin::block::Version::from_consensus(final_version),
                 prev_blockhash: BlockHash::from_byte_array(prevhash_for_header),
                 merkle_root,
-                time: BlockTime::from_u32(ntime_u32),
+                time: ntime_u32,
                 bits: submitted_job.blocktemplate.bits,
                 nonce: nonce_u32,
             };
@@ -1120,13 +1138,16 @@ impl DownstreamClient {
                 valid_block_hash = Some(block_hash);
                 used_extranonce1 = extranonce1_candidate.clone();
                 meets_upstream = Self::validate_share_against_target(block_hash, &upstream_target);
+                let miner_target = miner_target.to_be_bytes();
+                let miner_target_hex = hex::encode(miner_target);
+                let upstream_target_hex = hex::encode(upstream_target.to_be_bytes());
                 debug!(
                     connection_id = %connection_id_hex,
                     worker = %worker_name,
                     job_id = %job_id_str,
                     block_hash = %block_hash,
-                    miner_target = %miner_target.to_hex(),
-                    upstream_target = %upstream_target.to_hex(),
+                    miner_target = %miner_target_hex,
+                    upstream_target = %upstream_target_hex,
                     meets_miner_diff = true,
                     meets_upstream_diff = %meets_upstream,
                     "Share difficulty validation results"
@@ -1256,10 +1277,15 @@ impl DownstreamClient {
 
                 let broadcast_time = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| {
-                        bitcoin::absolute::MedianTimePast::from_u32(d.as_secs() as u32).unwrap()
+                    .map_err(|e| e.to_string())
+                    .and_then(|d| {
+                        let ts: u32 = d
+                            .as_secs()
+                            .try_into()
+                            .map_err(|e: std::num::TryFromIntError| e.to_string())?;
+                        Time::from_consensus(ts).map_err(|e| e.to_string())
                     })
-                    .unwrap();
+                    .map_err(|e| StratumErrors::ErrorFetchingCurrentUNIXTimestamp { error: e })?;
 
                 let (extranonce_1_raw_value, extranonce_2_raw_value) = {
                     let upstream_bytes = &used_extranonce1[..upstream_ext1_size];
@@ -1302,8 +1328,10 @@ impl DownstreamClient {
 
                 let placeholder_sig_bytes = [0u8; 64];
                 let sig = bitcoin::ecdsa::Signature {
-                    signature: secp256k1::ecdsa::Signature::from_compact(&placeholder_sig_bytes)
-                        .expect("Valid placeholder signature"),
+                    signature: bitcoin::secp256k1::ecdsa::Signature::from_compact(
+                        &placeholder_sig_bytes,
+                    )
+                    .expect("Valid placeholder signature"),
                     sighash_type: bitcoin::EcdsaSighashType::All,
                 };
 
@@ -1881,8 +1909,8 @@ impl DownstreamClient {
 
 static NEXT_CONNECTION_ID: AtomicU32 = AtomicU32::new(0);
 
-impl Default for DownstreamClient {
-    fn default() -> Self {
+impl DownstreamClient {
+    pub fn new(network: PoolNetwork) -> Self {
         //ExtraNonce1. - Hex-encoded, per-connection unique string which will be used for creating generation transactions later.
         //4 bytes
         let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::SeqCst);
@@ -1910,6 +1938,7 @@ impl Default for DownstreamClient {
             miner_extranonce2_size: EXTRANONCE2_SIZE,
             monitor_target: None,
             block_submission_tx: None,
+            network,
             is_proxy_mode: false,
             payout_address: None,
             audit_miner_difficulty: None,
@@ -1929,6 +1958,8 @@ pub struct Server {
     stratum_config: StratumServerConfig,
     downstream_connection_mapping: Arc<RwLock<ConnectionMapping>>,
     block_submission_tx: Option<mpsc::UnboundedSender<BlockSubmissionRequest>>,
+    /// Network this server runs on, propagated to every downstream connection
+    network: PoolNetwork,
 }
 ///Types for the `mining.notify` jobs to be sent to the fellow connected downstream nodes
 /// `SendToAll` broadcasts the most recently received `job` to the downstream nodes .
@@ -2215,14 +2246,14 @@ impl Notifier {
                 });
             }
         };
-        let coinbase_witness_commitment = match coinbase_transaction.inputs().get(0) {
+        let coinbase_witness_commitment = match coinbase_transaction.input.get(0) {
             Some(input) => input.witness.clone(),
             None => {
                 error!(template_id = %template_id, "Coinbase transaction has no inputs");
                 return Err(StratumErrors::InvalidCoinbase);
             }
         };
-        if let Some(input) = coinbase_transaction.inputs_mut().get_mut(0) {
+        if let Some(input) = coinbase_transaction.input.get_mut(0) {
             input.witness.clear();
         };
         let deserialized_coinbase = serialize::<Transaction>(&coinbase_transaction);
@@ -2275,7 +2306,7 @@ impl Notifier {
         };
         let bitcoin_block_version = notified_template.version.to_consensus();
         let bits = notified_template.bits;
-        let time = notified_template.curtime.to_u32();
+        let time = notified_template.curtime;
         //Adding support for segwit coinbase
         Ok(JobNotification {
             job_id: template_id.to_string(),
@@ -2356,7 +2387,7 @@ impl Notifier {
                 .map(|d| d.as_secs() as u32)
                 .unwrap_or(0)
         });
-        template.curtime = bitcoin::BlockTime::from_u32(unix_timestamp);
+        template.curtime = unix_timestamp;
         let template_id = TemplateId::from_upstream_string(&job_notification.job_id);
         let job_details = crate::stratum::JobDetails {
             blocktemplate: template,
@@ -2840,7 +2871,7 @@ impl Notifier {
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs() as u32)
                         .unwrap_or(0);
-                    base_template.curtime = bitcoin::BlockTime::from_u32(unix_timestamp);
+                    base_template.curtime = unix_timestamp;
 
                     let downstream_channel_mapping = downstream_connection_map
                         .read()
@@ -3381,13 +3412,15 @@ impl Server {
         server_config: StratumServerConfig,
         connection_mapping_arc: Arc<RwLock<ConnectionMapping>>,
         block_submission_tx: Option<mpsc::UnboundedSender<BlockSubmissionRequest>>,
+        network: PoolNetwork,
     ) -> Self {
-        debug!(config = ?server_config, "Initializing stratum server");
+        debug!(config = ?server_config, network = %network, "Initializing stratum server");
 
         Self {
             stratum_config: server_config,
             downstream_connection_mapping: connection_mapping_arc,
             block_submission_tx,
+            network,
         }
     }
     /// Starts and runs the Stratum server, handling incoming miner connections.
@@ -3412,7 +3445,6 @@ impl Server {
     ) -> Result<(), Box<std::io::Error>> {
         debug!("Starting stratum server");
         let bound_addr = listener.local_addr()?;
-
         let endpoints = crate::utils::server_endpoints(
             &self.stratum_config.hostname,
             bound_addr.port(),
@@ -3434,12 +3466,12 @@ impl Server {
                     event = listener.accept()=>{
                         //Currently we do not accept connections from downstream during IBD wrt to sync nodes
                         if ibd_or_not.load(std::sync::atomic::Ordering::SeqCst) == true{
-                        warn!("Braid node not synced and is under IBD thus skipping the connection from downstream.");
+                        warn!("Braid node not synced and is under IBD,skipping the connection from downstream.");
                             continue;
                         }
                         else{
                  //shared ownership across all tasks and spawning a seperate downstream for each new connection
-                 let self_ = Arc::new(Mutex::new(DownstreamClient::default()));
+                 let self_ = Arc::new(Mutex::new(DownstreamClient::new(self.network)));
                         let (connection_id, connection_id_hex) = {
                             let mut client = self_.lock().await;
                     if let Some(ref submission_tx) = self.block_submission_tx {
@@ -3577,6 +3609,8 @@ impl Server {
                                 is_proxy_mode: is_proxy,
                                 payout_address: None,
                                 audit_miner_difficulty: self.stratum_config.audit_miner_difficulty,
+                                network:self.network
+
                             }));
 
                          //Notification sender to the `Notifier` task
@@ -3842,8 +3876,8 @@ mod test {
         stratum::{ConnectionMapping, MiningJobMap, NotifyCmd, Server, StratumServerConfig},
     };
     use bitcoin::{
-        absolute::LockTime, pow::CompactTargetExt, script::ScriptBufExt, Amount, BlockHash,
-        BlockVersion, OutPoint, ScriptBuf, Sequence, TxIn, TxOut,
+        absolute::LockTime, block::Version as BlockVersion, Amount, BlockHash, OutPoint, ScriptBuf,
+        Sequence, TxIn, TxOut,
     };
     use futures::lock::Mutex;
     use tokio::{
@@ -3992,11 +4026,12 @@ mod test {
         let compact_100 = target_100.to_compact_lossy();
         println!("--- Difficulty 100.0 Test ---");
         println!("Difficulty: {}", difficulty);
-        println!("Target (Hex): {}", target_100.to_hex());
+        let target_100_hex = hex::encode(target_100.to_be_bytes());
+        println!("Target (Hex): {}", target_100_hex);
         println!("Target (nBits): {:#x}", compact_100.to_consensus());
 
         let expected_prefix = "00000000028c";
-        let actual_hex = target_100.to_hex();
+        let actual_hex = target_100_hex;
 
         assert!(
             actual_hex.starts_with(expected_prefix),
@@ -4013,12 +4048,15 @@ mod test {
         let ibd_or_not: AtomicBool = AtomicBool::new(false);
         let test_ibd_spinlock = Arc::new(ibd_or_not);
         let genesis_beads = Vec::from([]);
-        let test_braid: Arc<RwLock<braid::Braid>> =
-            Arc::new(RwLock::new(braid::Braid::new(genesis_beads)));
+        let test_braid: Arc<RwLock<braid::Braid>> = Arc::new(RwLock::new(braid::Braid::new(
+            genesis_beads,
+            PoolNetwork::Cpunet,
+        )));
         let connection_mapping = Arc::new(RwLock::new(ConnectionMapping::new()));
         let mining_job_map = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let notify_tx = mpsc::channel::<NotifyCmd>(32).0;
-        let (_test_db_handler, test_db_tx) = DBHandler::new_in_memory().await.unwrap();
+        let (_test_db_handler, test_db_tx) =
+            DBHandler::new_in_memory(PoolNetwork::Cpunet).await.unwrap();
         let (swarm_handler, mut swarm_command_receiver) =
             SwarmHandler::new(Arc::clone(&test_braid), test_db_tx, DashboardEvents::new());
         let swarm_handler_arc = Arc::new(Mutex::new(swarm_handler));
@@ -4031,7 +4069,12 @@ mod test {
         let bound_addr = listener.local_addr().unwrap();
         let addr = bound_addr.to_string();
 
-        let mut server = Server::new(config.clone(), connection_mapping.clone(), None);
+        let mut server = Server::new(
+            config.clone(),
+            connection_mapping.clone(),
+            None,
+            PoolNetwork::Cpunet,
+        );
 
         let server_task = tokio::spawn(async move {
             let _ = server
@@ -4082,10 +4125,13 @@ mod test {
         let test_ibd_spinlock = Arc::new(ibd_or_not);
         let connection_mapping = Arc::new(RwLock::new(ConnectionMapping::new()));
         let genesis_beads = Vec::from([]);
-        let test_braid: Arc<RwLock<braid::Braid>> =
-            Arc::new(RwLock::new(braid::Braid::new(genesis_beads)));
+        let test_braid: Arc<RwLock<braid::Braid>> = Arc::new(RwLock::new(braid::Braid::new(
+            genesis_beads,
+            PoolNetwork::Cpunet,
+        )));
         let mining_job_map = Arc::new(Mutex::new(std::collections::HashMap::new()));
-        let (_test_db_handler, test_db_tx) = DBHandler::new_in_memory().await.unwrap();
+        let (_test_db_handler, test_db_tx) =
+            DBHandler::new_in_memory(PoolNetwork::Cpunet).await.unwrap();
         let (swarm_handler, mut swarm_command_receiver) =
             SwarmHandler::new(Arc::clone(&test_braid), test_db_tx, DashboardEvents::new());
         let swarm_handler_arc = Arc::new(Mutex::new(swarm_handler));
@@ -4099,7 +4145,12 @@ mod test {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let bound_addr = listener.local_addr().unwrap();
 
-        let mut server = Server::new(config.clone(), connection_mapping.clone(), None);
+        let mut server = Server::new(
+            config.clone(),
+            connection_mapping.clone(),
+            None,
+            PoolNetwork::Cpunet,
+        );
 
         let server_task = tokio::spawn(async move {
             let _ = server
@@ -4135,11 +4186,14 @@ mod test {
         let ibd_spinlock = Arc::new(ibd_or_not);
         let connection_mapping = Arc::new(RwLock::new(ConnectionMapping::new()));
         let genesis_beads = Vec::from([]);
-        let test_braid: Arc<RwLock<braid::Braid>> =
-            Arc::new(RwLock::new(braid::Braid::new(genesis_beads)));
+        let test_braid: Arc<RwLock<braid::Braid>> = Arc::new(RwLock::new(braid::Braid::new(
+            genesis_beads,
+            PoolNetwork::Cpunet,
+        )));
         let mining_job_map = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let notify_tx = mpsc::channel::<NotifyCmd>(32).0;
-        let (_test_db_handler, test_db_tx) = DBHandler::new_in_memory().await.unwrap();
+        let (_test_db_handler, test_db_tx) =
+            DBHandler::new_in_memory(PoolNetwork::Cpunet).await.unwrap();
         let (swarm_handler, mut swarm_command_receiver) =
             SwarmHandler::new(Arc::clone(&test_braid), test_db_tx, DashboardEvents::new());
         let swarm_handler_arc = Arc::new(Mutex::new(swarm_handler));
@@ -4151,7 +4205,7 @@ mod test {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let bound_addr = listener.local_addr().unwrap();
 
-        let mut server = Server::new(config, connection_mapping, None);
+        let mut server = Server::new(config, connection_mapping, None, PoolNetwork::Cpunet);
         tokio::spawn(async move {
             let _ = server
                 .run_stratum_service(
@@ -4188,9 +4242,12 @@ mod test {
         let ibd_spinlock = Arc::new(ibd_or_not);
         let connection_mapping = Arc::new(RwLock::new(ConnectionMapping::new()));
         let genesis_beads = Vec::from([]);
-        let test_braid: Arc<RwLock<braid::Braid>> =
-            Arc::new(RwLock::new(braid::Braid::new(genesis_beads)));
-        let (_test_db_handler, test_db_tx) = DBHandler::new_in_memory().await.unwrap();
+        let test_braid: Arc<RwLock<braid::Braid>> = Arc::new(RwLock::new(braid::Braid::new(
+            genesis_beads,
+            PoolNetwork::Cpunet,
+        )));
+        let (_test_db_handler, test_db_tx) =
+            DBHandler::new_in_memory(PoolNetwork::Cpunet).await.unwrap();
         let mining_job_map = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let notify_tx = mpsc::channel::<NotifyCmd>(32).0;
         let (swarm_handler, mut swarm_command_receiver) =
@@ -4203,7 +4260,7 @@ mod test {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let bound_addr = listener.local_addr().unwrap();
 
-        let mut server = Server::new(config, connection_mapping, None);
+        let mut server = Server::new(config, connection_mapping, None, PoolNetwork::Cpunet);
         tokio::spawn(async move {
             let _ = server
                 .run_stratum_service(
@@ -4234,9 +4291,12 @@ mod test {
         let ibd_spinlock = Arc::new(ibd_or_not);
         let connection_mapping = Arc::new(RwLock::new(ConnectionMapping::new()));
         let genesis_beads = Vec::from([]);
-        let test_braid: Arc<RwLock<braid::Braid>> =
-            Arc::new(RwLock::new(braid::Braid::new(genesis_beads)));
-        let (_test_db_handler, test_db_tx) = DBHandler::new_in_memory().await.unwrap();
+        let test_braid: Arc<RwLock<braid::Braid>> = Arc::new(RwLock::new(braid::Braid::new(
+            genesis_beads,
+            PoolNetwork::Cpunet,
+        )));
+        let (_test_db_handler, test_db_tx) =
+            DBHandler::new_in_memory(PoolNetwork::Cpunet).await.unwrap();
         let mining_job_map: Arc<Mutex<HashMap<String, Arc<Mutex<MiningJobMap>>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let (notify_tx, _notify_rx) = mpsc::channel::<NotifyCmd>(32);
@@ -4251,7 +4311,12 @@ mod test {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let bound_addr = listener.local_addr().unwrap();
 
-        let mut server = Server::new(config, connection_mapping.clone(), None);
+        let mut server = Server::new(
+            config,
+            connection_mapping.clone(),
+            None,
+            PoolNetwork::Cpunet,
+        );
         let mining_job_map_clone = mining_job_map.clone();
         let notify_tx_clone = notify_tx.clone();
         tokio::spawn(async move {
@@ -4297,7 +4362,8 @@ mod test {
     }
 
     #[tokio::test]
-    async fn submit_work_version_rolling() {
+    async fn submit_work_no_version_rolling() {
+        use crate::config::PoolNetwork;
         // Tests BIP310 version rolling end-to-end: configure mask, construct job,
         // grind a valid nonce, submit, assert accepted.
         // Uses bits=207fffff (minimum difficulty) so the nonce grind terminates
@@ -4326,9 +4392,12 @@ mod test {
         //   0000002a6a286272616964706f6f6c5f626561645f6d657461646174615f6861
         //   73685f333262010203040506070800000000
         let genesis_beads = Vec::from([]);
-        let test_braid: Arc<RwLock<braid::Braid>> =
-            Arc::new(RwLock::new(braid::Braid::new(genesis_beads)));
-        let (_test_db_handler, test_db_tx) = DBHandler::new_in_memory().await.unwrap();
+        let test_braid: Arc<RwLock<braid::Braid>> = Arc::new(RwLock::new(braid::Braid::new(
+            genesis_beads,
+            PoolNetwork::Cpunet,
+        )));
+        let (_test_db_handler, test_db_tx) =
+            DBHandler::new_in_memory(PoolNetwork::Cpunet).await.unwrap();
         let (swarm_handler, mut swarm_command_receiver) =
             SwarmHandler::new(Arc::clone(&test_braid), test_db_tx, DashboardEvents::new());
         let swarm_handler_arc = Arc::new(Mutex::new(swarm_handler));
@@ -4336,15 +4405,9 @@ mod test {
         let mut test_witness = Witness::new();
         test_witness.push(vec![0u8; 32]);
         let test_coinbase_transaction: Transaction = Transaction {
-            version: bitcoin::TransactionVersion::TWO,
+            version:bitcoin::blockdata::transaction::Version::TWO,
             input: vec![TxIn {
-                previous_output: OutPoint {
-                    txid: Txid::from_str(
-                        "0000000000000000000000000000000000000000000000000000000000000000",
-                    )
-                    .unwrap(),
-                    vout: OutPoint::COINBASE_PREVOUT.vout,
-                },
+                previous_output: OutPoint::null(),
                 script_sig: ScriptBuf::from_hex(
                     "02611e1001010101010101010101010101010101094272616964706f6f6c",
                 )
@@ -4354,17 +4417,17 @@ mod test {
             }],
             output: vec![
                 TxOut {
-                    value: Amount::FIFTY_BTC,
+                    value: Amount::from_btc(50.0).unwrap(),
                     script_pubkey: ScriptBuf::from_hex("0014e470d0179325db88b55771f6c0a5139dd81d7318")
                         .unwrap(),
                 },
                 TxOut {
-                    value: Amount::from_sat(0).unwrap(),
+                    value: Amount::from_sat(0),
                     script_pubkey: ScriptBuf::from_hex("6a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf9")
                         .unwrap(),
                 },
                 TxOut {
-                    value: Amount::from_sat(0).unwrap(),
+                    value: Amount::from_sat(0),
                     script_pubkey: ScriptBuf::from_hex(
                         "6a286272616964706f6f6c5f626561645f6d657461646174615f686173685f3332620102030405060708",
                     )
@@ -4377,7 +4440,7 @@ mod test {
             bits: bitcoin::pow::CompactTarget::from_unprefixed_hex("207fffff").unwrap(),
             nonce: 0,
             version: BlockVersion::from_consensus(536870912),
-            time: BlockTime::from_u32(1759477299),
+            time: 1759477299,
             prev_blockhash: BlockHash::from_str(
                 "000000004357ac765395ad29220608af219e3090d75076f160bae2a195b3ebe6",
             )
@@ -4408,7 +4471,7 @@ mod test {
         let current_system_time = std::time::SystemTime::now();
         let duration_since_epoch = current_system_time.duration_since(UNIX_EPOCH).unwrap();
         let unix_timestamp = duration_since_epoch.as_secs().to_u32().unwrap();
-        let mut mock_downstream_handler = DownstreamClient::default();
+        let mut mock_downstream_handler = DownstreamClient::new(PoolNetwork::Cpunet);
         mock_downstream_handler.authorized = true;
         let mock_mining_job_map: Arc<Mutex<MiningJobMap>> =
             Arc::new(Mutex::new(MiningJobMap::new()));
@@ -4437,6 +4500,7 @@ mod test {
         ]);
         let test_extranonce_1 = hex::decode("000000009495ac08").unwrap();
         mock_downstream_handler.extranonce1 = test_extranonce_1;
+        mock_downstream_handler.network = PoolNetwork::Cpunet;
         let configure_response = mock_downstream_handler
             .handle_configure(&configure_test_request, 1, None)
             .await
@@ -4486,11 +4550,11 @@ mod test {
                 version: BlockVersion::from_consensus(536870912),
                 prev_blockhash: test_template_header.prev_blockhash,
                 merkle_root: merkle_root_for_grind,
-                time: BlockTime::from_u32(grind_ntime),
+                time: grind_ntime,
                 bits: grind_bits,
                 nonce,
             };
-            if grind_target.is_met_by(grind_header.block_hash()) {
+            if grind_target.is_met_by(compute_block_hash(&grind_header, PoolNetwork::Cpunet)) {
                 valid_nonce = nonce;
                 break;
             }
@@ -4527,6 +4591,34 @@ mod test {
                 panic!("Expected StandardResponse, got a different response type");
             }
         }
+
+        let mut complete_coinbase = coinbase_tx_for_grind.clone();
+        complete_coinbase
+            .input
+            .get_mut(0)
+            .unwrap()
+            .witness
+            .push(vec![0u8; 32]);
+        let complete_block_header = BlockHeader {
+            version: BlockVersion::from_consensus(536870912),
+            prev_blockhash: test_template_header.prev_blockhash,
+            merkle_root: merkle_root_for_grind,
+            time: grind_ntime,
+            bits: grind_bits,
+            nonce: valid_nonce,
+        };
+        let complete_block = bitcoin::Block {
+            header: complete_block_header,
+            txdata: vec![complete_coinbase],
+        };
+        let complete_block_hex = hex::encode(serialize(&complete_block));
+
+        let expected_complete_block_hex = "00000020e6ebb395a1e2ba60f17650d790309e21af08062229ad955376ac57430000000090dea459e4b4db9ed0d542fc9415f04312b9b2fc1c3b07bd7a417b715d948ab4337edf68ffff7f200300000001020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff1e02611e10000000009495ac080000000003000000094272616964706f6f6cffffffff0300f2052a01000000160014e470d0179325db88b55771f6c0a5139dd81d73180000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf900000000000000002a6a286272616964706f6f6c5f626561645f6d657461646174615f686173685f33326201020304050607080120000000000000000000000000000000000000000000000000000000000000000000000000";
+        assert_eq!(complete_block_hex, expected_complete_block_hex);
+
+        assert!(complete_block_hex.starts_with("00000020"));
+        assert!(complete_block_hex
+            .contains("e6ebb395a1e2ba60f17650d790309e21af08062229ad955376ac574300000000"));
     }
     /// Minimal job+client setup used by the ntime/nonce fast-fail tests.
     async fn submit_setup() -> (
@@ -4554,11 +4646,11 @@ mod test {
             .await
             .insert_mining_job(TemplateId::Braidpool(1), job_details)
             .await;
-        let mut client = DownstreamClient::default();
+        let mut client = DownstreamClient::new(PoolNetwork::Cpunet);
         client.authorized = true;
         client.extranonce1 = vec![0u8; 8];
-        let test_braid = Arc::new(RwLock::new(braid::Braid::new(vec![])));
-        let (_db, db_tx) = DBHandler::new().await.unwrap();
+        let test_braid = Arc::new(RwLock::new(braid::Braid::new(vec![], PoolNetwork::Cpunet)));
+        let (_db, db_tx) = DBHandler::new(PoolNetwork::Cpunet).await.unwrap();
         let (swarm, _rx) = SwarmHandler::new(test_braid, db_tx, DashboardEvents::new());
         let swarm_arc = Arc::new(Mutex::new(swarm));
         (client, map, swarm_arc, job_id)
@@ -4652,9 +4744,9 @@ mod test {
 
     #[test]
     fn test_unique_extranonce1_per_connection() {
-        let client1 = DownstreamClient::default();
-        let client2 = DownstreamClient::default();
-        let client3 = DownstreamClient::default();
+        let client1 = DownstreamClient::new(PoolNetwork::Cpunet);
+        let client2 = DownstreamClient::new(PoolNetwork::Cpunet);
+        let client3 = DownstreamClient::new(PoolNetwork::Cpunet);
 
         // connection_ids must be strictly increasing
         assert!(client2.connection_id() > client1.connection_id());

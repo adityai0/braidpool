@@ -1,5 +1,4 @@
-use bitcoin::consensus::encode::deserialize;
-use bitcoin::Network;
+use bitcoin::{consensus::encode::deserialize, hashes::Hash};
 use clap::Parser;
 use futures::lock::Mutex;
 use futures::StreamExt;
@@ -19,12 +18,13 @@ use node::db::db_handlers::fetch_beads_in_batch;
 use node::db::db_handlers::FETCH_BEAD_BATCH_SIZE;
 use node::ibd_manager::{IBD_TRIGGER_AFTER, MAX_IBD_INCOMING_THRESHOLD, MAX_IBD_RETRIES};
 use node::upstream_pool;
+use node::utils::compute_block_hash;
 use node::utils::BeadHash;
 use node::SwarmHandler;
 use node::{
     bead::{Bead, BeadHashes, BeadRequest, BeadResponse, BeadSyncError},
     behaviour::{self, BEAD_ANNOUNCE_PROTOCOL, BRAIDPOOL_TOPIC},
-    braid, cli,
+    braid, cli, config,
     db::db_handlers::DBHandler,
     ibd_manager::{IBDCommands, IBDManager, IBD_BATCH_SIZE},
     ipc_template_consumer,
@@ -66,7 +66,31 @@ use tokio::sync::{
 async fn main() -> Result<(), Box<dyn Error>> {
     // Initialize tracing with colors and module prefixes
     setup_tracing()?;
+    // Parse CLI arguments
     let args = cli::Cli::parse();
+    let network = match config::parse_network_name(&args.network) {
+        Ok(network) => network,
+        Err(error) => {
+            error!(
+                network = %args.network,
+                valid_networks = %config::SUPPORTED_NETWORKS.join(", "),
+                "Invalid network specified"
+            );
+            return Err(Box::<dyn Error>::from(error));
+        }
+    };
+    info!(network = %network, is_cpunet = network.is_cpunet(), "Network selected");
+    // Audit mode requires mainnet for the verification to be passed so early error
+    // will allow user to verify that .
+    if args.audit && network != config::PoolNetwork::Bitcoin(bitcoin::Network::Bitcoin) {
+        error!(
+            network = %network,
+            "Audit mode requires --network mainnet"
+        );
+        return Err(Box::<dyn Error>::from(
+            "audit mode requires --network mainnet",
+        ));
+    }
     let (mut ibd_manager, ibd_command_tx) = IBDManager::new();
     //IBD cache handler
     let _ibd_handler = tokio::spawn(async move {
@@ -81,13 +105,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let ibd_spinlock = Arc::new(ibd_or_not);
     // Initializing the braid object with read write lock
     //for supporting concurrent readers and single writer
-    let braid: Arc<RwLock<braid::Braid>> = Arc::new(RwLock::new(braid::Braid::new(Vec::from([]))));
+    let braid: Arc<RwLock<braid::Braid>> =
+        Arc::new(RwLock::new(braid::Braid::new(Vec::from([]), network)));
     let mut optional_db_pool = None;
     let db_tx;
 
     if !args.audit {
         //Initializing DB and db command handler
-        let (mut db_handler, tx) = DBHandler::new().await.map_err(|e| {
+        let (mut db_handler, tx) = DBHandler::new(network).await.map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::Other,
                 format!("Database initialization failed: {:?}", e),
@@ -106,6 +131,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let braid_ref = braid.clone();
         // FIXME instead we should look 144 blocks back from the bitcoin tip (1 day) and load beads
         // starting from that block as genesis
+        let network_ref = network;
         let initial_bead_fetch_handle = tokio::spawn(async move {
             let mut guard = braid_ref.write().await;
             let fetched_beads =
@@ -113,8 +139,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             info!(beads = fetched_beads.len(), "Beads loaded from DB");
             for bead in &fetched_beads {
                 let curr_bead_status = guard.extend(&bead);
-                info!(
-                    hash = ?bead.block_header.block_hash(),
+                debug!(
+                    hash = ?compute_block_hash(&bead.block_header,network_ref),
                     status = ?curr_bead_status,
                     "Bead inserted"
                 );
@@ -165,6 +191,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let notification_tx_for_ipc = notification_tx.clone();
     let latest_template_for_ipc = latest_template.clone();
     let latest_template_merkle_branch_for_ipc = latest_template_merkle_branch.clone();
+    let network_for_ipc = network;
 
     //Connection mapping for all the downstream connection connected to the stratum server
     let connection_mapping = Arc::new(tokio::sync::RwLock::new(ConnectionMapping::new()));
@@ -271,6 +298,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         stratum_config,
         connection_mapping.clone(),
         Some(block_submission_tx),
+        network,
     );
 
     let (main_shutdown_tx, _main_shutdown_rx) =
@@ -975,28 +1003,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     //IPC(inter process communication) based `getblocktemplate` and `notification` to send to the downstream via the `cmempoold` architecture
     info!(socket = %args.ipc_socket, "IPC socket path");
 
-    let network = if let Some(network_name) = &args.network {
-        info!(network = %network_name, "Network selected");
-        match network_name.as_str() {
-            "main" | "mainnet" => Network::Bitcoin,
-            "testnet" | "testnet4" => Network::Testnet(bitcoin::TestnetVersion::V4),
-            "signet" => Network::Signet,
-            "regtest" => Network::Regtest,
-            "cpunet" => Network::CPUNet,
-            _ => {
-                error!(
-                    network = %network_name,
-                    valid_networks = "main, testnet, testnet4, signet, regtest, cpunet",
-                    "Invalid network specified"
-                );
-                info!(fallback = "regtest", "Using fallback network");
-                Network::Regtest
-            }
-        }
-    } else {
-        Network::Bitcoin
-    };
-
     // Spawn IPC handler
     let _ipc_handler = if !args.audit {
         Some(tokio::task::spawn_blocking(move || {
@@ -1023,6 +1029,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         let ipc_socket_path = ipc_socket_path_for_blocking.clone();
                         let ipc_template_tx = ipc_template_tx.clone();
                         let template_cache = template_cache_for_listener.clone();
+                        let network = network_for_ipc;
                         let rpc_command_rx = rpc_proxy_rx;
 
                         async move {
@@ -1155,17 +1162,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                   size_bytes = %message.data.len(),
                                   "Floodsub message received"
                               );
-                              let result_bead: Result<Bead, bitcoin::consensus::DeserializeError> = deserialize(&message.data);
+                              let result_bead: Result<Bead, bitcoin::consensus::encode::Error> = deserialize(&message.data);
                               match result_bead {
                                   Ok(bead) => {
-                                     info!(bead = ?bead, hash = %bead.block_header.block_hash(), "Received bead");
-                                     // Handle the received bead here
-                                     let mut braid_data = braid.write().await;
-                                     let status = {
+                                      // Handle the received bead here
+                                      let mut braid_data = braid.write().await;
+                                      let bead_hash = braid_data.compute_bead_hash(&bead);
+                                 info!(bead = ?bead, hash = %bead_hash, "Received bead");
+                                let status = {
                                           braid_data.extend(&bead)
                                       };
                                       if ibd_spinlock.load(Ordering::SeqCst){
-                                         let broadcast_ts = bead.uncommitted_metadata.broadcast_timestamp.clone().to_u32();
+                                         let broadcast_ts = bead.uncommitted_metadata.broadcast_timestamp.clone().to_consensus_u32();
                                          let (ts_tx, ts_rx) = tokio::sync::oneshot::channel();
                                          if let Err(e) = ibd_command_tx
                                              .send(IBDCommands::FetchAllTimestamps { sender: ts_tx })
@@ -1211,7 +1219,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                          } else if let braid::AddBeadStatus::BeadAdded { promoted_orphans}= &status {
                                             if !args.audit {
                                                 if let Err(error) = node::db::persist_added_bead(&braid_data, &bead, promoted_orphans.iter(), &db_tx).await {
-                                                    error!(error = %error, bead_hash = ?bead.block_header.block_hash(), "Failed to persist bead");
+                                                    error!(error = %error, bead_hash = ?compute_block_hash(&bead.block_header, braid_data.network), "Failed to persist bead");
                                                     continue;
                                                 }
                                                 {
@@ -1306,7 +1314,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         }
                                     } else if let braid::AddBeadStatus::BeadAdded { promoted_orphans } = &status {
                                         if let Err(error) = node::db::persist_added_bead(&braid_data, &bead, promoted_orphans.iter(), &db_tx).await {
-                                            error!(error = %error, bead_hash = ?bead.block_header.block_hash(), "Failed to persist bead (GetAllBeads)");
+                                            error!(error = %error, bead_hash = ?compute_block_hash(&bead.block_header, braid_data.network), "Failed to persist bead (GetAllBeads)");
                                             continue;
                                         }
                                         // update score of the peer
@@ -1472,8 +1480,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                      )) => {
                          info!(
                              peer = %peer,
-                             message = ?message,
-                             connection = ?connection_id,
+                                  connection = ?connection_id,
                              "Bead sync message received"
                          );
                          match message {
@@ -1510,7 +1517,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                                      .iter()
                                                      .filter_map(|index| braid_lock.beads.get(*index))
                                                      .cloned()
-                                                     .map(|bead| bead.block_header.block_hash())
+                                                     .map(|bead| braid_lock.compute_bead_hash(&bead))
                                                      .collect();
                                              }
                                              swarm.behaviour_mut().respond_with_tips(channel, tips);
@@ -1524,7 +1531,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                                      .iter()
                                                      .filter_map(|index| braid_lock.beads.get(*index))
                                                      .cloned()
-                                                     .map(|bead| bead.block_header.block_hash())
+                                                     .map(|bead| braid_lock.compute_bead_hash(&bead))
                                                      .collect();
                                              }
                                              swarm.behaviour_mut().respond_with_genesis(channel, genesis);
@@ -1539,11 +1546,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         swarm.behaviour_mut().respond_with_beads(channel, all_beads);
                                 }
                                 BeadRequest::GetBeadsAfter(hashes) => {
-                                        let beads = braid.read().await.get_beads_after(hashes.into());
+                                        let braid_lock = braid.read().await;
+                                        let beads = braid_lock.get_beads_after(hashes.into());
                                         if let Some(response_beads) = beads {
                                             let mut computed_beads_hashes:Vec<BeadHash> = Vec::new();
                                             for bead in response_beads.into_iter(){
-                                                computed_beads_hashes.push(bead.block_header.block_hash());
+                                                computed_beads_hashes.push(braid_lock.compute_bead_hash(&bead));
                                             }
                                             //Sending the corresponding bead hashes requested by the new peer for IBD that will
                                             //be after the new peer's `Tips`.
@@ -1605,9 +1613,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     };
                                     for bead in beads.into_iter() {
                                         let mut braid_data = braid.write().await;
+                                        let bead_hash = braid_data.compute_bead_hash(&bead);
                                         let status = braid_data.extend(&bead);
-                                        let curr_beadhash = bead.block_header.block_hash();
+                                        let curr_beadhash = bead_hash.to_string();
                                         if let braid::AddBeadStatus::InvalidBead = status {
+                                            warn!("Invalid bead received from peer");
                                             // update the peer manager about the invalid bead
                                             {
                                                 let mut peer_manager = peer_manager_arc.write().await;
@@ -1838,7 +1848,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                          let bead_hash_set: HashSet<BeadHash> = braid_data
                                          .beads
                                          .iter()
-                                         .map(|b| b.block_header.block_hash())
+                                         .map(|b| braid_data.compute_bead_hash(b))
                                          .collect();
 
                                          let flag = tips.iter().all(|tip_hash| bead_hash_set.contains(tip_hash));
@@ -1868,7 +1878,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                          let mut current_tip_hashes = Vec::new();
                                          for curr_bead_idx in braid_data.tips.iter() {
                                              if let Some(current_bead) = braid_data.beads.get(*curr_bead_idx) {
-                                                 current_tip_hashes.push(current_bead.block_header.block_hash());
+                                                 current_tip_hashes.push(braid_data.compute_bead_hash(current_bead));
                                              } else {
                                                  error!(bead_idx = %curr_bead_idx, "Tip bead not found in beads list");
                                              }
